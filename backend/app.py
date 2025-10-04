@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from database import (
     find_suggestion_by_uid,
     get_mode,
+    get_monitored_folders,
     init_db,
     list_open_suggestions,
     mark_failed,
@@ -24,11 +25,14 @@ from database import (
     record_decision,
     record_dry_run,
     set_mode,
+    set_monitored_folders,
+    update_proposal,
 )
 from imap_worker import one_shot_scan
-from mailbox import folder_exists, list_folders, move_message
+from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
+from ollama_service import ensure_ollama_ready, get_status, status_as_dict
 from settings import S
 
 
@@ -64,6 +68,47 @@ class SuggestionsResponse(BaseModel):
     suggestions: List[Suggestion]
 
 
+class FolderSelectionResponse(BaseModel):
+    available: List[str]
+    selected: List[str]
+
+
+class FolderSelectionUpdate(BaseModel):
+    folders: List[str] = Field(default_factory=list)
+
+
+class ProposalDecisionRequest(BaseModel):
+    message_uid: str = Field(..., min_length=1)
+    accept: bool
+
+
+class OllamaModelStatusResponse(BaseModel):
+    name: str
+    normalized_name: str
+    purpose: str
+    available: bool
+    pulled: bool
+    digest: str | None = None
+    size: int | None = None
+    message: str | None = None
+
+
+class OllamaStatusResponse(BaseModel):
+    host: str
+    reachable: bool
+    message: str | None = None
+    last_checked: datetime | None = None
+    models: List[OllamaModelStatusResponse] = Field(default_factory=list)
+
+
+class ConfigResponse(BaseModel):
+    dev_mode: bool
+    pending_list_limit: int
+    protected_tag: str | None = None
+    processed_tag: str | None = None
+    ollama: OllamaStatusResponse | None = None
+
+
 class PendingMailResponse(BaseModel):
     message_uid: str
     folder: str
@@ -88,6 +133,8 @@ class PendingOverviewResponse(BaseModel):
     pending_count: int
     pending_ratio: float
     pending: List[PendingMailResponse]
+    displayed_pending: int
+    list_limit: int
 
     @classmethod
     def from_domain(cls, overview: PendingOverview) -> "PendingOverviewResponse":
@@ -97,6 +144,8 @@ class PendingOverviewResponse(BaseModel):
             pending_count=overview.pending_count,
             pending_ratio=overview.pending_ratio,
             pending=[PendingMailResponse.from_domain(item) for item in overview.pending],
+            displayed_pending=overview.displayed_pending,
+            list_limit=overview.list_limit,
         )
 
 
@@ -109,8 +158,9 @@ logger = logging.getLogger(__name__)
 
 
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
     init_db()
+    await ensure_ollama_ready()
 
 
 @app.get("/healthz")
@@ -137,9 +187,33 @@ def api_set_mode(payload: ModeUpdate) -> ModeResponse:
     return ModeResponse(mode=payload.mode)
 
 
-@app.get("/api/folders")
-def api_folders() -> List[str]:
-    return list_folders()
+@app.get("/api/folders", response_model=FolderSelectionResponse)
+def api_folders() -> FolderSelectionResponse:
+    available = list_folders()
+    selected = get_monitored_folders()
+    if not selected and S.IMAP_INBOX in available:
+        selected = [S.IMAP_INBOX]
+    return FolderSelectionResponse(available=available, selected=selected)
+
+
+@app.post("/api/folders/selection", response_model=FolderSelectionResponse)
+def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionResponse:
+    set_monitored_folders(payload.folders)
+    available = list_folders()
+    selected = get_monitored_folders()
+    return FolderSelectionResponse(available=available, selected=selected)
+
+
+@app.get("/api/config", response_model=ConfigResponse)
+async def api_config() -> ConfigResponse:
+    status = await get_status(force_refresh=False)
+    return ConfigResponse(
+        dev_mode=bool(S.DEV_MODE),
+        pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
+        protected_tag=S.IMAP_PROTECTED_TAG or None,
+        processed_tag=S.IMAP_PROCESSED_TAG or None,
+        ollama=OllamaStatusResponse.model_validate(status_as_dict(status)),
+    )
 
 
 @app.get("/api/suggestions", response_model=SuggestionsResponse)
@@ -147,8 +221,14 @@ def api_suggestions() -> SuggestionsResponse:
     return SuggestionsResponse(suggestions=list_open_suggestions())
 
 
+@app.get("/api/ollama", response_model=OllamaStatusResponse)
+async def api_ollama_status() -> OllamaStatusResponse:
+    status = await get_status(force_refresh=True)
+    return OllamaStatusResponse.model_validate(status_as_dict(status))
+
+
 async def _pending_overview() -> PendingOverviewResponse:
-    overview = await load_pending_overview()
+    overview = await load_pending_overview(get_monitored_folders())
     return PendingOverviewResponse.from_domain(overview)
 
 
@@ -204,6 +284,35 @@ def api_move(payload: MoveRequest) -> Dict[str, Any]:
     return {"ok": True, "dry_run": False}
 
 
+@app.post("/api/proposal")
+def api_proposal(payload: ProposalDecisionRequest) -> Dict[str, Any]:
+    suggestion = _ensure_suggestion(payload.message_uid)
+    if not suggestion.proposal:
+        raise HTTPException(400, "no proposal available")
+
+    proposal = dict(suggestion.proposal)
+    proposal["status"] = "accepted" if payload.accept else "rejected"
+
+    if payload.accept:
+        full_path = proposal.get("full_path")
+        if not full_path and proposal.get("parent") and proposal.get("name"):
+            full_path = f"{proposal['parent']}/{proposal['name']}"
+        if not full_path:
+            raise HTTPException(400, "invalid proposal data")
+        try:
+            created = ensure_folder_path(full_path)
+            proposal["full_path"] = created
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - network interaction
+            logger.error("Failed to create folder for proposal %s: %s", full_path, exc)
+            raise HTTPException(500, f"could not create folder: {exc}") from exc
+
+    updated = update_proposal(payload.message_uid, proposal)
+    result = updated.proposal if updated else proposal
+    return {"ok": True, "proposal": result}
+
+
 @app.post("/api/move/bulk")
 def api_move_bulk(payload: BulkMoveRequest) -> Dict[str, List[Dict[str, Any]]]:
     results = [api_move(item) for item in payload.items]
@@ -233,5 +342,6 @@ async def api_rescan(payload: Dict[str, Any] = Body(default={})) -> Dict[str, An
     folders = payload.get("folders")
     if folders is not None and not isinstance(folders, list):
         raise HTTPException(400, "folders must be a list of folder names")
-    count = await one_shot_scan(folders)
+    target_folders = folders if folders is not None else get_monitored_folders()
+    count = await one_shot_scan(target_folders)
     return {"ok": True, "new_suggestions": count}

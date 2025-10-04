@@ -7,7 +7,7 @@ services:
     ports: ["11434:11434"]
     volumes: [ "ollama:/root/.ollama" ]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -17,7 +17,8 @@ services:
     container_name: imap_smart_sorter_v2-backend-1
     env_file: .env
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     ports: ["8000:8000"]
     volumes:
       - ./backend:/app
@@ -28,7 +29,10 @@ services:
     container_name: imap_smart_sorter_v2-worker-1
     env_file: .env
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+      ollama:
+        condition: service_healthy
     command: ["python", "-u", "imap_worker.py"]
     volumes:
       - ./backend:/app

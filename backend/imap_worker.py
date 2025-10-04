@@ -10,12 +10,14 @@ from typing import Sequence
 
 from classifier import (
     build_embedding_prompt,
+    classify_with_model,
     embed,
     propose_new_folder_if_needed,
     score_profiles,
 )
 from database import (
     get_mode,
+    get_monitored_folders,
     is_processed,
     list_folder_profiles,
     mark_failed,
@@ -25,8 +27,9 @@ from database import (
     save_suggestion,
 )
 from feedback import update_profiles_on_accept
-from mailbox import fetch_recent_messages, move_message
+from mailbox import add_message_tag, fetch_recent_messages, move_message
 from models import Suggestion
+from ollama_service import ensure_ollama_ready
 from settings import S
 from utils import extract_text, subject_from, thread_headers
 
@@ -37,6 +40,7 @@ logger = logging.getLogger(__name__)
 async def process_loop() -> None:
     """Continuously poll the mailbox and persist new suggestions."""
 
+    await ensure_ollama_ready()
     while True:
         try:
             count = await one_shot_scan()
@@ -50,12 +54,17 @@ async def process_loop() -> None:
 async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
     """Scan the configured folders once and create suggestions for unseen mails."""
 
-    target_folders: Sequence[str] = [str(folder) for folder in folders] if folders else [S.IMAP_INBOX]
+    if folders is not None:
+        target_folders: Sequence[str] = [str(folder) for folder in folders if str(folder).strip()]
+    else:
+        configured = get_monitored_folders()
+        target_folders = configured or [S.IMAP_INBOX]
     messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
     processed = 0
     for folder, payloads in messages.items():
-        for uid, raw_bytes in payloads.items():
+        for uid, meta in payloads.items():
             uid_str = str(uid)
+            raw_bytes = meta.body if hasattr(meta, "body") else meta
             if not raw_bytes or is_processed(folder, uid_str):
                 continue
             try:
@@ -81,9 +90,17 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
     ]
 
     embedding = await embed(prompt)
-    ranked = score_profiles(embedding, profiles) if embedding else []
-    top_score = ranked[0][1] if ranked else 0.0
-    proposal = await propose_new_folder_if_needed(top_score, parent_hint=src_folder)
+    ranked_pairs = score_profiles(embedding, profiles) if embedding else []
+    refined_ranked, proposal = await classify_with_model(
+        subject or "",
+        from_addr or "",
+        text,
+        ranked_pairs,
+        parent_hint=src_folder,
+    )
+    top_score = ranked_pairs[0][1] if ranked_pairs else 0.0
+    if not proposal:
+        proposal = await propose_new_folder_if_needed(top_score, parent_hint=src_folder)
 
     suggestion = Suggestion(
         message_uid=uid,
@@ -92,20 +109,21 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
         from_addr=from_addr,
         date=str(msg.get("Date")),
         thread_id=thread.get("message_id"),
-        ranked=[{"name": name, "score": score} for name, score in ranked],
+        ranked=refined_ranked,
         proposal=proposal,
         status="open",
         move_status="pending",
     )
     save_suggestion(suggestion)
+    add_message_tag(uid, src_folder, S.IMAP_PROCESSED_TAG)
 
     mode = get_mode() or S.MOVE_MODE
     should_auto_move = mode == "AUTO" and (
         (top_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
     )
 
-    if should_auto_move and ranked:
-        target = ranked[0][0]
+    if should_auto_move and refined_ranked:
+        target = refined_ranked[0]["name"]
         try:
             move_message(uid, target, src_folder=src_folder)
             mark_moved(uid)

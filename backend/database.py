@@ -1,10 +1,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Dict, Iterator, List, Optional, Sequence, Set
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -108,21 +109,58 @@ def mark_failed(uid: str, err: str) -> None:
             ses.commit()
 
 
-def set_mode(mode: str) -> None:
+def _set_config_value(key: str, value: str) -> None:
     with get_session() as ses:
-        entry = ses.exec(select(AppConfig).where(AppConfig.key == "MOVE_MODE")).first()
+        entry = ses.exec(select(AppConfig).where(AppConfig.key == key)).first()
         if not entry:
-            entry = AppConfig(key="MOVE_MODE", value=mode)
+            entry = AppConfig(key=key, value=value)
         else:
-            entry.value = mode
+            entry.value = value
         ses.add(entry)
         ses.commit()
 
 
-def get_mode() -> Optional[str]:
+def _get_config_value(key: str) -> Optional[str]:
     with get_session() as ses:
-        entry = ses.exec(select(AppConfig).where(AppConfig.key == "MOVE_MODE")).first()
+        entry = ses.exec(select(AppConfig).where(AppConfig.key == key)).first()
         return entry.value if entry else None
+
+
+def set_mode(mode: str) -> None:
+    _set_config_value("MOVE_MODE", mode)
+
+
+def get_mode() -> Optional[str]:
+    return _get_config_value("MOVE_MODE")
+
+
+def set_monitored_folders(folders: Sequence[str]) -> None:
+    unique = list(dict.fromkeys(str(folder) for folder in folders if str(folder).strip()))
+    payload = json.dumps(unique)
+    _set_config_value("MONITORED_FOLDERS", payload)
+
+
+def get_monitored_folders() -> List[str]:
+    raw = _get_config_value("MONITORED_FOLDERS")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [str(folder) for folder in data if isinstance(folder, str) and folder.strip()]
+
+
+def update_proposal(uid: str, proposal: Dict[str, Any] | None) -> Optional[Suggestion]:
+    with get_session() as ses:
+        row = ses.exec(select(Suggestion).where(Suggestion.message_uid == uid)).first()
+        if not row:
+            return None
+        row.proposal = proposal
+        ses.add(row)
+        ses.commit()
+        ses.refresh(row)
+        return row
 
 
 def list_folder_profiles() -> List[FolderProfile]:

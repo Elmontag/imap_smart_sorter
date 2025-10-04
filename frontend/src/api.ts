@@ -1,14 +1,20 @@
+import { recordDevEvent } from './devtools'
+
 export type MoveMode = 'DRY_RUN' | 'CONFIRM' | 'AUTO'
 
 export interface SuggestionScore {
   name: string
   score: number
+  reason?: string
 }
 
 export interface NewFolderProposal {
   parent: string
   name: string
   reason: string
+  full_path?: string
+  status?: 'pending' | 'accepted' | 'rejected'
+  score_hint?: number
 }
 
 export interface Suggestion {
@@ -40,6 +46,35 @@ export interface PendingOverview {
   pending_count: number
   pending_ratio: number
   pending: PendingMail[]
+  displayed_pending?: number
+  list_limit?: number
+}
+
+export interface OllamaModelStatus {
+  name: string
+  normalized_name: string
+  purpose: 'classifier' | 'embedding'
+  available: boolean
+  pulled: boolean
+  digest?: string | null
+  size?: number | null
+  message?: string | null
+}
+
+export interface OllamaStatus {
+  host: string
+  reachable: boolean
+  message?: string | null
+  last_checked?: string | null
+  models: OllamaModelStatus[]
+}
+
+export interface AppConfig {
+  dev_mode: boolean
+  pending_list_limit: number
+  protected_tag: string | null
+  processed_tag: string | null
+  ollama?: OllamaStatus | null
 }
 
 interface ModeResponse { mode: MoveMode }
@@ -60,6 +95,16 @@ export interface RescanResponse {
   new_suggestions: number
 }
 
+export interface FolderSelectionResponse {
+  available: string[]
+  selected: string[]
+}
+
+export interface ProposalDecisionResponse {
+  ok: boolean
+  proposal: NewFolderProposal | null
+}
+
 export type StreamEvent =
   | { type: 'hello'; msg: string }
   | { type: 'pending_overview'; payload: PendingOverview }
@@ -73,15 +118,57 @@ const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
 const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? 'GET'
+  const label = `${method} ${path}`
+  if (init?.body) {
+    let parsed: unknown = init.body
+    if (typeof init.body === 'string') {
+      try {
+        parsed = JSON.parse(init.body)
+      } catch (error) {
+        parsed = init.body
+      }
+    }
+    recordDevEvent({ type: 'request', label, payload: parsed })
+  } else {
+    recordDevEvent({ type: 'request', label })
+  }
+
+  const started = performance.now()
   const response = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
   })
   if (!response.ok) {
     const text = await response.text()
+    recordDevEvent({
+      type: 'error',
+      label,
+      details: `${response.status} ${response.statusText}`,
+      payload: text,
+      durationMs: performance.now() - started,
+    })
     throw new Error(text || `${response.status} ${response.statusText}`)
   }
-  return response.json() as Promise<T>
+  const clone = response.clone()
+  const data = (await response.json()) as T
+  try {
+    const payload = await clone.json()
+    recordDevEvent({
+      type: 'response',
+      label,
+      payload,
+      durationMs: performance.now() - started,
+    })
+  } catch (error) {
+    recordDevEvent({
+      type: 'response',
+      label,
+      payload: '[non-json response]',
+      durationMs: performance.now() - started,
+    })
+  }
+  return data
 }
 
 export async function getMode(): Promise<ModeResponse> {
@@ -92,7 +179,7 @@ export async function setMode(mode: MoveMode): Promise<ModeResponse> {
   return request('/api/mode', { method: 'POST', body: JSON.stringify({ mode }) })
 }
 
-export async function getFolders(): Promise<string[]> {
+export async function getFolders(): Promise<FolderSelectionResponse> {
   return request('/api/folders')
 }
 
@@ -103,6 +190,10 @@ export async function getSuggestions(): Promise<Suggestion[]> {
 
 export async function getPendingOverview(): Promise<PendingOverview> {
   return request<PendingOverview>('/api/pending')
+}
+
+export async function getAppConfig(): Promise<AppConfig> {
+  return request<AppConfig>('/api/config')
 }
 
 export async function decide(message_uid: string, target_folder: string, decision: 'accept' | 'reject', dry_run = false): Promise<DecideResponse | MoveResponse> {
@@ -126,15 +217,40 @@ export async function rescan(folders?: string[]): Promise<RescanResponse> {
   })
 }
 
+export async function updateFolderSelection(folders: string[]): Promise<FolderSelectionResponse> {
+  return request('/api/folders/selection', {
+    method: 'POST',
+    body: JSON.stringify({ folders }),
+  })
+}
+
+export async function decideProposal(message_uid: string, accept: boolean): Promise<ProposalDecisionResponse> {
+  return request('/api/proposal', {
+    method: 'POST',
+    body: JSON.stringify({ message_uid, accept }),
+  })
+}
+
 export function openStream(onEvent: (event: StreamEvent) => void): WebSocket {
   const socket = new WebSocket(STREAM_URL)
+  recordDevEvent({ type: 'info', label: 'WebSocket verbinden', details: STREAM_URL })
   socket.onmessage = rawEvent => {
     try {
       const parsed = JSON.parse(rawEvent.data) as StreamEvent
+      recordDevEvent({ type: 'stream', label: parsed.type, payload: parsed })
       onEvent(parsed)
     } catch (error) {
-      console.error('Unbekannte Nachricht auf dem Stream', error)
+      recordDevEvent({ type: 'error', label: 'Stream parse error', payload: String(error) })
     }
+  }
+  socket.onerror = event => {
+    recordDevEvent({ type: 'error', label: 'WebSocket Fehler', payload: event })
+  }
+  socket.onopen = () => {
+    recordDevEvent({ type: 'info', label: 'WebSocket geöffnet' })
+  }
+  socket.onclose = () => {
+    recordDevEvent({ type: 'info', label: 'WebSocket geschlossen' })
   }
   return socket
 }
