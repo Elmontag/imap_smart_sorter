@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite
+*.db
+.env
+backend/data/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.DS_Store

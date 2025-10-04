@@ -1,2 +1,101 @@
-# IMAP Smart Sorter v2
-Fixes: stabile Backend-Modelle/DB, sichere IMAP-Aufrufe, Frontend-Volume für node_modules.
+# IMAP Smart Sorter
+
+Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordner vor und unterstützt beim automatisierten Verschieben. Das Projekt besteht aus drei Komponenten:
+
+- **Backend** – FastAPI-Anwendung mit SQLite/SQLModel-Datenbank für Vorschläge, Status und API-Endpunkte.
+- **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
+- **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
+
+## Schnellstart mit Docker Compose
+
+1. Erstelle eine `.env` im Projektwurzelverzeichnis (Beispiel unten).
+2. Starte alle Services: `docker compose up --build`
+3. Frontend: <http://localhost:5173> – Backend: <http://localhost:8000>
+4. Beende mit `docker compose down`
+
+> **Hinweis:** Der `ollama`-Dienst lädt Modelle beim ersten Start nach. Plane zusätzliche Zeit/Netzwerk ein oder passe `CLASSIFIER_MODEL`/`EMBED_MODEL` an lokal verfügbare Modelle an.
+
+### Beispiel-`.env`
+
+```dotenv
+IMAP_HOST=imap.example.org
+IMAP_USERNAME=demo@example.org
+IMAP_PASSWORD=super-secret
+IMAP_INBOX=INBOX
+OLLAMA_HOST=http://ollama:11434
+DATABASE_URL=sqlite:///data/app.db
+MOVE_MODE=CONFIRM
+SINCE_DAYS=14
+LOG_LEVEL=INFO
+```
+
+## Lokale Entwicklung
+
+### Backend & Worker
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
+# In zweitem Terminal für den Worker
+python backend/imap_worker.py
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Passe `VITE_API_BASE` in einer `.env` innerhalb von `frontend/` an, falls das Backend unter einer anderen Adresse erreichbar ist.
+
+## Architekturüberblick
+
+```
+┌──────────┐      ┌───────────────┐      ┌────────────┐
+│  IMAP    │ ───▶ │  Worker      │ ───▶ │ Datenbank  │
+│  Server  │      │  (async)      │      │ (SQLModel) │
+└──────────┘      └──────┬────────┘      └─────┬──────┘
+                          │                   │
+                          ▼                   ▼
+                     LLM Embeddings     FastAPI Backend
+                          │                   │
+                          └──────────────┬────┘
+                                         ▼
+                                   React Frontend
+```
+
+- **Mailbox**: `backend/mailbox.py` kapselt IMAP-Verbindungen, liefert aktuelle Nachrichten und führt Move-Operationen aus (Fallback Copy+Delete).
+- **Worker**: `backend/imap_worker.py` ruft `fetch_recent_messages`, erstellt pro Mail ein `Suggestion`-Objekt und aktualisiert Profile bei automatischen Moves.
+- **Classifier**: `backend/classifier.py` erzeugt Embeddings via Ollama und berechnet Kosinusähnlichkeiten zu bekannten Ordner-Profilen.
+- **Persistenz**: `backend/database.py` verwaltet SQLModel-Sessions, Vorschlagsstatus und Konfigurationswerte wie den aktuellen Move-Modus.
+- **Frontend**: `frontend/src` nutzt TypeScript und bündelt sämtliche Styles in `styles.css`. Komponenten verwenden die API-Wrapper aus `frontend/src/api.ts`.
+
+## API-Referenz (Auszug)
+
+| Methode | Pfad                | Beschreibung |
+|--------:|---------------------|--------------|
+| `GET`   | `/healthz`          | Healthcheck für Monitoring |
+| `GET`   | `/api/mode`         | Liefert den aktuellen Move-Modus (`DRY_RUN`, `CONFIRM`, `AUTO`) |
+| `POST`  | `/api/mode`         | Setzt den Move-Modus – Body `{ "mode": "CONFIRM" }` |
+| `GET`   | `/api/folders`      | Listet verfügbare IMAP-Ordner |
+| `GET`   | `/api/suggestions`  | Liefert offene Vorschläge inkl. Ranking |
+| `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |
+| `POST`  | `/api/move`         | Verschiebt oder simuliert eine einzelne Nachricht |
+| `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |
+| `POST`  | `/api/rescan`       | Erzwingt einen einmaligen Scan (optional mit `folders`-Liste) |
+
+Alle Endpunkte liefern JSON und verwenden HTTP-Statuscodes für Fehlerzustände.
+
+## Tests & Qualitätssicherung
+
+- **Python**: `python -m compileall backend` stellt sicher, dass alle Module syntaktisch valide sind.
+- **Frontend**: `npm run build` im Verzeichnis `frontend` prüft den TypeScript- und Bundling-Prozess.
+- **Docker**: `docker compose build` validiert das Container-Setup.
+
+## Entwicklungsrichtlinien
+
+Weitere Stil- und Strukturhinweise befinden sich in [`AGENTS.md`](AGENTS.md). Bitte bei Änderungen am Code oder an Dokumentation stets auch diese Datei prüfen und die README aktuell halten.
