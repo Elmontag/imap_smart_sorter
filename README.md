@@ -41,6 +41,7 @@ IMAP_PROCESSED_TAG=SmartSorter/Done
 IMAP_AI_TAG_PREFIX=SmartSorter
 PENDING_LIST_LIMIT=25
 DEV_MODE=false
+MIN_MATCH_SCORE=60
 ```
 
 ### Hinweise zur IMAP-Suche
@@ -66,25 +67,28 @@ DEV_MODE=false
   zeigt, wenn alle Dienste via Docker Compose laufen. Bei lokal gestarteten Komponenten außerhalb
   von Docker muss der Wert auf `http://localhost:11434` oder die entsprechende IP des Hosts gesetzt werden.
 
-### Automatische Kategorien & Tags
+### Automatische Kategorien, Tags & Kataloge
 
-- Die KI bewertet jede Mail ganzheitlich und bestimmt einen Überbegriff, der mit bestehenden Ordnerhierarchien
-  abgeglichen wird. Nur wenn keine vorhandene Ebene überzeugt, wird ein neuer Unterordner vorgeschlagen.
-- Bis zu drei kontextbezogene Tags werden pro Mail vergeben. Die Tags decken in dieser Reihenfolge die Dimensionen
-  **Komplexität**, **Priorität** und **Handlungsauftrag** ab, jeweils als verdichtetes Ein-Wort-Signal. Sie landen als
-  Metadaten am IMAP-Objekt (Prefix konfigurierbar via `IMAP_AI_TAG_PREFIX`) und bleiben von Move-Entscheidungen unabhängig.
-- Tagging und Ordnerentscheidungen sind getrennte Arbeitsschritte: Tags werden automatisch vergeben,
-  Ordner-Vorschläge können später bestätigt, korrigiert oder verworfen werden.
+- Jede E-Mail wird strikt gegen einen festen Katalog aus [`backend/llm_config.json`](backend/llm_config.json) gematcht.
+  Der Katalog enthält eine mehrstufige Ordnerhierarchie („Events“, „Bestellungen“, „Reisen“, „Projekte“) inklusive
+  Unter- und Subunterordnern. Das LLM darf ausschließlich diese Pfade nutzen.
+- Für jede mögliche Zuordnung vergibt das LLM einen Score zwischen 0 und 100 Punkten. 100 bedeutet perfekte Übereinstimmung,
+  0 keinerlei Bezug. Der höchste Score bestimmt den Ordner-Vorschlag. Liegt kein Treffer über dem konfigurierten
+  Schwellwert `MIN_MATCH_SCORE`, wird die Mail als `unmatched` markiert und es erfolgen weder Ordner- noch Tag-Vorschläge.
+- Bis zu drei Tag-Slots decken **Komplexität**, **Priorität** und **Handlungsauftrag** ab. Für jeden Slot existiert ein
+  Optionskatalog; das LLM muss eine Option auswählen und den Score ≥ `MIN_MATCH_SCORE` halten, andernfalls bleibt der Slot
+  leer. Kontext-Tags wie `datum-YYYY-MM-TT` oder `reiseort-ORT` werden nur bei eindeutiger Zuordnung ergänzt.
+- Tagging und Ordnerentscheidungen bleiben getrennt: Tags landen als `IMAP_AI_TAG_PREFIX/slot-option`-Kombination
+  am jeweiligen IMAP-Objekt, während Ordner-Vorschläge weiter bestätigt oder abgelehnt werden können.
 
 ### Konfigurierbare Hierarchie & Tag-Slots
 
-- Die Datei [`backend/llm_config.json`](backend/llm_config.json) definiert die gewünschte Ordnerhierarchie sowie alle
-  Tag-Slots. Jede Top-Level-Struktur (z. B. „Konzerte“, „Bestellungen“, „Reisen“, „Projekte“) kann eigene Unterordner und
-  kontextabhängige Tag-Leitfäden enthalten. Vorschläge des LLM orientieren sich strikt an dieser Konfiguration.
-- Über den Abschnitt `tag_slots` legst du die benannten Slots samt erlaubter Optionen fest. Die Reihenfolge der Einträge
+- `backend/llm_config.json` bündelt sowohl den Ordnerkatalog als auch die Tag-Slots. Die verschachtelte Struktur
+  erlaubt beliebige Unterebenen (z. B. `Bestellungen/Onlinehandel/Versand`).
+- Über `tag_slots` legst du benannte Slots samt erlaubter Optionen und Aliase fest. Die Reihenfolge der Einträge
   entspricht der Darstellung im Frontend. Zusätzliche Kontext-Tags werden pro Top-Level über `tag_guidelines`
-  beschrieben (z. B. `datum-YYYY-MM-TT`, `band-NAME`).
-- Der `/api/config`-Endpunkt liefert die komplette Konfiguration (`folder_templates`, `tag_slots`, `context_tags`),
+  beschrieben (z. B. `veranstalter-NAME`, `transport-bahn`).
+- Der `/api/config`-Endpunkt liefert die komplette Katalogkonfiguration (`folder_templates`, `tag_slots`, `context_tags`),
   sodass auch externe Tools auf die Vorgaben zugreifen können. Änderungen an `llm_config.json` werden beim nächsten Request
   automatisch berücksichtigt.
 

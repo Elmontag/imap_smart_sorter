@@ -7,6 +7,8 @@ Diese Hinweise gelten rekursiv für das gesamte Repository.
 - Logik gehört in klar getrennte Module (`database`, `mailbox`, `imap_worker`). Teile keine Zuständigkeiten quer über Dateien.
 - Halte die README und diese Datei synchron mit funktionalen Änderungen.
 - Ergänze neue API-Endpunkte stets mit kurzen Erläuterungen in der README.
+- Die Katalogdatei [`backend/llm_config.json`](backend/llm_config.json) definiert Ordner- und Tag-Hierarchien. Halte sie bei Funktionsänderungen synchron mit README und achte darauf, dass alle Begriffe katalogisiert sind.
+- Die Kategorisierung nutzt `MIN_MATCH_SCORE` (Default 60). Prüfe bei Änderungen an der Klassifikation, dass Scores in diesem Rahmen korrekt verarbeitet werden.
 
 ## Python (Backend & Worker)
 - Verwende das Hilfs-Context-Manager `get_session()` für alle Datenbankzugriffe.
