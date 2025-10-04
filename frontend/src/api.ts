@@ -3,12 +3,16 @@ export type MoveMode = 'DRY_RUN' | 'CONFIRM' | 'AUTO'
 export interface SuggestionScore {
   name: string
   score: number
+  reason?: string
 }
 
 export interface NewFolderProposal {
   parent: string
   name: string
   reason: string
+  full_path?: string
+  status?: 'pending' | 'accepted' | 'rejected'
+  score_hint?: number
 }
 
 export interface Suggestion {
@@ -60,6 +64,16 @@ export interface RescanResponse {
   new_suggestions: number
 }
 
+export interface FolderSelectionResponse {
+  available: string[]
+  selected: string[]
+}
+
+export interface ProposalDecisionResponse {
+  ok: boolean
+  proposal: NewFolderProposal | null
+}
+
 export type StreamEvent =
   | { type: 'hello'; msg: string }
   | { type: 'pending_overview'; payload: PendingOverview }
@@ -92,7 +106,7 @@ export async function setMode(mode: MoveMode): Promise<ModeResponse> {
   return request('/api/mode', { method: 'POST', body: JSON.stringify({ mode }) })
 }
 
-export async function getFolders(): Promise<string[]> {
+export async function getFolders(): Promise<FolderSelectionResponse> {
   return request('/api/folders')
 }
 
@@ -123,6 +137,20 @@ export async function rescan(folders?: string[]): Promise<RescanResponse> {
   return request<RescanResponse>('/api/rescan', {
     method: 'POST',
     body: JSON.stringify({ folders }),
+  })
+}
+
+export async function updateFolderSelection(folders: string[]): Promise<FolderSelectionResponse> {
+  return request('/api/folders/selection', {
+    method: 'POST',
+    body: JSON.stringify({ folders }),
+  })
+}
+
+export async function decideProposal(message_uid: string, accept: boolean): Promise<ProposalDecisionResponse> {
+  return request('/api/proposal', {
+    method: 'POST',
+    body: JSON.stringify({ message_uid, accept }),
   })
 }
 

@@ -10,12 +10,14 @@ from typing import Sequence
 
 from classifier import (
     build_embedding_prompt,
+    classify_with_model,
     embed,
     propose_new_folder_if_needed,
     score_profiles,
 )
 from database import (
     get_mode,
+    get_monitored_folders,
     is_processed,
     list_folder_profiles,
     mark_failed,
@@ -50,7 +52,11 @@ async def process_loop() -> None:
 async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
     """Scan the configured folders once and create suggestions for unseen mails."""
 
-    target_folders: Sequence[str] = [str(folder) for folder in folders] if folders else [S.IMAP_INBOX]
+    if folders is not None:
+        target_folders: Sequence[str] = [str(folder) for folder in folders if str(folder).strip()]
+    else:
+        configured = get_monitored_folders()
+        target_folders = configured or [S.IMAP_INBOX]
     messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
     processed = 0
     for folder, payloads in messages.items():
@@ -81,9 +87,17 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
     ]
 
     embedding = await embed(prompt)
-    ranked = score_profiles(embedding, profiles) if embedding else []
-    top_score = ranked[0][1] if ranked else 0.0
-    proposal = await propose_new_folder_if_needed(top_score, parent_hint=src_folder)
+    ranked_pairs = score_profiles(embedding, profiles) if embedding else []
+    refined_ranked, proposal = await classify_with_model(
+        subject or "",
+        from_addr or "",
+        text,
+        ranked_pairs,
+        parent_hint=src_folder,
+    )
+    top_score = ranked_pairs[0][1] if ranked_pairs else 0.0
+    if not proposal:
+        proposal = await propose_new_folder_if_needed(top_score, parent_hint=src_folder)
 
     suggestion = Suggestion(
         message_uid=uid,
@@ -92,7 +106,7 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
         from_addr=from_addr,
         date=str(msg.get("Date")),
         thread_id=thread.get("message_id"),
-        ranked=[{"name": name, "score": score} for name, score in ranked],
+        ranked=refined_ranked,
         proposal=proposal,
         status="open",
         move_status="pending",
@@ -104,8 +118,8 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
         (top_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
     )
 
-    if should_auto_move and ranked:
-        target = ranked[0][0]
+    if should_auto_move and refined_ranked:
+        target = refined_ranked[0]["name"]
         try:
             move_message(uid, target, src_folder=src_folder)
             mark_moved(uid)

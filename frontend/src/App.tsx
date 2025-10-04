@@ -6,9 +6,11 @@ import {
   getMode,
   rescan,
   setMode,
+  updateFolderSelection,
 } from './api'
 import SuggestionCard from './components/SuggestionCard'
 import PendingOverviewPanel from './components/PendingOverviewPanel'
+import FolderSelectionPanel from './components/FolderSelectionPanel'
 import { useSuggestions } from './store/useSuggestions'
 import { usePendingOverview } from './store/usePendingOverview'
 
@@ -21,20 +23,17 @@ interface StatusMessage {
   message: string
 }
 
-const formatFolderList = (folders: string[]) => {
-  if (!folders.length) {
-    return 'Keine Ordner gefunden (IMAP-Verbindung prüfen).'
-  }
-  return folders.join(' · ')
-}
-
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
 export default function App(): JSX.Element {
   const { data: suggestions, loading, error, refresh } = useSuggestions()
   const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
-  const [folders, setFolders] = useState<string[]>([])
+  const [availableFolders, setAvailableFolders] = useState<string[]>([])
+  const [selectedFolders, setSelectedFolders] = useState<string[]>([])
+  const [folderDraft, setFolderDraft] = useState<string[]>([])
+  const [foldersLoading, setFoldersLoading] = useState(true)
+  const [savingFolders, setSavingFolders] = useState(false)
   const [status, setStatus] = useState<StatusMessage | null>(null)
   const [rescanning, setRescanning] = useState(false)
 
@@ -48,11 +47,16 @@ export default function App(): JSX.Element {
   }, [])
 
   const loadFolders = useCallback(async () => {
+    setFoldersLoading(true)
     try {
       const result = await getFolders()
-      setFolders(result)
+      setAvailableFolders([...result.available])
+      setSelectedFolders([...result.selected])
+      setFolderDraft([...result.selected])
     } catch (err) {
       setStatus({ kind: 'error', message: `Ordnerliste konnte nicht geladen werden: ${toMessage(err)}` })
+    } finally {
+      setFoldersLoading(false)
     }
   }, [])
 
@@ -74,7 +78,8 @@ export default function App(): JSX.Element {
   const handleRescan = async () => {
     setRescanning(true)
     try {
-      const result = await rescan()
+      const scanFolders = selectedFolders.length ? selectedFolders : undefined
+      const result = await rescan(scanFolders)
       setStatus({
         kind: 'info',
         message: `Scan abgeschlossen: ${result.new_suggestions} neue Vorschläge.`,
@@ -88,6 +93,21 @@ export default function App(): JSX.Element {
   }
 
   const dismissStatus = useCallback(() => setStatus(null), [])
+
+  const handleFolderSave = useCallback(async () => {
+    setSavingFolders(true)
+    try {
+      const response = await updateFolderSelection(folderDraft)
+      setAvailableFolders([...response.available])
+      setSelectedFolders([...response.selected])
+      setFolderDraft([...response.selected])
+      setStatus({ kind: 'success', message: 'Ordnerauswahl gespeichert.' })
+    } catch (err) {
+      setStatus({ kind: 'error', message: `Ordnerauswahl konnte nicht gespeichert werden: ${toMessage(err)}` })
+    } finally {
+      setSavingFolders(false)
+    }
+  }, [folderDraft])
 
   const headline = useMemo(() => {
     if (loading) return 'Lade Vorschläge…'
@@ -132,10 +152,15 @@ export default function App(): JSX.Element {
 
       <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
 
-      <section className="folders">
-        <h2>Überwachte Ordner</h2>
-        <p>{formatFolderList(folders)}</p>
-      </section>
+      <FolderSelectionPanel
+        available={availableFolders}
+        draft={folderDraft}
+        onDraftChange={setFolderDraft}
+        onSave={handleFolderSave}
+        onReload={loadFolders}
+        loading={foldersLoading}
+        saving={savingFolders}
+      />
 
       <section className="suggestions">
         <div className="suggestions-header">
