@@ -34,6 +34,7 @@ class PendingOverview:
     pending_total: int
     pending: List[PendingMail]
     list_limit: int
+    limit_active: bool
 
     @property
     def pending_count(self) -> int:
@@ -64,7 +65,9 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
 
     pending_entries: List[PendingMail] = []
     total_messages = 0
-    list_limit = max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0)
+    raw_limit = int(getattr(S, "PENDING_LIST_LIMIT", 0) or 0)
+    list_limit = max(raw_limit, 0)
+    limit_active = list_limit > 0
 
     for folder, messages in raw_payloads.items():
         total_messages += len(messages)
@@ -92,10 +95,10 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
     pending_total = len(pending_entries)
     processed_count = max(total_messages - pending_total, 0)
 
-    if list_limit == 0:
-        visible_entries: List[PendingMail] = []
-    else:
+    if limit_active:
         visible_entries = pending_entries[:list_limit]
+    else:
+        visible_entries = pending_entries
 
     return PendingOverview(
         total_messages=total_messages,
@@ -103,4 +106,5 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
         pending_total=pending_total,
         pending=visible_entries,
         list_limit=list_limit,
+        limit_active=limit_active,
     )

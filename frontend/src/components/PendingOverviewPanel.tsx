@@ -18,8 +18,7 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
   const totalMessages = overview?.total_messages ?? 0
   const processedCount = overview?.processed_count ?? 0
   const ratioText = useMemo(() => formatPercent(overview?.pending_ratio ?? 0), [overview?.pending_ratio])
-  const listLimit = overview?.list_limit ?? overview?.pending?.length ?? 0
-  const listDisabled = listLimit === 0
+  const limitActive = overview?.limit_active ?? Boolean(overview?.list_limit && overview.list_limit > 0)
   const entries = overview?.pending ?? []
   const itemsPerPage = 10
   const [page, setPage] = useState(1)
@@ -27,7 +26,7 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
 
   useEffect(() => {
     setPage(1)
-  }, [entries.length, listDisabled])
+  }, [entries.length, limitActive])
 
   useEffect(() => {
     if (page > totalPages) {
@@ -37,7 +36,7 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
 
   const startIndex = (page - 1) * itemsPerPage
   const pageItems = entries.slice(startIndex, startIndex + itemsPerPage)
-  const truncated = !listDisabled && (overview?.displayed_pending ?? entries.length) < pendingCount
+  const truncated = limitActive && (overview?.displayed_pending ?? entries.length) < pendingCount
 
   return (
     <section className="pending-overview">
@@ -66,11 +65,15 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
 
       {loading && <div className="pending-placeholder">Live-Status wird geladen…</div>}
 
-      {!loading && !pendingCount && !error && !listDisabled && (
+      {!loading && !pendingCount && !error && (
         <div className="pending-placeholder">Alle aktuellen Nachrichten wurden bereits analysiert.</div>
       )}
 
-      {!loading && pendingCount > 0 && !listDisabled && (
+      {!loading && pendingCount > 0 && entries.length === 0 && (
+        <div className="pending-placeholder">Keine Details verfügbar.</div>
+      )}
+
+      {!loading && pendingCount > 0 && entries.length > 0 && (
         <div className="pending-table-wrapper">
           {truncated && (
             <div className="pending-limit-info">

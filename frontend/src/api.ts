@@ -60,6 +60,22 @@ export interface PendingOverview {
   pending: PendingMail[]
   displayed_pending?: number
   list_limit?: number
+  limit_active?: boolean
+}
+
+export interface TagExample {
+  message_uid: string
+  subject: string
+  from_addr?: string | null
+  folder?: string | null
+  date?: string | null
+}
+
+export interface TagSuggestion {
+  tag: string
+  occurrences: number
+  last_seen?: string | null
+  examples: TagExample[]
 }
 
 export interface OllamaModelStatus {
@@ -209,6 +225,10 @@ export async function getSuggestions(scope: SuggestionScope = 'open'): Promise<S
 
 export async function getPendingOverview(): Promise<PendingOverview> {
   return request<PendingOverview>('/api/pending')
+}
+
+export async function getTagSuggestions(): Promise<TagSuggestion[]> {
+  return request<TagSuggestion[]>('/api/tags')
 }
 
 export async function getAppConfig(): Promise<AppConfig> {
