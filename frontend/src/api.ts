@@ -50,11 +50,31 @@ export interface PendingOverview {
   list_limit?: number
 }
 
+export interface OllamaModelStatus {
+  name: string
+  normalized_name: string
+  purpose: 'classifier' | 'embedding'
+  available: boolean
+  pulled: boolean
+  digest?: string | null
+  size?: number | null
+  message?: string | null
+}
+
+export interface OllamaStatus {
+  host: string
+  reachable: boolean
+  message?: string | null
+  last_checked?: string | null
+  models: OllamaModelStatus[]
+}
+
 export interface AppConfig {
   dev_mode: boolean
   pending_list_limit: number
   protected_tag: string | null
   processed_tag: string | null
+  ollama?: OllamaStatus | null
 }
 
 interface ModeResponse { mode: MoveMode }

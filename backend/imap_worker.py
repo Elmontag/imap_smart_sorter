@@ -29,6 +29,7 @@ from database import (
 from feedback import update_profiles_on_accept
 from mailbox import add_message_tag, fetch_recent_messages, move_message
 from models import Suggestion
+from ollama_service import ensure_ollama_ready
 from settings import S
 from utils import extract_text, subject_from, thread_headers
 
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 async def process_loop() -> None:
     """Continuously poll the mailbox and persist new suggestions."""
 
+    await ensure_ollama_ready()
     while True:
         try:
             count = await one_shot_scan()
