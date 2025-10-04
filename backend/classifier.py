@@ -46,15 +46,25 @@ def build_embedding_prompt(subject: str, sender: str, body: str) -> str:
 async def embed(prompt: str) -> List[float]:
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
-            f"{S.OLLAMA_HOST}/api/embeddings",
+            f"{S.OLLAMA_HOST}/api/embed",
             json={
                 "model": S.EMBED_MODEL,
-                "prompt": prompt[: S.EMBED_PROMPT_MAX_CHARS],
+                "input": [prompt[: S.EMBED_PROMPT_MAX_CHARS]],
             },
         )
         response.raise_for_status()
         data = response.json()
-        return data.get("embedding") or data.get("embeddings") or []
+        embedding = data.get("embedding")
+        if isinstance(embedding, list):
+            if embedding and isinstance(embedding[0], list):
+                return embedding[0]
+            return embedding
+        embeddings = data.get("embeddings")
+        if isinstance(embeddings, list) and embeddings:
+            first = embeddings[0]
+            if isinstance(first, list):
+                return first
+        return []
 
 
 def score_profiles(embedding: Sequence[float], profiles: Iterable[Dict[str, Any]]) -> List[Tuple[str, float]]:
