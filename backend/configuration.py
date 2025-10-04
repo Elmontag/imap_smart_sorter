@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
@@ -15,6 +15,7 @@ _CONFIG_PATH = Path(__file__).with_name("llm_config.json")
 class FolderChild:
     name: str
     description: str
+    children: List["FolderChild"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -59,16 +60,29 @@ def get_folder_templates() -> List[FolderTemplate]:
         description = str(entry.get("description") or "").strip()
         if not name:
             continue
-        children: List[FolderChild] = []
-        children_raw = entry.get("children")
-        if isinstance(children_raw, list):
-            for child in children_raw:
+        def _parse_children(payload: object) -> List[FolderChild]:
+            parsed: List[FolderChild] = []
+            if not isinstance(payload, list):
+                return parsed
+            for child in payload:
                 if not isinstance(child, dict):
                     continue
                 child_name = str(child.get("name") or "").strip()
                 child_desc = str(child.get("description") or "").strip()
-                if child_name:
-                    children.append(FolderChild(name=child_name, description=child_desc))
+                if not child_name:
+                    continue
+                nested_raw = child.get("children")
+                nested_children = _parse_children(nested_raw) if isinstance(nested_raw, list) else []
+                parsed.append(
+                    FolderChild(
+                        name=child_name,
+                        description=child_desc,
+                        children=nested_children,
+                    )
+                )
+            return parsed
+
+        children = _parse_children(entry.get("children"))
         tag_guidelines: List[ContextTagGuideline] = []
         guidelines_raw = entry.get("tag_guidelines")
         if isinstance(guidelines_raw, list):
@@ -126,11 +140,19 @@ def folder_templates_summary() -> str:
     if not templates:
         return "Keine Vorlagen definiert."
     lines: List[str] = []
+
+    def _render_children(children: Sequence[FolderChild], indent: str = "  ") -> List[str]:
+        rendered: List[str] = []
+        for child in children:
+            rendered.append(f"{indent}- {child.name}: {child.description or 'keine Beschreibung'}")
+            if child.children:
+                rendered.extend(_render_children(child.children, indent + "  "))
+        return rendered
+
     for template in templates:
-        child_names = ", ".join(child.name for child in template.children)
         lines.append(f"- {template.name}: {template.description or 'keine Beschreibung'}")
-        if child_names:
-            lines.append(f"  Unterordner: {child_names}")
+        if template.children:
+            lines.extend(_render_children(template.children))
         if template.tag_guidelines:
             tags = "; ".join(
                 f"{guideline.name} → {guideline.description}" for guideline in template.tag_guidelines
@@ -162,6 +184,26 @@ def context_tag_summary() -> str:
 
 def top_level_folder_names() -> List[str]:
     return [template.name for template in get_folder_templates()]
+
+
+def _iter_child_paths(prefix: str, children: Sequence[FolderChild]) -> Iterable[str]:
+    for child in children:
+        path = f"{prefix}/{child.name}" if prefix else child.name
+        yield path
+        if child.children:
+            yield from _iter_child_paths(path, child.children)
+
+
+def folder_catalog_paths(limit: int | None = None) -> List[str]:
+    paths: List[str] = []
+    for template in get_folder_templates():
+        paths.append(template.name)
+        paths.extend(_iter_child_paths(template.name, template.children))
+        if limit is not None and len(paths) >= limit:
+            break
+    if limit is not None:
+        return paths[:limit]
+    return paths
 
 
 def tag_slot_count() -> int:
@@ -226,3 +268,7 @@ def iter_slot_options(slots: Sequence[TagSlot]) -> Iterable[str]:
     for slot in slots:
         for option in slot.options:
             yield option
+
+
+def tag_slot_options_map() -> Dict[str, List[str]]:
+    return {slot.name: list(slot.options) for slot in get_tag_slots()}

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     MAX_SUGGESTIONS: int = 3
     MOVE_MODE: str = "CONFIRM"
     AUTO_THRESHOLD: float = 0.92
+    MIN_MATCH_SCORE: int = 60
     LOG_LEVEL: str = "INFO"
 
     IMAP_PROTECTED_TAG: str = ""

@@ -15,11 +15,14 @@ from configuration import (
     ensure_top_level_parent,
     find_top_level_for_label,
     folder_templates_summary,
+    folder_catalog_paths,
     get_context_tag_guidelines,
     get_tag_slots,
+    TagSlot,
     max_tag_total,
     slot_lookup_keys,
     tag_slots_summary,
+    tag_slot_options_map,
     top_level_folder_names,
 )
 from settings import S
@@ -105,6 +108,19 @@ def _format_ranked_for_prompt(ranked: List[Tuple[str, float]]) -> str:
     return "\n".join(rows)
 
 
+def _normalise_score_value(raw: Any) -> Tuple[float, float]:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    if value > 1.0:
+        rating = max(0.0, min(value, 100.0))
+        return rating / 100.0, rating
+    clamped = max(0.0, min(value, 1.0))
+    rating = clamped * 100.0
+    return clamped, rating
+
+
 def _summarize_hierarchy(folders: Sequence[str]) -> str:
     groups: Dict[str, List[str]] = defaultdict(list)
     for raw in folders:
@@ -146,6 +162,20 @@ def build_classification_prompt(
     tag_overview = tag_slots_summary()
     context_overview = context_tag_summary()
     top_levels = ", ".join(top_level_folder_names()) or "(keine Vorgaben)"
+    folder_catalog = folder_catalog_paths()
+    tag_catalog = tag_slot_options_map()
+    threshold = S.MIN_MATCH_SCORE
+
+    folder_catalog_lines = [f"- {path}" for path in folder_catalog[:80]]
+    if len(folder_catalog) > 80:
+        folder_catalog_lines.append("- … (weitere Pfade im Katalog verfügbar)")
+    folder_catalog_overview = "\n".join(folder_catalog_lines) or "- (leer)"
+
+    tag_catalog_lines: List[str] = []
+    for slot_name, options in tag_catalog.items():
+        rendered_options = ", ".join(options) if options else "(keine Optionen)"
+        tag_catalog_lines.append(f"- {slot_name}: {rendered_options}")
+    tag_catalog_overview = "\n".join(tag_catalog_lines) or "- (keine Tags definiert)"
 
     tag_slots = get_tag_slots()
     slot_schema_parts: List[str] = []
@@ -163,14 +193,14 @@ def build_classification_prompt(
     tag_schema = "{" + ", ".join(schema_parts) + "}"
 
     system_prompt = (
-        "Du bist ein Assistent, der eingehende E-Mails streng anhand einer vorgegebenen Ordnerhierarchie "
-        "einordnet. Nutze nur die konfigurierten Top-Level-Ordner und deren Unterstruktur. "
-        "Berechne die finale Zuordnung aus Scores, Inhalt und Vorgaben. Schlage nur dann einen neuen Unterordner vor, "
-        "wenn kein bestehender Pfad passt – der Vorschlag muss unter einem passenden Top-Level liegen. "
-        "Ermittele zusätzlich einen übergeordneten Themenbegriff und liefere strukturierte Tags. "
-        "Alle Tags bestehen aus exakt einem Wort (Bindestriche sind erlaubt) und folgen den konfigurierten Slots. "
-        "Antworte ausschließlich als gültiges JSON mit den Schlüsseln 'ranked', 'category', 'proposal' und 'tags'."
-    )
+        "Du bist ein Assistent, der eingehende E-Mails ausschließlich anhand eines festen Katalogs klassifiziert. "
+        "Ordner dürfen nur aus dem vorgegebenen Katalog stammen. Bewerte jede mögliche Zuordnung in Punkten (0 bis 100): "
+        "100 Punkte bedeuten perfekte Übereinstimmung, 0 Punkte passt gar nicht. "
+        "Nutze den Schwellwert von {threshold} Punkten: Liegt die beste Übereinstimmung darunter, gilt der Bereich als nicht zugeordnet. "
+        "Das gleiche Bewertungsprinzip gilt für alle Tags (Slots) – wähle exakt eine Option je Slot aus dem Katalog und vergebe eine Punktzahl. "
+        "Extras (Kontext-Tags) werden nur genannt, wenn sie eindeutig sind. Antworte ausschließlich als gültiges JSON mit den Schlüsseln "
+        "'ranked', 'category', 'proposal', 'tags' und optional 'extras'."
+    ).format(threshold=threshold)
 
     hint = S.EMBED_PROMPT_HINT.strip()
     if hint:
@@ -179,8 +209,8 @@ def build_classification_prompt(
     structure = _summarize_hierarchy(folders)
     origin = (parent_hint or "(kein Hinweis)").strip() or "(kein Hinweis)"
     schema_prefix = (
-        '{"ranked": [{"name": "Ordner", "confidence": 0.0-1.0, "reason": "Kurzbegründung"}],'
-        ' "category": {"label": "Überbegriff", "matched_folder": "Ordnerpfad oder null", "confidence": 0.0-1.0, "reason": "Warum"},'
+        '{"ranked": [{"name": "Pfad aus Ordnerkatalog", "score": 0-100, "reason": "Kurzbegründung"}],'
+        ' "category": {"label": "Top-Level oder '"'unmatched'"'", "matched_folder": "Pfad oder null", "score": 0-100, "reason": "Warum"},'
         ' "proposal": {"parent": "Top-Level", "name": "Neuer Unterordner", "reason": "Warum"} oder null,'
     )
     user_prompt = textwrap.dedent(
@@ -199,11 +229,17 @@ def build_classification_prompt(
         Vorgegebene Struktur:
         {templates_overview}
 
+        Ordnerkatalog (verwende exakt diese Pfade):
+        {folder_catalog_overview}
+
         Bekannte Ordnerstruktur (Gruppierung nach erster Ebene):
         {structure}
 
         Tag-Slots:
         {tag_overview}
+
+        Tag-Katalog (Optionen je Slot):
+        {tag_catalog_overview}
 
         Kontext-Tags:
         {context_overview}
@@ -234,10 +270,11 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
-    return [
-        {"name": name, "score": float(score)}
-        for name, score in ranked[: S.MAX_SUGGESTIONS]
-    ]
+    result: List[Dict[str, Any]] = []
+    for name, score in ranked[: S.MAX_SUGGESTIONS]:
+        normalised, rating = _normalise_score_value(score)
+        result.append({"name": name, "score": normalised, "rating": rating})
+    return result
 
 
 def _parse_ranked(payload: Any, fallback: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
@@ -246,17 +283,19 @@ def _parse_ranked(payload: Any, fallback: List[Tuple[str, float]]) -> List[Dict[
         for entry in payload:
             if not isinstance(entry, dict):
                 continue
-            name = entry.get("name")
+            name = entry.get("name") or entry.get("path")
             if not isinstance(name, str) or not name.strip():
                 continue
-            confidence_raw = entry.get("confidence", entry.get("score", 0.0))
-            try:
-                confidence = float(confidence_raw)
-            except (TypeError, ValueError):
-                confidence = 0.0
+            confidence_raw = (
+                entry.get("score")
+                if "score" in entry
+                else entry.get("confidence", entry.get("rating", 0.0))
+            )
+            normalised, rating = _normalise_score_value(confidence_raw)
             item: Dict[str, Any] = {
                 "name": name.strip(),
-                "score": max(0.0, min(confidence, 1.0)),
+                "score": normalised,
+                "rating": rating,
             }
             reason = entry.get("reason")
             if isinstance(reason, str) and reason.strip():
@@ -275,11 +314,17 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
         matched = str(matched_raw).strip() if matched_raw else ""
         reason_raw = payload.get("reason")
         reason = str(reason_raw).strip() if isinstance(reason_raw, str) else ""
-        confidence_raw = payload.get("confidence") or payload.get("score")
-        try:
-            confidence = float(confidence_raw) if confidence_raw is not None else None
-        except (TypeError, ValueError):
-            confidence = None
+        confidence_raw = None
+        if "score" in payload:
+            confidence_raw = payload.get("score")
+        elif "confidence" in payload:
+            confidence_raw = payload.get("confidence")
+        elif "rating" in payload:
+            confidence_raw = payload.get("rating")
+        confidence: float | None = None
+        rating: float | None = None
+        if confidence_raw is not None:
+            confidence, rating = _normalise_score_value(confidence_raw)
         result: Dict[str, Any] = {}
         if label:
             result["label"] = label
@@ -289,6 +334,8 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
             result["reason"] = reason
         if confidence is not None:
             result["confidence"] = max(0.0, min(confidence, 1.0))
+        if rating is not None:
+            result["rating"] = rating
         return result or None
     if isinstance(payload, str) and payload.strip():
         return {"label": payload.strip()}
@@ -307,57 +354,157 @@ def _normalise_tag_word(raw: Any) -> str | None:
     return cleaned[:32] or None
 
 
-def _parse_tags(payload: Any) -> List[str]:
+def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
     slots = get_tag_slots()
     lookup = slot_lookup_keys(slots)
     max_total = max_tag_total()
+    threshold = float(S.MIN_MATCH_SCORE or 0)
+
+    def _slot_slug(slot: Any) -> str:
+        base = ""
+        if isinstance(slot, TagSlot):
+            base = slot.aliases[0] if slot.aliases else slot.name
+        else:
+            base = str(slot or "")
+        slug = re.sub(r"[^0-9A-Za-z]+", "-", base.strip().lower())
+        return slug.strip("-") or "tag"
+
+    def _resolve_slot(key: str) -> TagSlot | None:
+        lowered = key.strip().lower()
+        for slot in slots:
+            candidates = [slot.name, *slot.aliases]
+            for candidate in candidates:
+                if candidate.strip().lower() == lowered:
+                    return slot
+        return None
+
+    def _resolve_option(slot: TagSlot, value: str) -> str | None:
+        if not value:
+            return None
+        candidate = value.strip()
+        if not candidate:
+            return None
+        option_lookup = {opt.lower(): opt for opt in slot.options}
+        lowered = candidate.lower()
+        if lowered in option_lookup:
+            return option_lookup[lowered]
+        normalised_candidate = (_normalise_tag_word(candidate) or "").lower()
+        if not normalised_candidate:
+            return None
+        for opt in slot.options:
+            if (_normalise_tag_word(opt) or "").lower() == normalised_candidate:
+                return opt
+        return None
+
+    def _extract_extras(value: Any) -> List[str]:
+        extras: List[str] = []
+        if isinstance(value, list):
+            for item in value:
+                word = _normalise_tag_word(item)
+                if word and word not in extras:
+                    extras.append(word)
+        elif isinstance(value, str):
+            word = _normalise_tag_word(value)
+            if word:
+                extras.append(word)
+        return extras
+
+    slot_candidates: List[Tuple[TagSlot | None, Any, Any]] = []
+    extras_candidate = extras_payload
 
     if isinstance(payload, dict):
         lower_map = {
             str(key).strip().lower(): value for key, value in payload.items()
             if isinstance(key, str)
         }
-        slot_values: List[str] = []
-        for keys in lookup:
-            value: Any | None = None
-            for key in keys:
-                if key in payload:
-                    value = payload[key]
+        for key, value in payload.items():
+            if not isinstance(key, str):
+                continue
+            lowered = key.strip().lower()
+            if lowered in {"extras", "kontext", "context", "additional", "more"}:
+                extras_candidate = value
+                continue
+            slot = _resolve_slot(key)
+            if not slot:
+                continue
+            if isinstance(value, dict):
+                label = value.get("value") or value.get("label") or value.get("name") or value.get("tag")
+                score = value.get("score")
+                if score is None:
+                    score = value.get("rating", value.get("confidence"))
+            else:
+                label = value
+                score = None
+            slot_candidates.append((slot, label, score))
+        if not extras_candidate:
+            for key in ("extras", "kontext", "context", "additional", "more"):
+                if key in lower_map:
+                    extras_candidate = lower_map[key]
                     break
-                lowered = key.lower()
-                if lowered in lower_map:
-                    value = lower_map[lowered]
-                    break
-            slot_values.append(_normalise_tag_word(value) or "")
+    elif isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                slot_key = item.get("slot") or item.get("name") or item.get("key")
+                slot = _resolve_slot(str(slot_key)) if slot_key else None
+                if not slot:
+                    continue
+                label = item.get("value") or item.get("label") or item.get("tag")
+                score = item.get("score")
+                if score is None:
+                    score = item.get("rating", item.get("confidence"))
+                slot_candidates.append((slot, label, score))
+            else:
+                # Fallback: treat as loose tag without slot
+                slot_candidates.append((None, item, None))
+    elif isinstance(payload, str):
+        slot_candidates.append((None, payload, None))
 
-        extras_candidates: Any = None
-        for key in ("extras", "kontext", "context", "additional", "more"):
-            if key in payload:
-                extras_candidates = payload[key]
-                break
-            lowered = key.lower()
-            if lowered in lower_map:
-                extras_candidates = lower_map[lowered]
-                break
+    assignments: Dict[str, Tuple[str, float]] = {}
+    extras: List[str] = []
 
-        extras: List[str] = []
-        if isinstance(extras_candidates, list):
-            for item in extras_candidates:
-                word = _normalise_tag_word(item)
-                if word and word not in extras:
-                    extras.append(word)
-                    if len(extras) + len(slot_values) >= max_total:
-                        break
-        elif isinstance(extras_candidates, str):
-            word = _normalise_tag_word(extras_candidates)
-            if word:
-                extras.append(word)
+    for slot, label, score in slot_candidates:
+        value_word = _normalise_tag_word(label)
+        if slot is None:
+            if value_word and value_word not in extras:
+                extras.append(value_word)
+            continue
+        option = _resolve_option(slot, label if isinstance(label, str) else "") if isinstance(label, str) else None
+        if not option:
+            continue
+        _, rating = _normalise_score_value(score if score is not None else threshold)
+        if rating < threshold:
+            continue
+        slot_slug = _slot_slug(slot)
+        value_slug = (_normalise_tag_word(option) or option).lower()
+        tag_value = f"{slot_slug}-{value_slug}".strip("-")
+        if not tag_value:
+            continue
+        previous = assignments.get(slot.name)
+        if previous and previous[1] >= rating:
+            continue
+        assignments[slot.name] = (tag_value, rating)
 
-        combined = slot_values + extras
-        if len(combined) < len(lookup):
-            combined.extend([""] * (len(lookup) - len(combined)))
-        return combined[:max_total]
+    if extras_candidate is not None:
+        extras.extend(_extract_extras(extras_candidate))
 
+    ordered_tags: List[str] = []
+    for slot in slots:
+        assigned = assignments.get(slot.name)
+        if assigned:
+            tag_value = assigned[0]
+            if tag_value and tag_value not in ordered_tags:
+                ordered_tags.append(tag_value)
+
+    for extra in extras:
+        if extra and extra not in ordered_tags:
+            ordered_tags.append(extra)
+        if len(ordered_tags) >= max_total:
+            break
+
+    if ordered_tags:
+        return ordered_tags[:max_total]
+
+    # Fallback to the previous behaviour to remain resilient against unexpected payloads.
     normalised: List[str] = []
     if isinstance(payload, list):
         for item in payload:
@@ -371,6 +518,11 @@ def _parse_tags(payload: Any) -> List[str]:
         word = _normalise_tag_word(payload)
         if word:
             normalised.append(word)
+
+    if extras_candidate:
+        for word in _extract_extras(extras_candidate):
+            if word and word not in normalised:
+                normalised.append(word)
 
     slot_count = len(lookup)
     if len(normalised) < slot_count:
@@ -433,11 +585,37 @@ async def classify_with_model(
         return _fallback_ranked(ranked), None, None, []
 
     refined_ranked = _parse_ranked(parsed.get("ranked"), ranked)
-    proposal = _normalise_proposal(
-        parsed.get("proposal"), parent_hint, ranked[0][1] if ranked else 0.0
-    )
     category = _parse_category(parsed.get("category"))
-    tags = _parse_tags(parsed.get("tags"))
+    extras_payload = parsed.get("extras")
+    tags = _parse_tags(parsed.get("tags"), extras_payload)
+
+    best_rating = 0.0
+    for item in refined_ranked:
+        rating_value = item.get("rating")
+        if rating_value is None:
+            rating_value = float(item.get("score", 0.0)) * 100.0
+        try:
+            rating = float(rating_value)
+        except (TypeError, ValueError):
+            rating = 0.0
+        best_rating = max(best_rating, rating)
+
+    if best_rating < float(S.MIN_MATCH_SCORE or 0):
+        refined_ranked = []
+        if category is None:
+            category = {}
+        category.setdefault("label", "unmatched")
+        category["matched_folder"] = None
+        category["confidence"] = 0.0
+        category["rating"] = best_rating
+        category["status"] = "unmatched"
+        tags = []
+        proposal = None
+    else:
+        proposal = _normalise_proposal(
+            parsed.get("proposal"), parent_hint, best_rating / 100 if best_rating else 0.0
+        )
+
     return refined_ranked, proposal, category, tags
 
 
