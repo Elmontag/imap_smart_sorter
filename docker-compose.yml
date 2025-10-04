@@ -1,0 +1,49 @@
+
+version: "3.9"
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: imap_smart_sorter_v2-ollama-1
+    ports: ["11434:11434"]
+    volumes: [ "ollama:/root/.ollama" ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  backend:
+    build: ./backend
+    container_name: imap_smart_sorter_v2-backend-1
+    env_file: .env
+    depends_on:
+      - ollama
+    ports: ["8000:8000"]
+    volumes:
+      - ./backend:/app
+      - data:/app/data
+
+  worker:
+    build: ./backend
+    container_name: imap_smart_sorter_v2-worker-1
+    env_file: .env
+    depends_on:
+      - backend
+    command: ["python", "-u", "imap_worker.py"]
+    volumes:
+      - ./backend:/app
+      - data:/app/data
+
+  frontend:
+    build: ./frontend
+    container_name: imap_smart_sorter_v2-frontend-1
+    depends_on:
+      - backend
+    ports: ["5173:5173"]
+    volumes:
+      - ./frontend:/usr/src/app
+      - /usr/src/app/node_modules
+
+volumes:
+  data:
+  ollama:
