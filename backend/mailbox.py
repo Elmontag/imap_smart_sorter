@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterator
+from typing import Dict, Iterable, Iterator
 
 from imapclient import IMAPClient
 
@@ -47,10 +47,18 @@ def _since_date() -> date:
     return (datetime.utcnow() - timedelta(days=days)).date()
 
 
-def search_seen_recent(server: IMAPClient, folder: str) -> list[int]:
+def _search_criteria() -> list[object]:
+    criteria: list[object] = ["SINCE", _since_date()]
+    if getattr(S, "PROCESS_ONLY_SEEN", True):
+        criteria.insert(0, "SEEN")
+    else:
+        criteria.insert(0, "UNSEEN")
+    return criteria
+
+
+def search_recent(server: IMAPClient, folder: str) -> list[int]:
     server.select_folder(folder, readonly=True)
-    criteria = ["SEEN", "SINCE", _since_date()]
-    return server.search(criteria)
+    return server.search(_search_criteria())
 
 
 def fetch_messages(server: IMAPClient, uids, batch_size: int = 100):
@@ -76,7 +84,7 @@ def fetch_recent_messages(folders: Iterable[str]) -> Dict[str, Dict[int, bytes]]
         with _connect() as server:
             for folder in folders:
                 try:
-                    uids = search_seen_recent(server, folder)
+                    uids = search_recent(server, folder)
                     data = fetch_messages(server, uids)
                 except Exception as exc:  # pragma: no cover - defensive network handling
                     logger.warning("Failed to fetch messages for %s: %s", folder, exc)

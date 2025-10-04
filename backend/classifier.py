@@ -16,11 +16,36 @@ def _cosine(a: Sequence[float], b: Sequence[float] | None) -> float:
     return num / den if den else 0.0
 
 
-async def embed(text: str) -> List[float]:
+def build_embedding_prompt(subject: str, sender: str, body: str) -> str:
+    """Create a consistent prompt for Ollama embeddings."""
+
+    header_lines = [
+        "Du bist ein Assistent, der E-Mails für eine Ordnerklassifikation analysiert.",
+        "Erstelle eine aussagekräftige semantische Repräsentation auf Basis von Betreff, Absender und Kerninhalten.",
+    ]
+    hint = S.EMBED_PROMPT_HINT.strip()
+    if hint:
+        header_lines.append(f"Zusätzliche Vorgabe: {hint}")
+
+    email_lines = [
+        f"Betreff: {subject or '-'}",
+        f"Von: {sender or '-'}",
+        "Inhalt:",
+        body.strip() or "(kein Text vorhanden)",
+    ]
+
+    prompt = "\n".join([*header_lines, "", *email_lines])
+    return prompt
+
+
+async def embed(prompt: str) -> List[float]:
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{S.OLLAMA_HOST}/api/embeddings",
-            json={"model": S.EMBED_MODEL, "prompt": text[:8000]},
+            json={
+                "model": S.EMBED_MODEL,
+                "prompt": prompt[: S.EMBED_PROMPT_MAX_CHARS],
+            },
         )
         response.raise_for_status()
         data = response.json()
@@ -34,7 +59,8 @@ def score_profiles(embedding: Sequence[float], profiles: Iterable[Dict[str, Any]
 
 
 async def rank_with_profiles(text: str, profiles: List[Dict[str, Any]]) -> List[Tuple[str, float]]:
-    embedding = await embed(text)
+    prompt = build_embedding_prompt("", "", text)
+    embedding = await embed(prompt)
     return score_profiles(embedding, profiles) if embedding else []
 
 

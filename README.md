@@ -22,12 +22,30 @@ IMAP_HOST=imap.example.org
 IMAP_USERNAME=demo@example.org
 IMAP_PASSWORD=super-secret
 IMAP_INBOX=INBOX
+PROCESS_ONLY_SEEN=false
 OLLAMA_HOST=http://ollama:11434
 DATABASE_URL=sqlite:///data/app.db
 MOVE_MODE=CONFIRM
 SINCE_DAYS=14
 LOG_LEVEL=INFO
+EMBED_PROMPT_HINT=E-Mails zu Rechnungen bitte besonders präzise clustern
+EMBED_PROMPT_MAX_CHARS=6000
 ```
+
+### Hinweise zur IMAP-Suche
+
+- Wenn Ordner aufgelistet werden, aber keine Nachrichten erscheinen, prüfe `PROCESS_ONLY_SEEN`.
+  Der Wert `false` verarbeitet ungelesene Nachrichten (`UNSEEN`); `true` beschränkt die Suche
+  auf bereits gelesene Mails (`SEEN`).
+- Passe `SINCE_DAYS` an, falls dein IMAP-Server ältere Nachrichten nicht als „aktuell“ meldet.
+
+### OLLAMA-Prompt optimieren
+
+- Der Worker erstellt den Prompt für Embeddings jetzt aus Betreff, Absender und Fließtext.
+- Über `EMBED_PROMPT_HINT` kannst du zusätzliche Instruktionen (z. B. Projektnamen, Prioritäten)
+  setzen, ohne den Code anzupassen.
+- `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
+  zu kontrollieren.
 
 ## Lokale Entwicklung
 
