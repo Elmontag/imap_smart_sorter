@@ -8,6 +8,8 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
   Sie erlaubt jetzt auch das Speichern individueller Ordnerauswahlen sowie das direkte Bestätigen oder Ablehnen von KI-Ordner-Vorschlägen.
   Der Kopfbereich zeigt den verbundenen Ollama-Host samt der verwendeten Modelle an und der Vorschlagsbereich bietet Kennzahlen sowie den Zugriff auf bereits bearbeitete Mails.
 
+Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
+
 ## Schnellstart mit Docker Compose
 
 1. Erstelle eine `.env` im Projektwurzelverzeichnis (Beispiel unten).
@@ -35,6 +37,7 @@ EMBED_PROMPT_HINT=E-Mails zu Rechnungen bitte besonders präzise clustern
 EMBED_PROMPT_MAX_CHARS=6000
 IMAP_PROTECTED_TAG=SmartSorter/Protected
 IMAP_PROCESSED_TAG=SmartSorter/Done
+IMAP_AI_TAG_PREFIX=SmartSorter
 PENDING_LIST_LIMIT=25
 DEV_MODE=false
 ```
@@ -61,6 +64,15 @@ DEV_MODE=false
   auf einen nicht erreichbaren Ollama-Host hin. Stelle sicher, dass `OLLAMA_HOST` auf `http://ollama:11434`
   zeigt, wenn alle Dienste via Docker Compose laufen. Bei lokal gestarteten Komponenten außerhalb
   von Docker muss der Wert auf `http://localhost:11434` oder die entsprechende IP des Hosts gesetzt werden.
+
+### Automatische Kategorien & Tags
+
+- Die KI bewertet jede Mail ganzheitlich und bestimmt einen Überbegriff, der mit bestehenden Ordnerhierarchien
+  abgeglichen wird. Nur wenn keine vorhandene Ebene überzeugt, wird ein neuer Unterordner vorgeschlagen.
+- Bis zu drei kontextbezogene Tags werden pro Mail vergeben. Die Tags landen als Metadaten am IMAP-Objekt
+  (Prefix konfigurierbar via `IMAP_AI_TAG_PREFIX`) und bleiben von Move-Entscheidungen unabhängig.
+- Tagging und Ordnerentscheidungen sind getrennte Arbeitsschritte: Tags werden automatisch vergeben,
+  Ordner-Vorschläge können später bestätigt, korrigiert oder verworfen werden.
 
 ### Schutz- und Monitoring-Einstellungen
 

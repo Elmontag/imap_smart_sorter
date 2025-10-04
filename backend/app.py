@@ -111,6 +111,7 @@ class ConfigResponse(BaseModel):
     pending_list_limit: int
     protected_tag: str | None = None
     processed_tag: str | None = None
+    ai_tag_prefix: str | None = None
     ollama: OllamaStatusResponse | None = None
 
 
@@ -217,6 +218,7 @@ async def api_config() -> ConfigResponse:
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
         protected_tag=S.IMAP_PROTECTED_TAG or None,
         processed_tag=S.IMAP_PROCESSED_TAG or None,
+        ai_tag_prefix=S.IMAP_AI_TAG_PREFIX or None,
         ollama=OllamaStatusResponse.model_validate(status_as_dict(status)),
     )
 

@@ -20,6 +20,8 @@ class Suggestion(SQLModel, table=True):
     thread_id: Optional[str] = None
     ranked: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(SAJSON))
     proposal: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(SAJSON))
+    category: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(SAJSON))
+    tags: Optional[List[str]] = Field(default=None, sa_column=Column(SAJSON))
     status: str = "open"
     decision: Optional[str] = None
     decided_at: Optional[datetime] = None
