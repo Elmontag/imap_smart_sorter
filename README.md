@@ -7,6 +7,7 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
   Sie erlaubt jetzt auch das Speichern individueller Ordnerauswahlen sowie das direkte Bestätigen oder Ablehnen von KI-Ordner-Vorschlägen.
   Der Kopfbereich zeigt den verbundenen Ollama-Host samt der verwendeten Modelle an und der Vorschlagsbereich bietet Kennzahlen sowie den Zugriff auf bereits bearbeitete Mails.
+  Die Ordner-Sidebar visualisiert vorhandene Hierarchien inklusive Unterordnern, sodass Entscheidungen direkt mit der realen Struktur abgeglichen werden können.
 
 Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
 
@@ -69,8 +70,9 @@ DEV_MODE=false
 
 - Die KI bewertet jede Mail ganzheitlich und bestimmt einen Überbegriff, der mit bestehenden Ordnerhierarchien
   abgeglichen wird. Nur wenn keine vorhandene Ebene überzeugt, wird ein neuer Unterordner vorgeschlagen.
-- Bis zu drei kontextbezogene Tags werden pro Mail vergeben. Die Tags landen als Metadaten am IMAP-Objekt
-  (Prefix konfigurierbar via `IMAP_AI_TAG_PREFIX`) und bleiben von Move-Entscheidungen unabhängig.
+- Bis zu drei kontextbezogene Tags werden pro Mail vergeben. Die Tags decken in dieser Reihenfolge die Dimensionen
+  **Komplexität**, **Priorität** und **Handlungsauftrag** ab, jeweils als verdichtetes Ein-Wort-Signal. Sie landen als
+  Metadaten am IMAP-Objekt (Prefix konfigurierbar via `IMAP_AI_TAG_PREFIX`) und bleiben von Move-Entscheidungen unabhängig.
 - Tagging und Ordnerentscheidungen sind getrennte Arbeitsschritte: Tags werden automatisch vergeben,
   Ordner-Vorschläge können später bestätigt, korrigiert oder verworfen werden.
 

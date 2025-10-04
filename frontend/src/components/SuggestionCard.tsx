@@ -14,6 +14,8 @@ const toMessage = (err: unknown) => (err instanceof Error ? err.message : String
 
 const formatScore = (value: number) => value.toFixed(2)
 
+const TAG_CATEGORIES = ['Komplexität', 'Priorität', 'Handlungsauftrag'] as const
+
 const fallbackTarget = (suggestion: Suggestion) =>
   suggestion.proposal?.full_path ??
   suggestion.category?.matched_folder ??
@@ -91,7 +93,14 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
   const categoryConfidence =
     typeof category?.confidence === 'number' && !Number.isNaN(category.confidence) ? category.confidence : null
   const categoryReason = category?.reason ?? null
-  const tags = suggestion.tags ?? []
+  const hasTagField = Object.prototype.hasOwnProperty.call(suggestion, 'tags')
+  const rawTags = Array.isArray(suggestion.tags) ? suggestion.tags : []
+  const tagCategories = TAG_CATEGORIES.map((label, index) => {
+    const raw = rawTags[index]
+    const value = typeof raw === 'string' ? raw.trim() : ''
+    return { label, value: value || null }
+  })
+  const hasAnyTagValues = tagCategories.some(item => item.value)
 
   const handleSimulate = async () => {
     if (!target) {
@@ -206,13 +215,15 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
         </div>
       )}
 
-      {tags.length > 0 && (
-        <div className="tag-list" aria-label="Erkannte Tags">
-          {tags.map(tag => (
-            <span key={tag} className="tag-badge">
-              {tag}
+      {hasTagField && (
+        <div className="tag-list" aria-label="Erkannte Tag-Kategorien">
+          {tagCategories.map(item => (
+            <span key={item.label} className={`tag-badge${item.value ? '' : ' empty'}`}>
+              <span className="tag-label">{item.label}</span>
+              <strong>{item.value ?? '–'}</strong>
             </span>
           ))}
+          {!hasAnyTagValues && <span className="tag-hint">Noch keine konkreten Tags ermittelt.</span>}
         </div>
       )}
 
