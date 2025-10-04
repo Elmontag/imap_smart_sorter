@@ -135,7 +135,8 @@ button.link {
 }
 
 .folders,
-.suggestions {
+.suggestions,
+.pending-overview {
   background: rgba(255, 255, 255, 0.8);
   border-radius: 20px;
   padding: 20px 24px;
@@ -143,7 +144,8 @@ button.link {
 }
 
 .folders h2,
-.suggestions h2 {
+.suggestions h2,
+.pending-overview h2 {
   margin-top: 0;
 }
 
@@ -151,6 +153,113 @@ button.link {
   padding: 24px;
   text-align: center;
   color: #52606d;
+}
+
+.pending-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pending-subline {
+  margin: 4px 0 0;
+  color: #52606d;
+  font-size: 14px;
+}
+
+.pending-metrics {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.pending-metric {
+  background: #eef2ff;
+  border-radius: 16px;
+  padding: 12px 16px;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pending-metric .label {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: #4f46e5;
+  font-weight: 600;
+}
+
+.pending-metric strong {
+  font-size: 24px;
+  color: #111827;
+}
+
+.pending-metric .muted {
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.pending-placeholder {
+  padding: 18px;
+  text-align: center;
+  background: #f8fafc;
+  border-radius: 14px;
+  color: #52606d;
+}
+
+.pending-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pending-item {
+  background: white;
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pending-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.pending-subject {
+  font-weight: 600;
+  color: #111827;
+}
+
+.pending-folder {
+  font-size: 12px;
+  background: #e0e7ff;
+  color: #3730a3;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.pending-item-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.pending-item-meta .date {
+  font-style: italic;
 }
 
 .suggestions-header {
@@ -289,5 +398,14 @@ code {
   button.primary,
   button.ghost {
     width: 100%;
+  }
+
+  .pending-metrics {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .pending-header {
+    flex-direction: column;
   }
 }

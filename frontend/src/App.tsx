@@ -8,7 +8,9 @@ import {
   setMode,
 } from './api'
 import SuggestionCard from './components/SuggestionCard'
+import PendingOverviewPanel from './components/PendingOverviewPanel'
 import { useSuggestions } from './store/useSuggestions'
+import { usePendingOverview } from './store/usePendingOverview'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 
@@ -30,6 +32,7 @@ const toMessage = (err: unknown) => (err instanceof Error ? err.message : String
 
 export default function App(): JSX.Element {
   const { data: suggestions, loading, error, refresh } = useSuggestions()
+  const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
   const [folders, setFolders] = useState<string[]>([])
   const [status, setStatus] = useState<StatusMessage | null>(null)
@@ -126,6 +129,8 @@ export default function App(): JSX.Element {
       )}
 
       {error && <div className="status-banner error">{error}</div>}
+
+      <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
 
       <section className="folders">
         <h2>Überwachte Ordner</h2>

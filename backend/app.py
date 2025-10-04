@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List
 
 from fastapi import Body, FastAPI, HTTPException, WebSocket
+from fastapi import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -24,6 +28,7 @@ from database import (
 from imap_worker import one_shot_scan
 from mailbox import folder_exists, list_folders, move_message
 from models import Suggestion
+from pending import PendingMail, PendingOverview, load_pending_overview
 from settings import S
 
 
@@ -59,10 +64,48 @@ class SuggestionsResponse(BaseModel):
     suggestions: List[Suggestion]
 
 
+class PendingMailResponse(BaseModel):
+    message_uid: str
+    folder: str
+    subject: str
+    from_addr: str | None = None
+    date: str | None = None
+
+    @classmethod
+    def from_domain(cls, item: PendingMail) -> "PendingMailResponse":
+        return cls(
+            message_uid=item.message_uid,
+            folder=item.folder,
+            subject=item.subject,
+            from_addr=item.from_addr,
+            date=item.date,
+        )
+
+
+class PendingOverviewResponse(BaseModel):
+    total_messages: int
+    processed_count: int
+    pending_count: int
+    pending_ratio: float
+    pending: List[PendingMailResponse]
+
+    @classmethod
+    def from_domain(cls, overview: PendingOverview) -> "PendingOverviewResponse":
+        return cls(
+            total_messages=overview.total_messages,
+            processed_count=overview.processed_count,
+            pending_count=overview.pending_count,
+            pending_ratio=overview.pending_ratio,
+            pending=[PendingMailResponse.from_domain(item) for item in overview.pending],
+        )
+
+
 app = FastAPI(title="IMAP Smart Sorter")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+logger = logging.getLogger(__name__)
 
 
 @app.on_event("startup")
@@ -102,6 +145,16 @@ def api_folders() -> List[str]:
 @app.get("/api/suggestions", response_model=SuggestionsResponse)
 def api_suggestions() -> SuggestionsResponse:
     return SuggestionsResponse(suggestions=list_open_suggestions())
+
+
+async def _pending_overview() -> PendingOverviewResponse:
+    overview = await load_pending_overview()
+    return PendingOverviewResponse.from_domain(overview)
+
+
+@app.get("/api/pending", response_model=PendingOverviewResponse)
+async def api_pending() -> PendingOverviewResponse:
+    return await _pending_overview()
 
 
 def _ensure_suggestion(uid: str) -> Suggestion:
@@ -161,6 +214,18 @@ def api_move_bulk(payload: BulkMoveRequest) -> Dict[str, List[Dict[str, Any]]]:
 async def ws_stream(ws: WebSocket) -> None:
     await ws.accept()
     await ws.send_json({"type": "hello", "msg": "connected"})
+
+    try:
+        while True:
+            try:
+                snapshot = await _pending_overview()
+                await ws.send_json({"type": "pending_overview", "payload": snapshot.dict()})
+            except Exception as exc:  # pragma: no cover - network/IMAP interaction
+                logger.warning("Failed to stream pending overview: %s", exc)
+                await ws.send_json({"type": "pending_error", "error": str(exc)})
+            await asyncio.sleep(5)
+    except WebSocketDisconnect:
+        logger.debug("WebSocket client disconnected")
 
 
 @app.post("/api/rescan")

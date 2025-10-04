@@ -101,6 +101,7 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `POST`  | `/api/mode`         | Setzt den Move-Modus – Body `{ "mode": "CONFIRM" }` |
 | `GET`   | `/api/folders`      | Listet verfügbare IMAP-Ordner |
 | `GET`   | `/api/suggestions`  | Liefert offene Vorschläge inkl. Ranking |
+| `GET`   | `/api/pending`      | Übersicht offener, noch nicht verarbeiteter Nachrichten |
 | `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |
 | `POST`  | `/api/move`         | Verschiebt oder simuliert eine einzelne Nachricht |
 | `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |
