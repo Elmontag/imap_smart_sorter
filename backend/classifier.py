@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import httpx
@@ -91,11 +92,40 @@ def _format_ranked_for_prompt(ranked: List[Tuple[str, float]]) -> str:
     return "\n".join(rows)
 
 
+def _summarize_hierarchy(folders: Sequence[str]) -> str:
+    groups: Dict[str, List[str]] = defaultdict(list)
+    for raw in folders:
+        if not isinstance(raw, str):
+            continue
+        parts = [part.strip() for part in raw.split("/") if part.strip()]
+        if not parts:
+            continue
+        head = parts[0]
+        tail = "/".join(parts[1:]) if len(parts) > 1 else ""
+        if tail:
+            groups[head].append(tail)
+        else:
+            groups.setdefault(head, [])
+    if not groups:
+        return "Keine Ordnerstruktur vorhanden."
+    lines: List[str] = []
+    for head in sorted(groups):
+        children = sorted({child for child in groups[head] if child})
+        if children:
+            snippet = ", ".join(children[:5])
+            lines.append(f"- {head}: {snippet}")
+        else:
+            lines.append(f"- {head}")
+    return "\n".join(lines)
+
+
 def build_classification_prompt(
     subject: str,
     sender: str,
     body: str,
     ranked: List[Tuple[str, float]],
+    folders: Sequence[str],
+    parent_hint: str | None,
 ) -> List[Dict[str, str]]:
     """Return chat messages instructing the LLM to refine folder suggestions."""
 
@@ -103,25 +133,34 @@ def build_classification_prompt(
         "Du bist ein Assistent, der eingehende E-Mails passenden Ordnern zuordnet. "
         "Nutze Score-Werte als Hinweis, darfst sie aber anpassen, wenn der Inhalt besser passt. "
         "Falls kein Ordner passt, schlage genau einen neuen Unterordner vor. "
-        "Antwort ausschließlich als gültiges JSON mit den Schlüsseln 'ranked' und 'proposal'."
+        "Finde außerdem einen übergeordneten Themenbegriff und bis zu drei aussagekräftige Tags. "
+        "Antwort ausschließlich als gültiges JSON mit den Schlüsseln 'ranked', 'category', 'proposal' und 'tags'."
     )
 
     hint = S.EMBED_PROMPT_HINT.strip()
     if hint:
         system_prompt += f" Zusätzliche betriebliche Vorgabe: {hint}."
 
+    structure = _summarize_hierarchy(folders)
+    origin = (parent_hint or "(kein Hinweis)").strip() or "(kein Hinweis)"
     user_prompt = (
         "E-Mail-Daten:\n"
         f"Betreff: {subject or '-'}\n"
         f"Von: {sender or '-'}\n"
         "Textauszug:\n"
         f"{body[: S.EMBED_PROMPT_MAX_CHARS]}\n\n"
+        "Ausgangsordner: "
+        f"{origin}\n\n"
+        "Bekannte Ordnerstruktur (Gruppierung nach erster Ebene):\n"
+        f"{structure}\n\n"
         "Vorliegende Ordner-Scores:\n"
         f"{_format_ranked_for_prompt(ranked)}\n\n"
         "Schema (JSON):\n"
         '{"ranked": [{"name": "Ordner", "confidence": 0.0-1.0, "reason": "Kurzbegründung"}],'
-        ' "proposal": {"parent": "Überordner", "name": "Neuer Unterordner", "reason": "Warum"} oder null}\n'
-        "Maximal drei Einträge in 'ranked'."
+        ' "category": {"label": "Überbegriff", "matched_folder": "Ordnerpfad oder null", "confidence": 0.0-1.0, "reason": "Warum"},'
+        ' "proposal": {"parent": "Überordner", "name": "Neuer Unterordner", "reason": "Warum"} oder null,'
+        ' "tags": ["Tag1", "Tag2"] }\n'
+        "Maximal drei Einträge in 'ranked' und höchstens drei Tags."
     )
 
     return [
@@ -174,6 +213,52 @@ def _parse_ranked(payload: Any, fallback: List[Tuple[str, float]]) -> List[Dict[
     return _fallback_ranked(fallback)
 
 
+def _parse_category(payload: Any) -> Dict[str, Any] | None:
+    if isinstance(payload, dict):
+        label_raw = payload.get("label") or payload.get("name") or payload.get("category")
+        label = str(label_raw).strip() if label_raw else ""
+        matched_raw = payload.get("matched_folder") or payload.get("folder")
+        matched = str(matched_raw).strip() if matched_raw else ""
+        reason_raw = payload.get("reason")
+        reason = str(reason_raw).strip() if isinstance(reason_raw, str) else ""
+        confidence_raw = payload.get("confidence") or payload.get("score")
+        try:
+            confidence = float(confidence_raw) if confidence_raw is not None else None
+        except (TypeError, ValueError):
+            confidence = None
+        result: Dict[str, Any] = {}
+        if label:
+            result["label"] = label
+        if matched:
+            result["matched_folder"] = matched
+        if reason:
+            result["reason"] = reason
+        if confidence is not None:
+            result["confidence"] = max(0.0, min(confidence, 1.0))
+        return result or None
+    if isinstance(payload, str) and payload.strip():
+        return {"label": payload.strip()}
+    return None
+
+
+def _parse_tags(payload: Any) -> List[str]:
+    tags: List[str] = []
+    if isinstance(payload, list):
+        for item in payload:
+            if not isinstance(item, str):
+                continue
+            candidate = item.strip()
+            if not candidate:
+                continue
+            if candidate not in tags:
+                tags.append(candidate[:48])
+            if len(tags) >= 3:
+                break
+    elif isinstance(payload, str) and payload.strip():
+        tags.append(payload.strip()[:48])
+    return tags[:3]
+
+
 def _normalise_proposal(proposal: Any, parent_hint: str | None, top_score: float) -> Dict[str, Any] | None:
     if isinstance(proposal, dict):
         parent = str(proposal.get("parent", parent_hint or "")).strip() or parent_hint or "Projects"
@@ -197,33 +282,41 @@ async def classify_with_model(
     sender: str,
     body: str,
     ranked: List[Tuple[str, float]],
+    folders: Sequence[str],
     parent_hint: str | None,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any] | None]:
+) -> Tuple[
+    List[Dict[str, Any]],
+    Dict[str, Any] | None,
+    Dict[str, Any] | None,
+    List[str],
+]:
     if not S.CLASSIFIER_MODEL:
-        return _fallback_ranked(ranked), None
+        return _fallback_ranked(ranked), None, None, []
 
-    messages = build_classification_prompt(subject, sender, body, ranked)
+    messages = build_classification_prompt(subject, sender, body, ranked, folders, parent_hint)
     try:
         response = await _chat(messages)
     except Exception as exc:  # pragma: no cover - network interaction
         logger.warning("Ollama Klassifikation fehlgeschlagen: %s", exc)
-        return _fallback_ranked(ranked), None
+        return _fallback_ranked(ranked), None, None, []
 
     content = response.get("message", {}).get("content")
     if not content:
-        return _fallback_ranked(ranked), None
+        return _fallback_ranked(ranked), None, None, []
 
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:  # pragma: no cover - depends on LLM output
         logger.warning("Konnte Ollama-Antwort nicht parsen: %s", exc)
-        return _fallback_ranked(ranked), None
+        return _fallback_ranked(ranked), None, None, []
 
     refined_ranked = _parse_ranked(parsed.get("ranked"), ranked)
     proposal = _normalise_proposal(
         parsed.get("proposal"), parent_hint, ranked[0][1] if ranked else 0.0
     )
-    return refined_ranked, proposal
+    category = _parse_category(parsed.get("category"))
+    tags = _parse_tags(parsed.get("tags"))
+    return refined_ranked, proposal, category, tags
 
 
 async def rank_with_profiles(text: str, profiles: List[Dict[str, Any]]) -> List[Tuple[str, float]]:
@@ -291,20 +384,31 @@ async def propose_new_folder_if_needed(
     subject: str = "",
     sender: str | None = None,
     parent_hint: str | None = None,
+    category: Dict[str, Any] | None = None,
 ) -> Dict[str, Any] | None:
     if top_score >= S.MIN_NEW_FOLDER_SCORE:
         return None
 
-    parent = (parent_hint or "Projects").strip("/") or "Projects"
+    category_parent: str | None = None
+    if category:
+        matched = category.get("matched_folder")
+        if isinstance(matched, str) and matched.strip():
+            category_parent = matched.strip().split("/")[0]
+        label = category.get("label")
+        if isinstance(label, str) and label.strip():
+            category_parent = category_parent or label.strip()
+
+    parent_candidate = category_parent or parent_hint or "Projects"
+    parent = str(parent_candidate).strip("/") or "Projects"
     leaf, basis = _derive_folder_name(subject, sender)
-    auto_segment = "_auto"
-    full_path = "/".join(segment for segment in (parent, auto_segment, leaf) if segment).strip("/")
-    proposal_name = "/".join(segment for segment in (auto_segment, leaf) if segment)
-    reason = "geringe Übereinstimmung mit bekannten Ordnern"
+    full_path = "/".join(segment for segment in (parent, leaf) if segment).strip("/")
+    proposal_name = leaf
+    reason_parts = ["geringe Übereinstimmung mit bekannten Ordnern"]
     if basis != "Fallback":
-        reason += f"; neuer Themenordner aus {basis}"
-    else:
-        reason += "; generischer Themenordner"
+        reason_parts.append(f"neuer Themenordner aus {basis}")
+    if category_parent:
+        reason_parts.append(f"Überbegriff {category_parent}")
+    reason = "; ".join(reason_parts)
 
     return {
         "parent": parent,

@@ -15,7 +15,12 @@ const toMessage = (err: unknown) => (err instanceof Error ? err.message : String
 const formatScore = (value: number) => value.toFixed(2)
 
 const fallbackTarget = (suggestion: Suggestion) =>
-  suggestion.proposal?.full_path ?? suggestion.ranked?.[0]?.name ?? suggestion.proposal?.name ?? suggestion.src_folder ?? ''
+  suggestion.proposal?.full_path ??
+  suggestion.category?.matched_folder ??
+  suggestion.ranked?.[0]?.name ??
+  suggestion.proposal?.name ??
+  suggestion.src_folder ??
+  ''
 
 export default function SuggestionCard({ suggestion, onActionComplete }: Props): JSX.Element {
   const [target, setTarget] = useState<string>(fallbackTarget(suggestion))
@@ -80,6 +85,13 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
 
   const topScore = suggestion.ranked?.[0]?.score ?? null
   const topReason = suggestion.ranked?.[0]?.reason ?? null
+  const category = suggestion.category ?? null
+  const categoryLabel = category?.label ?? null
+  const categoryMatch = category?.matched_folder ?? null
+  const categoryConfidence =
+    typeof category?.confidence === 'number' && !Number.isNaN(category.confidence) ? category.confidence : null
+  const categoryReason = category?.reason ?? null
+  const tags = suggestion.tags ?? []
 
   const handleSimulate = async () => {
     if (!target) {
@@ -159,6 +171,17 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
         {suggestion.from_addr && <div className="meta">{suggestion.from_addr}</div>}
         {created && <div className="meta">Empfangen: {created}</div>}
         {suggestion.src_folder && <div className="badge">Quelle: {suggestion.src_folder}</div>}
+        {categoryLabel && (
+          <div className="category-info">
+            <span className="category-label">Überbegriff:</span>
+            <strong>{categoryLabel}</strong>
+            {categoryConfidence !== null && (
+              <span className="category-confidence">· {(categoryConfidence * 100).toFixed(0)}%</span>
+            )}
+            {categoryMatch && <span className="category-match">→ {categoryMatch}</span>}
+            {categoryReason && <div className="category-reason">{categoryReason}</div>}
+          </div>
+        )}
       </header>
 
       {statusInfo.detail && (
@@ -178,6 +201,16 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
             <span key={item.name} className="alt-badge">
               {item.name} · {formatScore(item.score)}
               {item.reason ? ` – ${item.reason}` : ''}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {tags.length > 0 && (
+        <div className="tag-list" aria-label="Erkannte Tags">
+          {tags.map(tag => (
+            <span key={tag} className="tag-badge">
+              {tag}
             </span>
           ))}
         </div>

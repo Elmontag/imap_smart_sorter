@@ -17,6 +17,13 @@ export interface NewFolderProposal {
   score_hint?: number
 }
 
+export interface SuggestionCategory {
+  label?: string
+  matched_folder?: string | null
+  confidence?: number | null
+  reason?: string | null
+}
+
 export type SuggestionScope = 'open' | 'all'
 
 export interface Suggestion {
@@ -28,6 +35,8 @@ export interface Suggestion {
   date?: string | null
   ranked?: SuggestionScore[]
   proposal?: NewFolderProposal | null
+  category?: SuggestionCategory | null
+  tags?: string[] | null
   status?: string
   decision?: string | null
   move_status?: string | null
@@ -77,6 +86,7 @@ export interface AppConfig {
   pending_list_limit: number
   protected_tag: string | null
   processed_tag: string | null
+  ai_tag_prefix: string | null
   ollama?: OllamaStatus | null
 }
 

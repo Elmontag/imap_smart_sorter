@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     IMAP_PROTECTED_TAG: str = ""
     IMAP_PROCESSED_TAG: str = ""
+    IMAP_AI_TAG_PREFIX: str = "SmartSorter"
 
     PENDING_LIST_LIMIT: int = 25
 

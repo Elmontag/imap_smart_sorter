@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import email
 import logging
+import re
 from email import policy
 from typing import Sequence
 
@@ -35,6 +36,52 @@ from utils import extract_text, subject_from, thread_headers
 
 
 logger = logging.getLogger(__name__)
+
+
+_TAG_SANITIZE_RE = re.compile(r"[^0-9A-Za-z._+/:-]+")
+
+
+def _format_ai_tag(label: str) -> str | None:
+    cleaned = label.strip()
+    if not cleaned:
+        return None
+    normalized = re.sub(r"\s+", "-", cleaned)
+    normalized = _TAG_SANITIZE_RE.sub("", normalized)
+    normalized = normalized.strip("-/")[:48]
+    if not normalized:
+        return None
+    prefix = S.IMAP_AI_TAG_PREFIX.strip()
+    if prefix:
+        base = prefix.strip("/")
+        if not base:
+            return normalized
+        return f"{base}/{normalized}"
+    return normalized
+
+
+def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
+    if not raw_tags:
+        return
+    processed_marker = (S.IMAP_PROCESSED_TAG or "").strip()
+    unique: list[str] = []
+    for tag in raw_tags:
+        if not isinstance(tag, str):
+            continue
+        formatted = _format_ai_tag(tag)
+        if not formatted:
+            continue
+        if processed_marker and formatted == processed_marker:
+            continue
+        if formatted in unique:
+            continue
+        unique.append(formatted)
+        if len(unique) >= 3:
+            break
+    if not unique:
+        return
+    logger.debug("Adding AI Tags %s to %s", unique, uid)
+    for tag in unique:
+        add_message_tag(uid, folder, tag)
 
 
 async def process_loop() -> None:
@@ -83,19 +130,23 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
     text = extract_text(msg)
     prompt = build_embedding_prompt(subject or "", from_addr or "", text)
 
+    folder_profiles = list_folder_profiles()
     profiles = [
         {"name": fp.name, "centroid": fp.centroid}
-        for fp in list_folder_profiles()
+        for fp in folder_profiles
         if fp.centroid
     ]
 
     embedding = await embed(prompt)
     ranked_pairs = score_profiles(embedding, profiles) if embedding else []
-    refined_ranked, proposal = await classify_with_model(
+    folder_names = [fp.name for fp in folder_profiles if fp.name]
+
+    refined_ranked, proposal, category, tags = await classify_with_model(
         subject or "",
         from_addr or "",
         text,
         ranked_pairs,
+        folder_names,
         parent_hint=src_folder,
     )
     top_score = ranked_pairs[0][1] if ranked_pairs else 0.0
@@ -105,6 +156,7 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
             subject or "",
             from_addr,
             parent_hint=src_folder,
+            category=category,
         )
 
     suggestion = Suggestion(
@@ -116,11 +168,14 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
         thread_id=thread.get("message_id"),
         ranked=refined_ranked,
         proposal=proposal,
+        category=category,
+        tags=tags or None,
         status="open",
         move_status="pending",
     )
     save_suggestion(suggestion)
     add_message_tag(uid, src_folder, S.IMAP_PROCESSED_TAG)
+    _apply_ai_tags(uid, src_folder, tags)
 
     mode = get_mode() or S.MOVE_MODE
     should_auto_move = mode == "AUTO" and (
