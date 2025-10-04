@@ -15,6 +15,8 @@ import DevtoolsPanel from './components/DevtoolsPanel'
 import { useSuggestions } from './store/useSuggestions'
 import { usePendingOverview } from './store/usePendingOverview'
 import { useAppConfig } from './store/useAppConfig'
+import TagCanvas from './components/TagCanvas'
+import { useTagSuggestions } from './store/useTagSuggestions'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 
@@ -32,6 +34,7 @@ export default function App(): JSX.Element {
   const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
   const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
   const { data: appConfig, error: configError } = useAppConfig()
+  const { data: tagSuggestions, loading: tagsLoading, error: tagsError, refresh: refreshTags } = useTagSuggestions()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -89,6 +92,7 @@ export default function App(): JSX.Element {
         message: `Scan abgeschlossen: ${result.new_suggestions} neue Vorschläge.`,
       })
       await refresh()
+      await refreshTags()
     } catch (err) {
       setStatus({ kind: 'error', message: `Scan fehlgeschlagen: ${toMessage(err)}` })
     } finally {
@@ -129,6 +133,10 @@ export default function App(): JSX.Element {
   const toggleSuggestionScope = useCallback(() => {
     setSuggestionScope(scope => (scope === 'open' ? 'all' : 'open'))
   }, [])
+
+  const handleSuggestionUpdate = useCallback(async () => {
+    await Promise.all([refresh(), refreshTags()])
+  }, [refresh, refreshTags])
 
   const ollamaInfo = useMemo(() => {
     const status = appConfig?.ollama
@@ -214,6 +222,7 @@ export default function App(): JSX.Element {
         </aside>
         <main className="app-main">
           <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
+          <TagCanvas tags={tagSuggestions} loading={tagsLoading} error={tagsError} onReload={refreshTags} />
 
           <section className="suggestions">
             <div className="suggestions-header">
@@ -261,7 +270,11 @@ export default function App(): JSX.Element {
             {!loading && suggestions.length > 0 && (
               <div className="suggestion-grid">
                 {suggestions.map((item: Suggestion) => (
-                  <SuggestionCard key={item.message_uid} suggestion={item} onActionComplete={refresh} />
+                  <SuggestionCard
+                    key={item.message_uid}
+                    suggestion={item}
+                    onActionComplete={handleSuggestionUpdate}
+                  />
                 ))}
               </div>
             )}

@@ -33,6 +33,7 @@ from imap_worker import one_shot_scan
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
+from tags import TagSuggestion, load_tag_suggestions
 from ollama_service import ensure_ollama_ready, get_status, status_as_dict
 from settings import S
 
@@ -115,6 +116,30 @@ class ConfigResponse(BaseModel):
     ollama: OllamaStatusResponse | None = None
 
 
+class TagExampleResponse(BaseModel):
+    message_uid: str
+    subject: str
+    from_addr: str | None = None
+    folder: str | None = None
+    date: str | None = None
+
+
+class TagSuggestionResponse(BaseModel):
+    tag: str
+    occurrences: int
+    last_seen: datetime | None = None
+    examples: List[TagExampleResponse] = Field(default_factory=list)
+
+    @classmethod
+    def from_domain(cls, suggestion: TagSuggestion) -> "TagSuggestionResponse":
+        return cls(
+            tag=suggestion.tag,
+            occurrences=suggestion.occurrences,
+            last_seen=suggestion.last_seen,
+            examples=[TagExampleResponse(**example) for example in suggestion.serialisable_examples()],
+        )
+
+
 class PendingMailResponse(BaseModel):
     message_uid: str
     folder: str
@@ -141,6 +166,7 @@ class PendingOverviewResponse(BaseModel):
     pending: List[PendingMailResponse]
     displayed_pending: int
     list_limit: int
+    limit_active: bool
 
     @classmethod
     def from_domain(cls, overview: PendingOverview) -> "PendingOverviewResponse":
@@ -152,6 +178,7 @@ class PendingOverviewResponse(BaseModel):
             pending=[PendingMailResponse.from_domain(item) for item in overview.pending],
             displayed_pending=overview.displayed_pending,
             list_limit=overview.list_limit,
+            limit_active=overview.limit_active,
         )
 
 
@@ -251,6 +278,12 @@ async def _pending_overview() -> PendingOverviewResponse:
 @app.get("/api/pending", response_model=PendingOverviewResponse)
 async def api_pending() -> PendingOverviewResponse:
     return await _pending_overview()
+
+
+@app.get("/api/tags", response_model=List[TagSuggestionResponse])
+def api_tags() -> List[TagSuggestionResponse]:
+    suggestions = load_tag_suggestions()
+    return [TagSuggestionResponse.from_domain(item) for item in suggestions]
 
 
 def _ensure_suggestion(uid: str) -> Suggestion:

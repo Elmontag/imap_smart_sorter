@@ -369,14 +369,47 @@ def _sender_slug(sender: str | None) -> str | None:
     return cleaned or None
 
 
-def _derive_folder_name(subject: str, sender: str | None) -> Tuple[str, str]:
+def _beautify_segment(raw: str) -> str:
+    cleaned = re.sub(r"[\\/]+", " ", raw)
+    parts = [part for part in re.split(r"[-_\s]+", cleaned) if part]
+    if not parts:
+        return cleaned.strip()[:48] or "Allgemein"
+    human = " ".join(part.capitalize() if len(part) > 1 else part.upper() for part in parts)
+    return human.strip()[:48] or "Allgemein"
+
+
+def _derive_leaf(subject: str, sender: str | None) -> Tuple[str, str | None]:
     slug = _subject_slug(subject)
     if slug:
-        return slug[:32], f'Betreff "{subject.strip()[:40]}"'
+        label = _beautify_segment(slug)
+        summary = subject.strip().replace("\n", " ")[:40]
+        return label, f'Betreff "{summary or subject.strip() or label}"'
     sender_slug = _sender_slug(sender)
     if sender_slug:
-        return sender_slug[:32], f"Absender {sender}"[:48]
-    return "topic", "Fallback"
+        return _beautify_segment(sender_slug), f"Absender {sender}"[:64]
+    return "Allgemein", None
+
+
+def _base_parent_segment(parent_hint: str | None) -> str:
+    fallback = (S.IMAP_INBOX or "INBOX").strip() or "INBOX"
+    if not parent_hint:
+        return fallback
+    parts = [part.strip() for part in parent_hint.split("/") if part.strip()]
+    return parts[0] if parts else fallback
+
+
+def _category_parent_segment(category: Dict[str, Any] | None) -> str | None:
+    if not category:
+        return None
+    matched = category.get("matched_folder")
+    if isinstance(matched, str) and matched.strip():
+        candidate = matched.strip().split("/")[0]
+        if candidate:
+            return _beautify_segment(candidate)
+    label = category.get("label")
+    if isinstance(label, str) and label.strip():
+        return _beautify_segment(label)
+    return None
 
 
 async def propose_new_folder_if_needed(
@@ -389,25 +422,28 @@ async def propose_new_folder_if_needed(
     if top_score >= S.MIN_NEW_FOLDER_SCORE:
         return None
 
-    category_parent: str | None = None
-    if category:
-        matched = category.get("matched_folder")
-        if isinstance(matched, str) and matched.strip():
-            category_parent = matched.strip().split("/")[0]
-        label = category.get("label")
-        if isinstance(label, str) and label.strip():
-            category_parent = category_parent or label.strip()
+    base_parent = _base_parent_segment(parent_hint)
+    category_parent = _category_parent_segment(category)
+    sender_segment = _sender_slug(sender)
+    sender_parent = _beautify_segment(sender_segment) if sender_segment else None
 
-    parent_candidate = category_parent or parent_hint or "Projects"
-    parent = str(parent_candidate).strip("/") or "Projects"
-    leaf, basis = _derive_folder_name(subject, sender)
+    parent_segments = [base_parent]
+    reason_parts = ["geringe Übereinstimmung mit bekannten Ordnern"]
+
+    if category_parent:
+        parent_segments.append(category_parent)
+        reason_parts.append(f"Überbegriff {category_parent}")
+    elif sender_parent:
+        parent_segments.append(sender_parent)
+        reason_parts.append(f"Gruppierung nach Absender {sender_parent}")
+
+    leaf, basis = _derive_leaf(subject, sender)
+    if basis:
+        reason_parts.append(f"neuer Themenordner aus {basis}")
+
+    parent = "/".join(dict.fromkeys(segment.strip("/") for segment in parent_segments if segment)).strip("/")
     full_path = "/".join(segment for segment in (parent, leaf) if segment).strip("/")
     proposal_name = leaf
-    reason_parts = ["geringe Übereinstimmung mit bekannten Ordnern"]
-    if basis != "Fallback":
-        reason_parts.append(f"neuer Themenordner aus {basis}")
-    if category_parent:
-        reason_parts.append(f"Überbegriff {category_parent}")
     reason = "; ".join(reason_parts)
 
     return {
