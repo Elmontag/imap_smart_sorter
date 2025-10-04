@@ -8,7 +8,12 @@ import logging
 from email import policy
 from typing import Sequence
 
-from classifier import embed, propose_new_folder_if_needed, score_profiles
+from classifier import (
+    build_embedding_prompt,
+    embed,
+    propose_new_folder_if_needed,
+    score_profiles,
+)
 from database import (
     get_mode,
     is_processed,
@@ -64,9 +69,10 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
 
 async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
     msg = email.message_from_bytes(raw_bytes, policy=policy.default)
-    text = extract_text(msg)
     subject, from_addr = subject_from(msg)
     thread = thread_headers(msg)
+    text = extract_text(msg)
+    prompt = build_embedding_prompt(subject or "", from_addr or "", text)
 
     profiles = [
         {"name": fp.name, "centroid": fp.centroid}
@@ -74,7 +80,7 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
         if fp.centroid
     ]
 
-    embedding = await embed(text)
+    embedding = await embed(prompt)
     ranked = score_profiles(embedding, profiles) if embedding else []
     top_score = ranked[0][1] if ranked else 0.0
     proposal = await propose_new_folder_if_needed(top_score, parent_hint=src_folder)
