@@ -16,6 +16,7 @@ from classifier import (
     propose_new_folder_if_needed,
     score_profiles,
 )
+from configuration import max_tag_total
 from database import (
     get_mode,
     get_monitored_folders,
@@ -64,6 +65,7 @@ def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
         return
     processed_marker = (S.IMAP_PROCESSED_TAG or "").strip()
     unique: list[str] = []
+    limit = max_tag_total()
     for tag in raw_tags:
         if not isinstance(tag, str):
             continue
@@ -75,7 +77,7 @@ def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
         if formatted in unique:
             continue
         unique.append(formatted)
-        if len(unique) >= 3:
+        if len(unique) >= limit:
             break
     if not unique:
         return
