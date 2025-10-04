@@ -11,8 +11,10 @@ import {
 import SuggestionCard from './components/SuggestionCard'
 import PendingOverviewPanel from './components/PendingOverviewPanel'
 import FolderSelectionPanel from './components/FolderSelectionPanel'
+import DevtoolsPanel from './components/DevtoolsPanel'
 import { useSuggestions } from './store/useSuggestions'
 import { usePendingOverview } from './store/usePendingOverview'
+import { useAppConfig } from './store/useAppConfig'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 
@@ -28,6 +30,7 @@ const toMessage = (err: unknown) => (err instanceof Error ? err.message : String
 export default function App(): JSX.Element {
   const { data: suggestions, loading, error, refresh } = useSuggestions()
   const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
+  const { error: configError } = useAppConfig()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -148,37 +151,45 @@ export default function App(): JSX.Element {
         </div>
       )}
 
+      {configError && <div className="status-banner error">{configError}</div>}
       {error && <div className="status-banner error">{error}</div>}
 
-      <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
+      <div className="app-layout">
+        <aside className="app-sidebar">
+          <FolderSelectionPanel
+            available={availableFolders}
+            draft={folderDraft}
+            onDraftChange={setFolderDraft}
+            onSave={handleFolderSave}
+            onReload={loadFolders}
+            loading={foldersLoading}
+            saving={savingFolders}
+          />
+        </aside>
+        <main className="app-main">
+          <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
 
-      <FolderSelectionPanel
-        available={availableFolders}
-        draft={folderDraft}
-        onDraftChange={setFolderDraft}
-        onSave={handleFolderSave}
-        onReload={loadFolders}
-        loading={foldersLoading}
-        saving={savingFolders}
-      />
+          <section className="suggestions">
+            <div className="suggestions-header">
+              <h2>{headline}</h2>
+              <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
+                Aktualisieren
+              </button>
+            </div>
+            {loading && <div className="placeholder">Bitte warten…</div>}
+            {!loading && !suggestions.length && <div className="placeholder">Super! Alles abgearbeitet.</div>}
+            {!loading && suggestions.length > 0 && (
+              <div className="suggestion-grid">
+                {suggestions.map((item: Suggestion) => (
+                  <SuggestionCard key={item.message_uid} suggestion={item} onActionComplete={refresh} />
+                ))}
+              </div>
+            )}
+          </section>
+        </main>
+      </div>
 
-      <section className="suggestions">
-        <div className="suggestions-header">
-          <h2>{headline}</h2>
-          <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
-            Aktualisieren
-          </button>
-        </div>
-        {loading && <div className="placeholder">Bitte warten…</div>}
-        {!loading && !suggestions.length && <div className="placeholder">Super! Alles abgearbeitet.</div>}
-        {!loading && suggestions.length > 0 && (
-          <div className="suggestion-grid">
-            {suggestions.map((item: Suggestion) => (
-              <SuggestionCard key={item.message_uid} suggestion={item} onActionComplete={refresh} />
-            ))}
-          </div>
-        )}
-      </section>
+      <DevtoolsPanel />
     </div>
   )
 }
