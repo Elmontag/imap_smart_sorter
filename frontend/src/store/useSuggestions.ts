@@ -1,16 +1,25 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Suggestion, getSuggestions } from '../api'
+import { Suggestion, SuggestionScope, getSuggestions } from '../api'
 import { recordDevEvent } from '../devtools'
+
+export interface SuggestionStats {
+  openCount: number
+  decidedCount: number
+  errorCount: number
+  totalCount: number
+}
 
 export interface SuggestionsState {
   data: Suggestion[]
+  stats: SuggestionStats | null
   loading: boolean
   error: string | null
   refresh: () => Promise<void>
 }
 
-export function useSuggestions(): SuggestionsState {
+export function useSuggestions(scope: SuggestionScope = 'open'): SuggestionsState {
   const [data, setData] = useState<Suggestion[]>([])
+  const [stats, setStats] = useState<SuggestionStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -18,9 +27,19 @@ export function useSuggestions(): SuggestionsState {
     setLoading(true)
     setError(null)
     try {
-      const result = await getSuggestions()
-      setData(result)
-      recordDevEvent({ type: 'ai', label: `Vorschläge (${result.length})`, payload: result })
+      const result = await getSuggestions(scope)
+      setData(result.suggestions)
+      setStats({
+        openCount: result.open_count,
+        decidedCount: result.decided_count,
+        errorCount: result.error_count,
+        totalCount: result.total_count,
+      })
+      recordDevEvent({
+        type: 'ai',
+        label: `Vorschläge (${result.suggestions.length})`,
+        payload: result,
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unbekannter Fehler beim Laden der Vorschläge')
       recordDevEvent({
@@ -31,11 +50,11 @@ export function useSuggestions(): SuggestionsState {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [scope])
 
   useEffect(() => {
     fetchData()
   }, [fetchData])
 
-  return { data, loading, error, refresh: fetchData }
+  return { data, stats, loading, error, refresh: fetchData }
 }

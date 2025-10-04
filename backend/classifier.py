@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import httpx
@@ -231,19 +232,85 @@ async def rank_with_profiles(text: str, profiles: List[Dict[str, Any]]) -> List[
     return score_profiles(embedding, profiles) if embedding else []
 
 
+_STOPWORDS = {
+    "re",
+    "fw",
+    "fwd",
+    "wg",
+    "wegen",
+    "und",
+    "oder",
+    "the",
+    "ein",
+    "eine",
+    "der",
+    "die",
+    "das",
+    "info",
+    "newsletter",
+    "update",
+    "subject",
+}
+
+
+def _normalize_token(token: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-zÄÖÜäöüß]+", "-", token.strip().lower())
+    cleaned = cleaned.strip("-")
+    return cleaned
+
+
+def _subject_slug(subject: str) -> str | None:
+    tokens = [_normalize_token(part) for part in re.split(r"\s+", subject) if part.strip()]
+    filtered = [token for token in tokens if token and token not in _STOPWORDS]
+    slug = "-".join(filtered[:3])
+    return slug or None
+
+
+def _sender_slug(sender: str | None) -> str | None:
+    if not sender:
+        return None
+    match = re.search(r"@([A-Za-z0-9._-]+)", sender)
+    domain = match.group(1) if match else sender
+    primary = domain.split(".")[0]
+    cleaned = _normalize_token(primary)
+    return cleaned or None
+
+
+def _derive_folder_name(subject: str, sender: str | None) -> Tuple[str, str]:
+    slug = _subject_slug(subject)
+    if slug:
+        return slug[:32], f'Betreff "{subject.strip()[:40]}"'
+    sender_slug = _sender_slug(sender)
+    if sender_slug:
+        return sender_slug[:32], f"Absender {sender}"[:48]
+    return "topic", "Fallback"
+
+
 async def propose_new_folder_if_needed(
-    top_score: float, parent_hint: str | None = None
+    top_score: float,
+    subject: str = "",
+    sender: str | None = None,
+    parent_hint: str | None = None,
 ) -> Dict[str, Any] | None:
-    if top_score < S.MIN_NEW_FOLDER_SCORE:
-        parent = parent_hint or "Projects"
-        name = "_auto/topic"
-        full_path = f"{parent}/{name}".strip("/")
-        return {
-            "parent": parent,
-            "name": name,
-            "reason": "geringe Übereinstimmung mit bekannten Ordnern",
-            "full_path": full_path,
-            "status": "pending",
-            "score_hint": float(top_score),
-        }
-    return None
+    if top_score >= S.MIN_NEW_FOLDER_SCORE:
+        return None
+
+    parent = (parent_hint or "Projects").strip("/") or "Projects"
+    leaf, basis = _derive_folder_name(subject, sender)
+    auto_segment = "_auto"
+    full_path = "/".join(segment for segment in (parent, auto_segment, leaf) if segment).strip("/")
+    proposal_name = "/".join(segment for segment in (auto_segment, leaf) if segment)
+    reason = "geringe Übereinstimmung mit bekannten Ordnern"
+    if basis != "Fallback":
+        reason += f"; neuer Themenordner aus {basis}"
+    else:
+        reason += "; generischer Themenordner"
+
+    return {
+        "parent": parent,
+        "name": proposal_name,
+        "reason": reason,
+        "full_path": full_path,
+        "status": "pending",
+        "score_hint": float(top_score),
+    }

@@ -6,7 +6,7 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
   Sie erlaubt jetzt auch das Speichern individueller Ordnerauswahlen sowie das direkte Bestätigen oder Ablehnen von KI-Ordner-Vorschlägen.
-  Der Kopfbereich zeigt den verbundenen Ollama-Host samt der verwendeten Modelle an.
+  Der Kopfbereich zeigt den verbundenen Ollama-Host samt der verwendeten Modelle an und der Vorschlagsbereich bietet Kennzahlen sowie den Zugriff auf bereits bearbeitete Mails.
 
 ## Schnellstart mit Docker Compose
 
@@ -27,6 +27,7 @@ IMAP_INBOX=INBOX
 PROCESS_ONLY_SEEN=false
 OLLAMA_HOST=http://ollama:11434
 DATABASE_URL=sqlite:///data/app.db
+INIT_RUN=false
 MOVE_MODE=CONFIRM
 SINCE_DAYS=14
 LOG_LEVEL=INFO
@@ -65,6 +66,7 @@ DEV_MODE=false
 
 - `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).
 - `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
+- `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 blendet die Tabelle aus).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
   Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
@@ -123,7 +125,7 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `POST`  | `/api/mode`         | Setzt den Move-Modus – Body `{ "mode": "CONFIRM" }` |
 | `GET`   | `/api/folders`      | Liefert verfügbare Ordner sowie die gespeicherte Auswahl |
 | `POST`  | `/api/folders/selection` | Speichert die zu überwachenden IMAP-Ordner |
-| `GET`   | `/api/suggestions`  | Liefert offene Vorschläge inkl. Ranking |
+| `GET`   | `/api/suggestions`  | Liefert Vorschläge inkl. Ranking; mit `?include=all` auch bereits entschiedene |
 | `GET`   | `/api/pending`      | Übersicht offener, noch nicht verarbeiteter Nachrichten |
 | `GET`   | `/api/ollama`       | Aktuelle Erreichbarkeit des Ollama-Hosts und Modellstatus |
 | `GET`   | `/api/config`       | Liefert Laufzeitkonfiguration (Dev-Modus, Tag-Namen, Listenlimit) |

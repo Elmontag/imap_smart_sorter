@@ -8,6 +8,8 @@ interface Props {
 
 type BusyState = 'simulate' | 'accept' | 'reject' | 'proposal-accept' | 'proposal-reject' | null
 
+type StatusTone = 'open' | 'done' | 'error'
+
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
 const formatScore = (value: number) => value.toFixed(2)
@@ -21,6 +23,49 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [proposal, setProposal] = useState(suggestion.proposal ?? null)
+
+  const statusInfo = useMemo((): { label: string; tone: StatusTone; detail: string | null } => {
+    const baseStatus = (suggestion.status ?? 'open').toLowerCase()
+    const moveStatus = (suggestion.move_status ?? '').toLowerCase()
+    if (baseStatus === 'decided') {
+      if (moveStatus === 'moved') {
+        return {
+          label: 'Verschoben',
+          tone: 'done',
+          detail: 'Bereits verschoben – neue Entscheidungen überschreiben das Ergebnis.',
+        }
+      }
+      if (moveStatus === 'rejected') {
+        return {
+          label: 'Abgelehnt',
+          tone: 'done',
+          detail: 'Vorschlag verworfen – du kannst neu zuordnen.',
+        }
+      }
+      if (moveStatus === 'failed') {
+        return {
+          label: 'Fehlgeschlagen',
+          tone: 'error',
+          detail: suggestion.move_error
+            ? `Verschieben fehlgeschlagen: ${suggestion.move_error}`
+            : 'Verschieben fehlgeschlagen – bitte prüfen.',
+        }
+      }
+      return {
+        label: 'Bearbeitet',
+        tone: 'done',
+        detail: 'Entscheidung gespeichert – du kannst sie bei Bedarf anpassen.',
+      }
+    }
+    if (baseStatus === 'error') {
+      return {
+        label: 'Fehler',
+        tone: 'error',
+        detail: suggestion.move_error ?? 'Bitte prüfen und erneut versuchen.',
+      }
+    }
+    return { label: 'Offen', tone: 'open', detail: null }
+  }, [suggestion.status, suggestion.move_status, suggestion.move_error])
 
   useEffect(() => {
     setTarget(fallbackTarget(suggestion))
@@ -100,16 +145,25 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
     }
   }
 
+  const cardClass = statusInfo.tone === 'open' ? 'suggestion-card' : `suggestion-card state-${statusInfo.tone}`
+
   return (
-    <article className="suggestion-card">
+    <article className={cardClass}>
       <header>
-        <div className="subject" title={suggestion.subject ?? undefined}>
-          {suggestion.subject || '(kein Betreff)'}
+        <div className="subject-row">
+          <div className="subject" title={suggestion.subject ?? undefined}>
+            {suggestion.subject || '(kein Betreff)'}
+          </div>
+          <span className={`suggestion-status ${statusInfo.tone}`}>{statusInfo.label}</span>
         </div>
         {suggestion.from_addr && <div className="meta">{suggestion.from_addr}</div>}
         {created && <div className="meta">Empfangen: {created}</div>}
         {suggestion.src_folder && <div className="badge">Quelle: {suggestion.src_folder}</div>}
       </header>
+
+      {statusInfo.detail && (
+        <div className={`feedback ${statusInfo.tone === 'error' ? 'error' : 'info'}`}>{statusInfo.detail}</div>
+      )}
 
       {topScore !== null && (
         <div className="score">
