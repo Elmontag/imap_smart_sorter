@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Suggestion, decide, decideProposal, moveOne } from '../api'
+import { Suggestion, TagSlotConfig, decide, decideProposal, moveOne } from '../api'
 
 interface Props {
   suggestion: Suggestion
   onActionComplete: () => Promise<void> | void
+  tagSlots?: TagSlotConfig[]
 }
 
 type BusyState = 'simulate' | 'accept' | 'reject' | 'proposal-accept' | 'proposal-reject' | null
@@ -14,7 +15,11 @@ const toMessage = (err: unknown) => (err instanceof Error ? err.message : String
 
 const formatScore = (value: number) => value.toFixed(2)
 
-const TAG_CATEGORIES = ['Komplexität', 'Priorität', 'Handlungsauftrag'] as const
+const DEFAULT_TAG_SLOTS: TagSlotConfig[] = [
+  { name: 'Komplexität', options: [] },
+  { name: 'Priorität', options: [] },
+  { name: 'Handlungsauftrag', options: [] },
+]
 
 const fallbackTarget = (suggestion: Suggestion) =>
   suggestion.proposal?.full_path ??
@@ -24,7 +29,7 @@ const fallbackTarget = (suggestion: Suggestion) =>
   suggestion.src_folder ??
   ''
 
-export default function SuggestionCard({ suggestion, onActionComplete }: Props): JSX.Element {
+export default function SuggestionCard({ suggestion, onActionComplete, tagSlots }: Props): JSX.Element {
   const [target, setTarget] = useState<string>(fallbackTarget(suggestion))
   const [busy, setBusy] = useState<BusyState>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
@@ -94,13 +99,22 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
     typeof category?.confidence === 'number' && !Number.isNaN(category.confidence) ? category.confidence : null
   const categoryReason = category?.reason ?? null
   const hasTagField = Object.prototype.hasOwnProperty.call(suggestion, 'tags')
+  const slotDefinitions = useMemo(() => {
+    if (Array.isArray(tagSlots) && tagSlots.length > 0) {
+      return tagSlots
+    }
+    return DEFAULT_TAG_SLOTS
+  }, [tagSlots])
   const rawTags = Array.isArray(suggestion.tags) ? suggestion.tags : []
-  const tagCategories = TAG_CATEGORIES.map((label, index) => {
+  const tagCategories = slotDefinitions.map((slot, index) => {
     const raw = rawTags[index]
     const value = typeof raw === 'string' ? raw.trim() : ''
-    return { label, value: value || null }
+    return { label: slot.name, value: value || null }
   })
-  const hasAnyTagValues = tagCategories.some(item => item.value)
+  const extraTags = rawTags.slice(slotDefinitions.length)
+    .map(tag => (typeof tag === 'string' ? tag.trim() : ''))
+    .filter(tag => tag.length > 0)
+  const hasAnyTagValues = tagCategories.some(item => item.value) || extraTags.length > 0
 
   const handleSimulate = async () => {
     if (!target) {
@@ -223,6 +237,13 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
               <strong>{item.value ?? '–'}</strong>
             </span>
           ))}
+          {extraTags.length > 0 && (
+            <div className="tag-extras" aria-label="Zusätzliche Kontext-Tags">
+              {extraTags.map(tag => (
+                <span key={tag} className="tag-extra">{tag}</span>
+              ))}
+            </div>
+          )}
           {!hasAnyTagValues && <span className="tag-hint">Noch keine konkreten Tags ermittelt.</span>}
         </div>
       )}

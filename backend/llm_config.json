@@ -1,0 +1,101 @@
+{
+  "folder_templates": [
+    {
+      "name": "Konzerte",
+      "description": "Ordne Konzert- und Eventkommunikation streng nach Tickets, Buchungen und Ortsinformationen.",
+      "children": [
+        { "name": "Tickets", "description": "Digitale Tickets, QR-Codes und Einlassbestätigungen." },
+        { "name": "Buchungen", "description": "Bestellbestätigungen, Zahlungsbelege und Platzdaten." },
+        { "name": "Ort", "description": "Anreise, Venue, Treffpunkte und Standortdetails." }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "datum",
+          "description": "Verwende das Format 'datum-YYYY-MM-TT', um das Konzertdatum als einzelnes Tag zu setzen."
+        },
+        {
+          "name": "band",
+          "description": "Nutze den Künstlernamen ohne Leerzeichen, z. B. 'band-Metallica'."
+        }
+      ]
+    },
+    {
+      "name": "Bestellungen",
+      "description": "Top-Level-Sammlung für alle Bestellungen. Unterordner gruppieren nach Händler, Bestätigung und Rechnung.",
+      "children": [
+        { "name": "Haendler", "description": "Unterordner je Händlername oder Plattform." },
+        { "name": "Bestellbestaetigungen", "description": "Auftrags- und Versandbestätigungen." },
+        { "name": "Rechnungen", "description": "Rechnungen, Zahlungsaufforderungen und Quittungen." }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "haendler",
+          "description": "Setze 'haendler-NAME' mit verdichtetem Händlernamen."
+        },
+        {
+          "name": "belegart",
+          "description": "Nutze 'belegart-bestaetigung' oder 'belegart-rechnung'."
+        }
+      ]
+    },
+    {
+      "name": "Reisen",
+      "description": "Reiseunterlagen strikt nach Ort, Hotel und Transport trennen.",
+      "children": [
+        { "name": "Ort", "description": "Zielorte, Städte und Regionen." },
+        { "name": "Hotel", "description": "Reservierungen, Buchungsbestätigungen und Rechnungen." },
+        { "name": "Transport", "description": "Tickets und Infos zu Flug, Bahn, Mietwagen etc." }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "reiseort",
+          "description": "Nutze 'reiseort-ORT' als Zielort (ein Wort)."
+        },
+        {
+          "name": "transport",
+          "description": "Nutze 'transport-flug', 'transport-bahn', 'transport-auto' usw."
+        }
+      ]
+    },
+    {
+      "name": "Projekte",
+      "description": "Projektkommunikation nach Projektname und Themenclustern strukturieren.",
+      "children": [
+        { "name": "Vertragsunterlagen", "description": "Verträge, NDAs und rechtliche Dokumente." },
+        { "name": "Kommunikation", "description": "Allgemeine Abstimmungen, Status-Updates und Besprechungen." },
+        { "name": "Rueckfragen", "description": "Offene Fragen, Klärungen, To-Dos." },
+        { "name": "Planung", "description": "Zeitpläne, Roadmaps und nächste Schritte." }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "projekt",
+          "description": "Wähle 'projekt-NAME' als konzentrierten Projektschlüssel (ein Wort)."
+        },
+        {
+          "name": "phase",
+          "description": "Nutze 'phase-planung', 'phase-review', 'phase-abschluss' usw."
+        }
+      ]
+    }
+  ],
+  "tag_slots": [
+    {
+      "name": "Komplexität",
+      "aliases": ["Komplexitaet", "komplexitaet", "complexity"],
+      "description": "Wie aufwendig ist die Bearbeitung der E-Mail?",
+      "options": ["niedrig", "mittel", "hoch", "kritisch"]
+    },
+    {
+      "name": "Priorität",
+      "aliases": ["Prioritaet", "prioritaet", "priority", "prio"],
+      "description": "Wie dringend ist eine Reaktion?",
+      "options": ["niedrig", "normal", "hoch", "sofort"]
+    },
+    {
+      "name": "Handlungsauftrag",
+      "aliases": ["Handlung", "auftrag", "action"],
+      "description": "Welche Aktion wird erwartet?",
+      "options": ["archivieren", "pruefen", "antworten", "planen", "buchen"]
+    }
+  ]
+}

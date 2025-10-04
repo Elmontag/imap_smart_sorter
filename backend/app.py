@@ -14,6 +14,7 @@ from fastapi import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from configuration import get_context_tag_guidelines, get_folder_templates, get_tag_slots
 from database import (
     find_suggestion_by_uid,
     get_mode,
@@ -114,6 +115,41 @@ class ConfigResponse(BaseModel):
     processed_tag: str | None = None
     ai_tag_prefix: str | None = None
     ollama: OllamaStatusResponse | None = None
+    folder_templates: List["FolderTemplateConfig"] = Field(default_factory=list)
+    tag_slots: List["TagSlotConfig"] = Field(default_factory=list)
+    context_tags: List["ContextTagConfig"] = Field(default_factory=list)
+
+
+class FolderChildConfig(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class TagGuidelineConfig(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class FolderTemplateConfig(BaseModel):
+    name: str
+    description: str | None = None
+    children: List[FolderChildConfig] = Field(default_factory=list)
+    tag_guidelines: List[TagGuidelineConfig] = Field(default_factory=list)
+
+
+class TagSlotConfig(BaseModel):
+    name: str
+    description: str | None = None
+    options: List[str] = Field(default_factory=list)
+
+
+class ContextTagConfig(BaseModel):
+    name: str
+    description: str | None = None
+    folder: str
+
+
+ConfigResponse.model_rebuild()
 
 
 class TagExampleResponse(BaseModel):
@@ -240,6 +276,29 @@ def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionRespons
 @app.get("/api/config", response_model=ConfigResponse)
 async def api_config() -> ConfigResponse:
     status = await get_status(force_refresh=False)
+    templates = [
+        FolderTemplateConfig(
+            name=template.name,
+            description=template.description or None,
+            children=[
+                FolderChildConfig(name=child.name, description=child.description or None)
+                for child in template.children
+            ],
+            tag_guidelines=[
+                TagGuidelineConfig(name=guideline.name, description=guideline.description or None)
+                for guideline in template.tag_guidelines
+            ],
+        )
+        for template in get_folder_templates()
+    ]
+    slot_configs = [
+        TagSlotConfig(name=slot.name, description=slot.description or None, options=list(slot.options))
+        for slot in get_tag_slots()
+    ]
+    context_tags = [
+        ContextTagConfig(name=guideline.name, description=guideline.description or None, folder=guideline.folder)
+        for guideline in get_context_tag_guidelines()
+    ]
     return ConfigResponse(
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
@@ -247,6 +306,9 @@ async def api_config() -> ConfigResponse:
         processed_tag=S.IMAP_PROCESSED_TAG or None,
         ai_tag_prefix=S.IMAP_AI_TAG_PREFIX or None,
         ollama=OllamaStatusResponse.model_validate(status_as_dict(status)),
+        folder_templates=templates,
+        tag_slots=slot_configs,
+        context_tags=context_tags,
     )
 
 

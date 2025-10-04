@@ -76,6 +76,18 @@ DEV_MODE=false
 - Tagging und Ordnerentscheidungen sind getrennte Arbeitsschritte: Tags werden automatisch vergeben,
   Ordner-Vorschläge können später bestätigt, korrigiert oder verworfen werden.
 
+### Konfigurierbare Hierarchie & Tag-Slots
+
+- Die Datei [`backend/llm_config.json`](backend/llm_config.json) definiert die gewünschte Ordnerhierarchie sowie alle
+  Tag-Slots. Jede Top-Level-Struktur (z. B. „Konzerte“, „Bestellungen“, „Reisen“, „Projekte“) kann eigene Unterordner und
+  kontextabhängige Tag-Leitfäden enthalten. Vorschläge des LLM orientieren sich strikt an dieser Konfiguration.
+- Über den Abschnitt `tag_slots` legst du die benannten Slots samt erlaubter Optionen fest. Die Reihenfolge der Einträge
+  entspricht der Darstellung im Frontend. Zusätzliche Kontext-Tags werden pro Top-Level über `tag_guidelines`
+  beschrieben (z. B. `datum-YYYY-MM-TT`, `band-NAME`).
+- Der `/api/config`-Endpunkt liefert die komplette Konfiguration (`folder_templates`, `tag_slots`, `context_tags`),
+  sodass auch externe Tools auf die Vorgaben zugreifen können. Änderungen an `llm_config.json` werden beim nächsten Request
+  automatisch berücksichtigt.
+
 ### Schutz- und Monitoring-Einstellungen
 
 - `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).

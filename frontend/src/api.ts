@@ -97,6 +97,35 @@ export interface OllamaStatus {
   models: OllamaModelStatus[]
 }
 
+export interface FolderChildConfig {
+  name: string
+  description?: string | null
+}
+
+export interface TagGuidelineConfig {
+  name: string
+  description?: string | null
+}
+
+export interface FolderTemplateConfig {
+  name: string
+  description?: string | null
+  children: FolderChildConfig[]
+  tag_guidelines: TagGuidelineConfig[]
+}
+
+export interface TagSlotConfig {
+  name: string
+  description?: string | null
+  options: string[]
+}
+
+export interface ContextTagConfig {
+  name: string
+  description?: string | null
+  folder: string
+}
+
 export interface AppConfig {
   dev_mode: boolean
   pending_list_limit: number
@@ -104,6 +133,9 @@ export interface AppConfig {
   processed_tag: string | null
   ai_tag_prefix: string | null
   ollama?: OllamaStatus | null
+  folder_templates: FolderTemplateConfig[]
+  tag_slots: TagSlotConfig[]
+  context_tags: ContextTagConfig[]
 }
 
 interface ModeResponse { mode: MoveMode }

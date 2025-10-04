@@ -4,11 +4,24 @@ from __future__ import annotations
 import json
 import logging
 import re
+import textwrap
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import httpx
 
+from configuration import (
+    context_tag_summary,
+    ensure_top_level_parent,
+    find_top_level_for_label,
+    folder_templates_summary,
+    get_context_tag_guidelines,
+    get_tag_slots,
+    max_tag_total,
+    slot_lookup_keys,
+    tag_slots_summary,
+    top_level_folder_names,
+)
 from settings import S
 
 
@@ -129,13 +142,34 @@ def build_classification_prompt(
 ) -> List[Dict[str, str]]:
     """Return chat messages instructing the LLM to refine folder suggestions."""
 
+    templates_overview = folder_templates_summary()
+    tag_overview = tag_slots_summary()
+    context_overview = context_tag_summary()
+    top_levels = ", ".join(top_level_folder_names()) or "(keine Vorgaben)"
+
+    tag_slots = get_tag_slots()
+    slot_schema_parts: List[str] = []
+    for slot in tag_slots:
+        options = " | ".join(slot.options) if slot.options else "frei"
+        slot_schema_parts.append(f'"{slot.name}": "Wert aus {options}"')
+    extras_samples = [f"{item.name}-wert" for item in get_context_tag_guidelines()[:2]]
+    if extras_samples:
+        extras_literal = ", ".join(f'"{sample}"' for sample in extras_samples)
+        extras_part = f'"extras": [{extras_literal}]'
+    else:
+        extras_part = '"extras": []'
+    schema_parts = list(slot_schema_parts)
+    schema_parts.append(extras_part)
+    tag_schema = "{" + ", ".join(schema_parts) + "}"
+
     system_prompt = (
-        "Du bist ein Assistent, der eingehende E-Mails passenden Ordnern zuordnet. "
-        "Nutze Score-Werte als Hinweis, darfst sie aber anpassen, wenn der Inhalt besser passt. "
-        "Falls kein Ordner passt, schlage genau einen neuen Unterordner vor. "
-        "Finde außerdem einen übergeordneten Themenbegriff und gib maximal drei aussagekräftige Tags zurück. "
-        "Die Tags müssen jeweils exakt ein Wort enthalten und in der Reihenfolge Komplexität, Priorität, Handlungsauftrag ausgegeben werden. "
-        "Antwort ausschließlich als gültiges JSON mit den Schlüsseln 'ranked', 'category', 'proposal' und 'tags'."
+        "Du bist ein Assistent, der eingehende E-Mails streng anhand einer vorgegebenen Ordnerhierarchie "
+        "einordnet. Nutze nur die konfigurierten Top-Level-Ordner und deren Unterstruktur. "
+        "Berechne die finale Zuordnung aus Scores, Inhalt und Vorgaben. Schlage nur dann einen neuen Unterordner vor, "
+        "wenn kein bestehender Pfad passt – der Vorschlag muss unter einem passenden Top-Level liegen. "
+        "Ermittele zusätzlich einen übergeordneten Themenbegriff und liefere strukturierte Tags. "
+        "Alle Tags bestehen aus exakt einem Wort (Bindestriche sind erlaubt) und folgen den konfigurierten Slots. "
+        "Antworte ausschließlich als gültiges JSON mit den Schlüsseln 'ranked', 'category', 'proposal' und 'tags'."
     )
 
     hint = S.EMBED_PROMPT_HINT.strip()
@@ -144,25 +178,44 @@ def build_classification_prompt(
 
     structure = _summarize_hierarchy(folders)
     origin = (parent_hint or "(kein Hinweis)").strip() or "(kein Hinweis)"
-    user_prompt = (
-        "E-Mail-Daten:\n"
-        f"Betreff: {subject or '-'}\n"
-        f"Von: {sender or '-'}\n"
-        "Textauszug:\n"
-        f"{body[: S.EMBED_PROMPT_MAX_CHARS]}\n\n"
-        "Ausgangsordner: "
-        f"{origin}\n\n"
-        "Bekannte Ordnerstruktur (Gruppierung nach erster Ebene):\n"
-        f"{structure}\n\n"
-        "Vorliegende Ordner-Scores:\n"
-        f"{_format_ranked_for_prompt(ranked)}\n\n"
-        "Schema (JSON):\n"
+    schema_prefix = (
         '{"ranked": [{"name": "Ordner", "confidence": 0.0-1.0, "reason": "Kurzbegründung"}],'
         ' "category": {"label": "Überbegriff", "matched_folder": "Ordnerpfad oder null", "confidence": 0.0-1.0, "reason": "Warum"},'
-        ' "proposal": {"parent": "Überordner", "name": "Neuer Unterordner", "reason": "Warum"} oder null,'
-        ' "tags": ["Komplexität", "Priorität", "Handlungsauftrag"] }\n'
-        "Die Tags sind Ein-Wort-Begriffe (z. B. 'hoch', 'dringend', 'todo') und folgen der Reihenfolge Komplexität → Priorität → Handlungsauftrag."
+        ' "proposal": {"parent": "Top-Level", "name": "Neuer Unterordner", "reason": "Warum"} oder null,'
     )
+    user_prompt = textwrap.dedent(
+        f"""
+        E-Mail-Daten:
+        Betreff: {subject or '-'}
+        Von: {sender or '-'}
+        Textauszug:
+        {body[: S.EMBED_PROMPT_MAX_CHARS]}
+
+        Ausgangsordner: {origin}
+
+        Konfigurierte Top-Level-Ordner:
+        {top_levels}
+
+        Vorgegebene Struktur:
+        {templates_overview}
+
+        Bekannte Ordnerstruktur (Gruppierung nach erster Ebene):
+        {structure}
+
+        Tag-Slots:
+        {tag_overview}
+
+        Kontext-Tags:
+        {context_overview}
+
+        Vorliegende Ordner-Scores:
+        {_format_ranked_for_prompt(ranked)}
+
+        Schema (JSON):
+        {schema_prefix} "tags": {tag_schema} }}
+        Fülle jeden Tag-Slot mit genau einem Wort aus den Optionen (oder bestmöglichem Ein-Wort-Synonym) und ergänze passende Kontext-Tags in 'extras'.
+        """
+    ).strip()
 
     return [
         {"role": "system", "content": system_prompt},
@@ -242,22 +295,6 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
     return None
 
 
-_TAG_CATEGORY_KEYS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-    ("Komplexität", ("Komplexität", "komplexität", "complexity")),
-    ("Priorität", ("Priorität", "priorität", "prioritaet", "priority", "prio")),
-    (
-        "Handlungsauftrag",
-        (
-            "Handlungsauftrag",
-            "handlungsauftrag",
-            "action",
-            "auftrag",
-            "next_step",
-        ),
-    ),
-)
-
-
 def _normalise_tag_word(raw: Any) -> str | None:
     if raw is None:
         return None
@@ -271,40 +308,86 @@ def _normalise_tag_word(raw: Any) -> str | None:
 
 
 def _parse_tags(payload: Any) -> List[str]:
+    slots = get_tag_slots()
+    lookup = slot_lookup_keys(slots)
+    max_total = max_tag_total()
+
     if isinstance(payload, dict):
-        ordered: List[str] = []
-        for _, keys in _TAG_CATEGORY_KEYS:
+        lower_map = {
+            str(key).strip().lower(): value for key, value in payload.items()
+            if isinstance(key, str)
+        }
+        slot_values: List[str] = []
+        for keys in lookup:
             value: Any | None = None
             for key in keys:
                 if key in payload:
                     value = payload[key]
                     break
-            ordered.append(_normalise_tag_word(value) or "")
-        return ordered
+                lowered = key.lower()
+                if lowered in lower_map:
+                    value = lower_map[lowered]
+                    break
+            slot_values.append(_normalise_tag_word(value) or "")
 
-    tags: List[str] = []
+        extras_candidates: Any = None
+        for key in ("extras", "kontext", "context", "additional", "more"):
+            if key in payload:
+                extras_candidates = payload[key]
+                break
+            lowered = key.lower()
+            if lowered in lower_map:
+                extras_candidates = lower_map[lowered]
+                break
+
+        extras: List[str] = []
+        if isinstance(extras_candidates, list):
+            for item in extras_candidates:
+                word = _normalise_tag_word(item)
+                if word and word not in extras:
+                    extras.append(word)
+                    if len(extras) + len(slot_values) >= max_total:
+                        break
+        elif isinstance(extras_candidates, str):
+            word = _normalise_tag_word(extras_candidates)
+            if word:
+                extras.append(word)
+
+        combined = slot_values + extras
+        if len(combined) < len(lookup):
+            combined.extend([""] * (len(lookup) - len(combined)))
+        return combined[:max_total]
+
+    normalised: List[str] = []
     if isinstance(payload, list):
         for item in payload:
             word = _normalise_tag_word(item)
-            if not word or word in tags:
+            if not word or word in normalised:
                 continue
-            tags.append(word)
-            if len(tags) >= 3:
+            normalised.append(word)
+            if len(normalised) >= max_total:
                 break
     elif isinstance(payload, str):
         word = _normalise_tag_word(payload)
         if word:
-            tags.append(word)
-    return tags[:3]
+            normalised.append(word)
+
+    slot_count = len(lookup)
+    if len(normalised) < slot_count:
+        normalised.extend([""] * (slot_count - len(normalised)))
+    return normalised[:max_total]
 
 
 def _normalise_proposal(proposal: Any, parent_hint: str | None, top_score: float) -> Dict[str, Any] | None:
     if isinstance(proposal, dict):
-        parent = str(proposal.get("parent", parent_hint or "")).strip() or parent_hint or "Projects"
+        parent_raw = str(proposal.get("parent", parent_hint or "")).strip()
+        ensured_parent = ensure_top_level_parent(parent_raw or parent_hint)
+        top_levels = top_level_folder_names()
+        parent = ensured_parent or (top_levels[0] if top_levels else "Projects")
         name = str(proposal.get("name", "")).strip()
         reason = str(proposal.get("reason", "")) or "automatischer Vorschlag"
         if name:
-            full_path = f"{parent}/{name}".strip("/")
+            full_path = "/".join(segment for segment in (parent, name) if segment).strip("/")
             return {
                 "parent": parent,
                 "name": name,
@@ -430,11 +513,12 @@ def _derive_leaf(subject: str, sender: str | None) -> Tuple[str, str | None]:
 
 
 def _base_parent_segment(parent_hint: str | None) -> str:
+    ensured = ensure_top_level_parent(parent_hint)
+    if ensured:
+        return ensured
     fallback = (S.IMAP_INBOX or "INBOX").strip() or "INBOX"
-    if not parent_hint:
-        return fallback
-    parts = [part.strip() for part in parent_hint.split("/") if part.strip()]
-    return parts[0] if parts else fallback
+    fallback_ensured = ensure_top_level_parent(fallback)
+    return fallback_ensured or fallback
 
 
 def _category_parent_segment(category: Dict[str, Any] | None) -> str | None:
@@ -442,11 +526,14 @@ def _category_parent_segment(category: Dict[str, Any] | None) -> str | None:
         return None
     matched = category.get("matched_folder")
     if isinstance(matched, str) and matched.strip():
-        candidate = matched.strip().split("/")[0]
+        candidate = ensure_top_level_parent(matched)
         if candidate:
-            return _beautify_segment(candidate)
+            return candidate
     label = category.get("label")
     if isinstance(label, str) and label.strip():
+        configured = find_top_level_for_label(label)
+        if configured:
+            return configured
         return _beautify_segment(label)
     return None
 

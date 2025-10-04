@@ -282,6 +282,7 @@ export default function App(): JSX.Element {
                     key={item.message_uid}
                     suggestion={item}
                     onActionComplete={handleSuggestionUpdate}
+                    tagSlots={appConfig?.tag_slots}
                   />
                 ))}
               </div>
