@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Sequence, Set
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -156,3 +156,21 @@ def mark_processed(folder: str, uid: str) -> None:
     with get_session() as ses:
         ses.add(Processed(folder=folder, message_uid=str(uid)))
         ses.commit()
+
+
+def processed_uids_by_folder(folders: Sequence[str]) -> Dict[str, Set[str]]:
+    unique_folders = {str(folder) for folder in folders if folder}
+    if not unique_folders:
+        return {}
+    with get_session() as ses:
+        rows = ses.exec(select(Processed).where(Processed.folder.in_(unique_folders))).all()
+        mapping: Dict[str, Set[str]] = {folder: set() for folder in unique_folders}
+        for row in rows:
+            mapping.setdefault(row.folder, set()).add(str(row.message_uid))
+        return mapping
+
+
+def known_suggestion_uids() -> Set[str]:
+    with get_session() as ses:
+        rows = ses.exec(select(Suggestion)).all()
+        return {str(row.message_uid) for row in rows if row.message_uid}

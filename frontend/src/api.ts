@@ -26,6 +26,22 @@ export interface Suggestion {
   dry_run_result?: Record<string, unknown> | null
 }
 
+export interface PendingMail {
+  message_uid: string
+  folder: string
+  subject: string
+  from_addr?: string | null
+  date?: string | null
+}
+
+export interface PendingOverview {
+  total_messages: number
+  processed_count: number
+  pending_count: number
+  pending_ratio: number
+  pending: PendingMail[]
+}
+
 interface ModeResponse { mode: MoveMode }
 interface SuggestionsResponse { suggestions: Suggestion[] }
 export interface MoveResponse {
@@ -44,8 +60,17 @@ export interface RescanResponse {
   new_suggestions: number
 }
 
+export type StreamEvent =
+  | { type: 'hello'; msg: string }
+  | { type: 'pending_overview'; payload: PendingOverview }
+  | { type: 'pending_error'; error: string }
+
 const envBase = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8000'
 const BASE = envBase.replace(/\/$/, '')
+const baseUrl = new URL(BASE)
+const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
+const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
@@ -76,6 +101,10 @@ export async function getSuggestions(): Promise<Suggestion[]> {
   return data.suggestions
 }
 
+export async function getPendingOverview(): Promise<PendingOverview> {
+  return request<PendingOverview>('/api/pending')
+}
+
 export async function decide(message_uid: string, target_folder: string, decision: 'accept' | 'reject', dry_run = false): Promise<DecideResponse | MoveResponse> {
   return request<DecideResponse | MoveResponse>('/api/decide', {
     method: 'POST',
@@ -95,4 +124,17 @@ export async function rescan(folders?: string[]): Promise<RescanResponse> {
     method: 'POST',
     body: JSON.stringify({ folders }),
   })
+}
+
+export function openStream(onEvent: (event: StreamEvent) => void): WebSocket {
+  const socket = new WebSocket(STREAM_URL)
+  socket.onmessage = rawEvent => {
+    try {
+      const parsed = JSON.parse(rawEvent.data) as StreamEvent
+      onEvent(parsed)
+    } catch (error) {
+      console.error('Unbekannte Nachricht auf dem Stream', error)
+    }
+  }
+  return socket
 }
