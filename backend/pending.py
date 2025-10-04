@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from email import policy
 from typing import List, Sequence
 
-from database import known_suggestion_uids, processed_uids_by_folder
+from database import get_monitored_folders, known_suggestion_uids, processed_uids_by_folder
 from mailbox import fetch_recent_messages
 from settings import S
 from utils import subject_from
@@ -47,7 +47,11 @@ class PendingOverview:
 async def load_pending_overview(folders: Sequence[str] | None = None) -> PendingOverview:
     """Return metadata about messages that have not been processed by the AI yet."""
 
-    target_folders: List[str] = [str(folder) for folder in folders] if folders else [S.IMAP_INBOX]
+    if folders is not None:
+        target_folders: List[str] = [str(folder) for folder in folders if str(folder).strip()]
+    else:
+        configured = get_monitored_folders()
+        target_folders = [str(folder) for folder in configured] or [S.IMAP_INBOX]
     raw_payloads = await asyncio.to_thread(fetch_recent_messages, target_folders)
     processed_map = processed_uids_by_folder(target_folders)
     known_suggestions = known_suggestion_uids()

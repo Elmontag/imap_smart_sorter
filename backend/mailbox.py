@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, Iterator
+from typing import Dict, Iterable, Iterator, List
 
 from imapclient import IMAPClient
 
@@ -109,3 +109,53 @@ def move_message(uid: str, target_folder: str, src_folder: str | None = None) ->
             server.copy([i_uid], target_folder)
             server.delete_messages([i_uid])
             server.expunge()
+
+
+def ensure_folder_path(path: str) -> str:
+    """Create the given folder (including parents) if it does not exist."""
+
+    normalized = path.strip().strip("/")
+    if not normalized:
+        raise ValueError("invalid folder path")
+
+    segments: List[str] = [segment.strip() for segment in normalized.split("/") if segment.strip()]
+    if not segments:
+        raise ValueError("invalid folder path")
+
+    with _connect() as server:
+        try:
+            existing_response = server.list_folders()
+            delimiter = next(
+                (item[1] for item in existing_response if isinstance(item[1], str) and item[1]),
+                "/",
+            )
+            existing_server = {folder[2] for folder in existing_response}
+            existing_display = {
+                (name.replace(delimiter, "/") if isinstance(name, str) else "")
+                for name in existing_server
+            }
+        except Exception as exc:  # pragma: no cover - network interaction
+            logger.warning("Could not fetch current folders before creating %s: %s", normalized, exc)
+            delimiter = "/"
+            existing_server = set()
+            existing_display = set()
+
+        created_path_parts: List[str] = []
+        for segment in segments:
+            created_path_parts.append(segment)
+            display_candidate = "/".join(created_path_parts)
+            server_candidate = (
+                delimiter.join(created_path_parts) if delimiter and delimiter != "/" else display_candidate
+            )
+            if display_candidate in existing_display or server_candidate in existing_server:
+                continue
+            try:
+                server.create_folder(server_candidate)
+                existing_server.add(server_candidate)
+                existing_display.add(display_candidate)
+                logger.info("Created IMAP folder %s", display_candidate)
+            except Exception as exc:  # pragma: no cover - server specific behaviour
+                logger.error("Failed to create IMAP folder %s: %s", server_candidate, exc)
+                raise
+
+    return "/".join(segments)

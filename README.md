@@ -5,6 +5,7 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Backend** – FastAPI-Anwendung mit SQLite/SQLModel-Datenbank für Vorschläge, Status und API-Endpunkte.
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
+  Sie erlaubt jetzt auch das Speichern individueller Ordnerauswahlen sowie das direkte Bestätigen oder Ablehnen von KI-Ordner-Vorschlägen.
 
 ## Schnellstart mit Docker Compose
 
@@ -39,11 +40,12 @@ EMBED_PROMPT_MAX_CHARS=6000
   auf bereits gelesene Mails (`SEEN`).
 - Passe `SINCE_DAYS` an, falls dein IMAP-Server ältere Nachrichten nicht als „aktuell“ meldet.
 
-### OLLAMA-Prompt optimieren
+### OLLAMA-Integration optimieren
 
-- Der Worker erstellt den Prompt für Embeddings jetzt aus Betreff, Absender und Fließtext.
+- Der Worker nutzt Embeddings und einen nachgelagerten JSON-Chat mit dem Modell aus `CLASSIFIER_MODEL`,
+  um begründete Ordner-Rankings und optionale Neuanlage-Vorschläge zu erzeugen.
 - Über `EMBED_PROMPT_HINT` kannst du zusätzliche Instruktionen (z. B. Projektnamen, Prioritäten)
-  setzen, ohne den Code anzupassen.
+  setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
   zu kontrollieren.
 
@@ -99,12 +101,14 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `GET`   | `/healthz`          | Healthcheck für Monitoring |
 | `GET`   | `/api/mode`         | Liefert den aktuellen Move-Modus (`DRY_RUN`, `CONFIRM`, `AUTO`) |
 | `POST`  | `/api/mode`         | Setzt den Move-Modus – Body `{ "mode": "CONFIRM" }` |
-| `GET`   | `/api/folders`      | Listet verfügbare IMAP-Ordner |
+| `GET`   | `/api/folders`      | Liefert verfügbare Ordner sowie die gespeicherte Auswahl |
+| `POST`  | `/api/folders/selection` | Speichert die zu überwachenden IMAP-Ordner |
 | `GET`   | `/api/suggestions`  | Liefert offene Vorschläge inkl. Ranking |
 | `GET`   | `/api/pending`      | Übersicht offener, noch nicht verarbeiteter Nachrichten |
 | `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |
 | `POST`  | `/api/move`         | Verschiebt oder simuliert eine einzelne Nachricht |
 | `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |
+| `POST`  | `/api/proposal`     | Bestätigt oder verwirft einen KI-Ordner-Vorschlag |
 | `POST`  | `/api/rescan`       | Erzwingt einen einmaligen Scan (optional mit `folders`-Liste) |
 
 Alle Endpunkte liefern JSON und verwenden HTTP-Statuscodes für Fehlerzustände.

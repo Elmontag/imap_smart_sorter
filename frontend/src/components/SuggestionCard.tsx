@@ -1,25 +1,31 @@
-import React, { useMemo, useState } from 'react'
-import { Suggestion, decide, moveOne } from '../api'
+import React, { useEffect, useMemo, useState } from 'react'
+import { Suggestion, decide, decideProposal, moveOne } from '../api'
 
 interface Props {
   suggestion: Suggestion
   onActionComplete: () => Promise<void> | void
 }
 
-type BusyState = 'simulate' | 'accept' | 'reject' | null
+type BusyState = 'simulate' | 'accept' | 'reject' | 'proposal-accept' | 'proposal-reject' | null
 
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
 const formatScore = (value: number) => value.toFixed(2)
 
 const fallbackTarget = (suggestion: Suggestion) =>
-  suggestion.ranked?.[0]?.name ?? suggestion.proposal?.name ?? suggestion.src_folder ?? ''
+  suggestion.proposal?.full_path ?? suggestion.ranked?.[0]?.name ?? suggestion.proposal?.name ?? suggestion.src_folder ?? ''
 
 export default function SuggestionCard({ suggestion, onActionComplete }: Props): JSX.Element {
   const [target, setTarget] = useState<string>(fallbackTarget(suggestion))
   const [busy, setBusy] = useState<BusyState>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [proposal, setProposal] = useState(suggestion.proposal ?? null)
+
+  useEffect(() => {
+    setTarget(fallbackTarget(suggestion))
+    setProposal(suggestion.proposal ?? null)
+  }, [suggestion.message_uid, suggestion.proposal])
 
   const created = useMemo(() => {
     if (!suggestion.date) return null
@@ -28,6 +34,7 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
   }, [suggestion.date])
 
   const topScore = suggestion.ranked?.[0]?.score ?? null
+  const topReason = suggestion.ranked?.[0]?.reason ?? null
 
   const handleSimulate = async () => {
     if (!target) {
@@ -67,6 +74,32 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
     }
   }
 
+  const handleProposalDecision = async (accept: boolean) => {
+    if (!proposal) {
+      return
+    }
+    setBusy(accept ? 'proposal-accept' : 'proposal-reject')
+    setFeedback(null)
+    setError(null)
+    try {
+      const result = await decideProposal(suggestion.message_uid, accept)
+      if (result.proposal) {
+        setProposal(result.proposal)
+        if (accept && result.proposal.full_path) {
+          setTarget(result.proposal.full_path)
+          setFeedback(`Ordner angelegt: ${result.proposal.full_path}`)
+        } else if (!accept) {
+          setFeedback('Ordner-Vorschlag verworfen.')
+        }
+      }
+      await onActionComplete()
+    } catch (err) {
+      setError(`Vorschlag konnte nicht verarbeitet werden: ${toMessage(err)}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   return (
     <article className="suggestion-card">
       <header>
@@ -79,7 +112,10 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
       </header>
 
       {topScore !== null && (
-        <div className="score">Empfohlener Ordner: {suggestion.ranked?.[0]?.name ?? '–'} (Score {formatScore(topScore)})</div>
+        <div className="score">
+          Empfohlener Ordner: {suggestion.ranked?.[0]?.name ?? '–'} (Score {formatScore(topScore)})
+          {topReason && <span className="score-reason"> – {topReason}</span>}
+        </div>
       )}
 
       {suggestion.ranked && suggestion.ranked.length > 1 && (
@@ -87,14 +123,43 @@ export default function SuggestionCard({ suggestion, onActionComplete }: Props):
           {suggestion.ranked.slice(1).map(item => (
             <span key={item.name} className="alt-badge">
               {item.name} · {formatScore(item.score)}
+              {item.reason ? ` – ${item.reason}` : ''}
             </span>
           ))}
         </div>
       )}
 
-      {suggestion.proposal && (
+      {proposal && (
         <div className="proposal">
-          Neuer Ordner-Vorschlag: <code>{suggestion.proposal.parent}/{suggestion.proposal.name}</code> · {suggestion.proposal.reason}
+          <div className="proposal-text">
+            Neuer Ordner-Vorschlag: <code>{proposal.full_path ?? `${proposal.parent}/${proposal.name}`}</code>
+            {proposal.reason ? ` · ${proposal.reason}` : ''}
+          </div>
+          {proposal.status === 'pending' && (
+            <div className="proposal-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => handleProposalDecision(true)}
+                disabled={busy !== null}
+              >
+                {busy === 'proposal-accept' ? 'Lege an…' : 'Ordner anlegen'}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => handleProposalDecision(false)}
+                disabled={busy !== null}
+              >
+                {busy === 'proposal-reject' ? 'Verwerfe…' : 'Vorschlag ablehnen'}
+              </button>
+            </div>
+          )}
+          {proposal.status && proposal.status !== 'pending' && (
+            <div className={`proposal-status ${proposal.status}`}>
+              {proposal.status === 'accepted' ? 'Ordner wurde angelegt.' : 'Vorschlag verworfen.'}
+            </div>
+          )}
         </div>
       )}
 
