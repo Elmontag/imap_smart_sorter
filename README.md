@@ -31,6 +31,10 @@ SINCE_DAYS=14
 LOG_LEVEL=INFO
 EMBED_PROMPT_HINT=E-Mails zu Rechnungen bitte besonders präzise clustern
 EMBED_PROMPT_MAX_CHARS=6000
+IMAP_PROTECTED_TAG=SmartSorter/Protected
+IMAP_PROCESSED_TAG=SmartSorter/Done
+PENDING_LIST_LIMIT=25
+DEV_MODE=false
 ```
 
 ### Hinweise zur IMAP-Suche
@@ -48,6 +52,14 @@ EMBED_PROMPT_MAX_CHARS=6000
   setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
   zu kontrollieren.
+
+### Schutz- und Monitoring-Einstellungen
+
+- `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).
+- `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
+- `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 blendet die Tabelle aus).
+- `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
+  Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
 
 ## Lokale Entwicklung
 
@@ -105,6 +117,7 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `POST`  | `/api/folders/selection` | Speichert die zu überwachenden IMAP-Ordner |
 | `GET`   | `/api/suggestions`  | Liefert offene Vorschläge inkl. Ranking |
 | `GET`   | `/api/pending`      | Übersicht offener, noch nicht verarbeiteter Nachrichten |
+| `GET`   | `/api/config`       | Liefert Laufzeitkonfiguration (Dev-Modus, Tag-Namen, Listenlimit) |
 | `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |
 | `POST`  | `/api/move`         | Verschiebt oder simuliert eine einzelne Nachricht |
 | `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |

@@ -1,3 +1,5 @@
+import { recordDevEvent } from './devtools'
+
 export type MoveMode = 'DRY_RUN' | 'CONFIRM' | 'AUTO'
 
 export interface SuggestionScore {
@@ -44,6 +46,15 @@ export interface PendingOverview {
   pending_count: number
   pending_ratio: number
   pending: PendingMail[]
+  displayed_pending?: number
+  list_limit?: number
+}
+
+export interface AppConfig {
+  dev_mode: boolean
+  pending_list_limit: number
+  protected_tag: string | null
+  processed_tag: string | null
 }
 
 interface ModeResponse { mode: MoveMode }
@@ -87,15 +98,57 @@ const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
 const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? 'GET'
+  const label = `${method} ${path}`
+  if (init?.body) {
+    let parsed: unknown = init.body
+    if (typeof init.body === 'string') {
+      try {
+        parsed = JSON.parse(init.body)
+      } catch (error) {
+        parsed = init.body
+      }
+    }
+    recordDevEvent({ type: 'request', label, payload: parsed })
+  } else {
+    recordDevEvent({ type: 'request', label })
+  }
+
+  const started = performance.now()
   const response = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
   })
   if (!response.ok) {
     const text = await response.text()
+    recordDevEvent({
+      type: 'error',
+      label,
+      details: `${response.status} ${response.statusText}`,
+      payload: text,
+      durationMs: performance.now() - started,
+    })
     throw new Error(text || `${response.status} ${response.statusText}`)
   }
-  return response.json() as Promise<T>
+  const clone = response.clone()
+  const data = (await response.json()) as T
+  try {
+    const payload = await clone.json()
+    recordDevEvent({
+      type: 'response',
+      label,
+      payload,
+      durationMs: performance.now() - started,
+    })
+  } catch (error) {
+    recordDevEvent({
+      type: 'response',
+      label,
+      payload: '[non-json response]',
+      durationMs: performance.now() - started,
+    })
+  }
+  return data
 }
 
 export async function getMode(): Promise<ModeResponse> {
@@ -117,6 +170,10 @@ export async function getSuggestions(): Promise<Suggestion[]> {
 
 export async function getPendingOverview(): Promise<PendingOverview> {
   return request<PendingOverview>('/api/pending')
+}
+
+export async function getAppConfig(): Promise<AppConfig> {
+  return request<AppConfig>('/api/config')
 }
 
 export async function decide(message_uid: string, target_folder: string, decision: 'accept' | 'reject', dry_run = false): Promise<DecideResponse | MoveResponse> {
@@ -156,13 +213,24 @@ export async function decideProposal(message_uid: string, accept: boolean): Prom
 
 export function openStream(onEvent: (event: StreamEvent) => void): WebSocket {
   const socket = new WebSocket(STREAM_URL)
+  recordDevEvent({ type: 'info', label: 'WebSocket verbinden', details: STREAM_URL })
   socket.onmessage = rawEvent => {
     try {
       const parsed = JSON.parse(rawEvent.data) as StreamEvent
+      recordDevEvent({ type: 'stream', label: parsed.type, payload: parsed })
       onEvent(parsed)
     } catch (error) {
-      console.error('Unbekannte Nachricht auf dem Stream', error)
+      recordDevEvent({ type: 'error', label: 'Stream parse error', payload: String(error) })
     }
+  }
+  socket.onerror = event => {
+    recordDevEvent({ type: 'error', label: 'WebSocket Fehler', payload: event })
+  }
+  socket.onopen = () => {
+    recordDevEvent({ type: 'info', label: 'WebSocket geöffnet' })
+  }
+  socket.onclose = () => {
+    recordDevEvent({ type: 'info', label: 'WebSocket geschlossen' })
   }
   return socket
 }

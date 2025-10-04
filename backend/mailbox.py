@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, Iterator, List
+from typing import Dict, Iterable, Iterator, List, Sequence
 
 from imapclient import IMAPClient
 
@@ -13,6 +14,12 @@ from settings import S
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MessageContent:
+    body: bytes
+    flags: Sequence[str]
 
 
 @contextmanager
@@ -72,14 +79,30 @@ def fetch_messages(server: IMAPClient, uids, batch_size: int = 100):
     return out
 
 
-def fetch_recent_messages(folders: Iterable[str]) -> Dict[str, Dict[int, bytes]]:
+def _normalize_flags(raw_flags: Iterable[object]) -> List[str]:
+    normalized: List[str] = []
+    for flag in raw_flags:
+        if isinstance(flag, bytes):
+            try:
+                decoded = flag.decode("utf-8")
+            except UnicodeDecodeError:
+                decoded = flag.decode("utf-8", errors="ignore")
+            normalized.append(decoded)
+        else:
+            normalized.append(str(flag))
+    return normalized
+
+
+def fetch_recent_messages(folders: Iterable[str]) -> Dict[str, Dict[int, MessageContent]]:
     """Return the RFC822 payload for recently seen messages in the given folders."""
 
     folders = list(folders)
     if not folders:
         return {}
 
-    payloads: Dict[str, Dict[int, bytes]] = {}
+    payloads: Dict[str, Dict[int, MessageContent]] = {}
+    protected_tag = S.IMAP_PROTECTED_TAG.strip()
+    processed_tag = S.IMAP_PROCESSED_TAG.strip()
     try:
         with _connect() as server:
             for folder in folders:
@@ -89,13 +112,40 @@ def fetch_recent_messages(folders: Iterable[str]) -> Dict[str, Dict[int, bytes]]
                 except Exception as exc:  # pragma: no cover - defensive network handling
                     logger.warning("Failed to fetch messages for %s: %s", folder, exc)
                     continue
-                payloads[folder] = {
-                    uid: msg.get(b"RFC822", b"") for uid, msg in data.items() if msg
-                }
+                filtered: Dict[int, MessageContent] = {}
+                for uid, msg in data.items():
+                    if not msg:
+                        continue
+                    raw_body = msg.get(b"RFC822", b"")
+                    if not raw_body:
+                        continue
+                    raw_flags = msg.get(b"FLAGS", []) or []
+                    normalized_flags = _normalize_flags(raw_flags)
+                    if protected_tag and protected_tag in normalized_flags:
+                        continue
+                    if processed_tag and processed_tag in normalized_flags:
+                        continue
+                    filtered[uid] = MessageContent(body=raw_body, flags=tuple(normalized_flags))
+                payloads[folder] = filtered
     except Exception as exc:  # pragma: no cover - defensive network handling
         logger.error("Failed to open IMAP connection: %s", exc)
         return {}
     return payloads
+
+
+def add_message_tag(uid: str, folder: str, tag: str) -> None:
+    normalized = tag.strip()
+    if not normalized:
+        return
+    with _connect() as server:
+        server.select_folder(folder or S.IMAP_INBOX)
+        i_uid = int(uid) if not isinstance(uid, int) else uid
+        try:
+            server.add_flags([i_uid], [normalized])
+        except Exception as exc:  # pragma: no cover - network specific behaviour
+            logger.warning(
+                "Failed to add tag %s to message %s in %s: %s", normalized, uid, folder or S.IMAP_INBOX, exc
+            )
 
 
 def move_message(uid: str, target_folder: str, src_folder: str | None = None) -> None:

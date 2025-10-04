@@ -81,6 +81,13 @@ class ProposalDecisionRequest(BaseModel):
     accept: bool
 
 
+class ConfigResponse(BaseModel):
+    dev_mode: bool
+    pending_list_limit: int
+    protected_tag: str | None = None
+    processed_tag: str | None = None
+
+
 class PendingMailResponse(BaseModel):
     message_uid: str
     folder: str
@@ -105,6 +112,8 @@ class PendingOverviewResponse(BaseModel):
     pending_count: int
     pending_ratio: float
     pending: List[PendingMailResponse]
+    displayed_pending: int
+    list_limit: int
 
     @classmethod
     def from_domain(cls, overview: PendingOverview) -> "PendingOverviewResponse":
@@ -114,6 +123,8 @@ class PendingOverviewResponse(BaseModel):
             pending_count=overview.pending_count,
             pending_ratio=overview.pending_ratio,
             pending=[PendingMailResponse.from_domain(item) for item in overview.pending],
+            displayed_pending=overview.displayed_pending,
+            list_limit=overview.list_limit,
         )
 
 
@@ -169,6 +180,16 @@ def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionRespons
     available = list_folders()
     selected = get_monitored_folders()
     return FolderSelectionResponse(available=available, selected=selected)
+
+
+@app.get("/api/config", response_model=ConfigResponse)
+def api_config() -> ConfigResponse:
+    return ConfigResponse(
+        dev_mode=bool(S.DEV_MODE),
+        pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
+        protected_tag=S.IMAP_PROTECTED_TAG or None,
+        processed_tag=S.IMAP_PROCESSED_TAG or None,
+    )
 
 
 @app.get("/api/suggestions", response_model=SuggestionsResponse)

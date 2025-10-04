@@ -27,7 +27,7 @@ from database import (
     save_suggestion,
 )
 from feedback import update_profiles_on_accept
-from mailbox import fetch_recent_messages, move_message
+from mailbox import add_message_tag, fetch_recent_messages, move_message
 from models import Suggestion
 from settings import S
 from utils import extract_text, subject_from, thread_headers
@@ -60,8 +60,9 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
     messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
     processed = 0
     for folder, payloads in messages.items():
-        for uid, raw_bytes in payloads.items():
+        for uid, meta in payloads.items():
             uid_str = str(uid)
+            raw_bytes = meta.body if hasattr(meta, "body") else meta
             if not raw_bytes or is_processed(folder, uid_str):
                 continue
             try:
@@ -112,6 +113,7 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
         move_status="pending",
     )
     save_suggestion(suggestion)
+    add_message_tag(uid, src_folder, S.IMAP_PROCESSED_TAG)
 
     mode = get_mode() or S.MOVE_MODE
     should_auto_move = mode == "AUTO" and (

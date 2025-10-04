@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     AUTO_THRESHOLD: float = 0.92
     LOG_LEVEL: str = "INFO"
 
+    IMAP_PROTECTED_TAG: str = ""
+    IMAP_PROCESSED_TAG: str = ""
+
+    PENDING_LIST_LIMIT: int = 25
+
+    DEV_MODE: bool = False
+
     class Config:
         env_file = ".env"
 

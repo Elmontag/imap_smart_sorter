@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { PendingOverview } from '../api'
 
 interface PendingOverviewPanelProps {
@@ -18,6 +18,26 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
   const totalMessages = overview?.total_messages ?? 0
   const processedCount = overview?.processed_count ?? 0
   const ratioText = useMemo(() => formatPercent(overview?.pending_ratio ?? 0), [overview?.pending_ratio])
+  const listLimit = overview?.list_limit ?? overview?.pending?.length ?? 0
+  const listDisabled = listLimit === 0
+  const entries = overview?.pending ?? []
+  const itemsPerPage = 10
+  const [page, setPage] = useState(1)
+  const totalPages = Math.max(1, Math.ceil(entries.length / itemsPerPage))
+
+  useEffect(() => {
+    setPage(1)
+  }, [entries.length, listDisabled])
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages)
+    }
+  }, [page, totalPages])
+
+  const startIndex = (page - 1) * itemsPerPage
+  const pageItems = entries.slice(startIndex, startIndex + itemsPerPage)
+  const truncated = !listDisabled && (overview?.displayed_pending ?? entries.length) < pendingCount
 
   return (
     <section className="pending-overview">
@@ -46,25 +66,51 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
 
       {loading && <div className="pending-placeholder">Live-Status wird geladen…</div>}
 
-      {!loading && !pendingCount && !error && (
+      {!loading && !pendingCount && !error && !listDisabled && (
         <div className="pending-placeholder">Alle aktuellen Nachrichten wurden bereits analysiert.</div>
       )}
 
-      {!loading && pendingCount > 0 && (
-        <ul className="pending-list">
-          {overview?.pending.map(item => (
-            <li key={`${item.folder}-${item.message_uid}`} className="pending-item">
-              <div className="pending-item-header">
-                <span className="pending-subject">{formatSubject(item.subject)}</span>
-                <span className="pending-folder">{item.folder}</span>
-              </div>
-              <div className="pending-item-meta">
-                <span>{formatSender(item.from_addr)}</span>
-                {item.date && <span className="date">{item.date}</span>}
-              </div>
-            </li>
-          ))}
-        </ul>
+      {!loading && pendingCount > 0 && !listDisabled && (
+        <div className="pending-table-wrapper">
+          {truncated && (
+            <div className="pending-limit-info">
+              Anzeige begrenzt auf {overview?.displayed_pending ?? entries.length} von {pendingCount} Einträgen.
+            </div>
+          )}
+          <table className="pending-table">
+            <thead>
+              <tr>
+                <th>Betreff</th>
+                <th>Ordner</th>
+                <th>Absender</th>
+                <th>Datum</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageItems.map(item => (
+                <tr key={`${item.folder}-${item.message_uid}`}>
+                  <td data-label="Betreff">{formatSubject(item.subject)}</td>
+                  <td data-label="Ordner">{item.folder}</td>
+                  <td data-label="Absender">{formatSender(item.from_addr)}</td>
+                  <td data-label="Datum">{item.date ?? '–'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {entries.length > itemsPerPage && (
+            <div className="pending-pagination" role="navigation" aria-label="Pending Navigation">
+              <button type="button" onClick={() => setPage(page - 1)} disabled={page <= 1}>
+                Zurück
+              </button>
+              <span>
+                Seite {page} von {totalPages}
+              </span>
+              <button type="button" onClick={() => setPage(page + 1)} disabled={page >= totalPages}>
+                Weiter
+              </button>
+            </div>
+          )}
+        </div>
       )}
     </section>
   )
