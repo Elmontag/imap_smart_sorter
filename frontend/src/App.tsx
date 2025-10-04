@@ -30,7 +30,7 @@ const toMessage = (err: unknown) => (err instanceof Error ? err.message : String
 export default function App(): JSX.Element {
   const { data: suggestions, loading, error, refresh } = useSuggestions()
   const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
-  const { error: configError } = useAppConfig()
+  const { data: appConfig, error: configError } = useAppConfig()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -118,6 +118,28 @@ export default function App(): JSX.Element {
     return `${suggestions.length} offene Vorschläge`
   }, [loading, suggestions])
 
+  const ollamaInfo = useMemo(() => {
+    const status = appConfig?.ollama
+    if (!status) {
+      return null
+    }
+    const classifier = status.models.find(model => model.purpose === 'classifier')
+    const embedding = status.models.find(model => model.purpose === 'embedding')
+    const classifierLabel = classifier
+      ? `${classifier.name}${classifier.available ? '' : ' (fehlt)'}`
+      : '–'
+    const embeddingLabel = embedding
+      ? `${embedding.name}${embedding.available ? '' : ' (fehlt)'}`
+      : '–'
+    return {
+      reachable: status.reachable,
+      host: status.host,
+      message: status.message ?? undefined,
+      classifier: classifierLabel,
+      embedding: embeddingLabel,
+    }
+  }, [appConfig])
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -140,6 +162,18 @@ export default function App(): JSX.Element {
             {rescanning ? 'Scan läuft…' : 'Neu scannen'}
           </button>
         </div>
+        {ollamaInfo && (
+          <div
+            className={`ollama-status ${ollamaInfo.reachable ? 'ok' : 'error'}`}
+            title={ollamaInfo.message}
+          >
+            <span className="label">Ollama</span>
+            <span className="value">
+              {ollamaInfo.reachable ? 'verbunden' : 'offline'} ({ollamaInfo.host}) · Klassifikator: {ollamaInfo.classifier} ·
+              Embeddings: {ollamaInfo.embedding}
+            </span>
+          </div>
+        )}
       </header>
 
       {status && (

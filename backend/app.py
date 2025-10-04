@@ -32,6 +32,7 @@ from imap_worker import one_shot_scan
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
+from ollama_service import ensure_ollama_ready, get_status, status_as_dict
 from settings import S
 
 
@@ -81,11 +82,31 @@ class ProposalDecisionRequest(BaseModel):
     accept: bool
 
 
+class OllamaModelStatusResponse(BaseModel):
+    name: str
+    normalized_name: str
+    purpose: str
+    available: bool
+    pulled: bool
+    digest: str | None = None
+    size: int | None = None
+    message: str | None = None
+
+
+class OllamaStatusResponse(BaseModel):
+    host: str
+    reachable: bool
+    message: str | None = None
+    last_checked: datetime | None = None
+    models: List[OllamaModelStatusResponse] = Field(default_factory=list)
+
+
 class ConfigResponse(BaseModel):
     dev_mode: bool
     pending_list_limit: int
     protected_tag: str | None = None
     processed_tag: str | None = None
+    ollama: OllamaStatusResponse | None = None
 
 
 class PendingMailResponse(BaseModel):
@@ -137,8 +158,9 @@ logger = logging.getLogger(__name__)
 
 
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
     init_db()
+    await ensure_ollama_ready()
 
 
 @app.get("/healthz")
@@ -183,18 +205,26 @@ def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionRespons
 
 
 @app.get("/api/config", response_model=ConfigResponse)
-def api_config() -> ConfigResponse:
+async def api_config() -> ConfigResponse:
+    status = await get_status(force_refresh=False)
     return ConfigResponse(
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
         protected_tag=S.IMAP_PROTECTED_TAG or None,
         processed_tag=S.IMAP_PROCESSED_TAG or None,
+        ollama=OllamaStatusResponse.model_validate(status_as_dict(status)),
     )
 
 
 @app.get("/api/suggestions", response_model=SuggestionsResponse)
 def api_suggestions() -> SuggestionsResponse:
     return SuggestionsResponse(suggestions=list_open_suggestions())
+
+
+@app.get("/api/ollama", response_model=OllamaStatusResponse)
+async def api_ollama_status() -> OllamaStatusResponse:
+    status = await get_status(force_refresh=True)
+    return OllamaStatusResponse.model_validate(status_as_dict(status))
 
 
 async def _pending_overview() -> PendingOverviewResponse:
