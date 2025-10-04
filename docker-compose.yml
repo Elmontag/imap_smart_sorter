@@ -7,7 +7,7 @@ services:
     ports: ["11434:11434"]
     volumes: [ "ollama:/root/.ollama" ]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 30
