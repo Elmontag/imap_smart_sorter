@@ -133,7 +133,8 @@ def build_classification_prompt(
         "Du bist ein Assistent, der eingehende E-Mails passenden Ordnern zuordnet. "
         "Nutze Score-Werte als Hinweis, darfst sie aber anpassen, wenn der Inhalt besser passt. "
         "Falls kein Ordner passt, schlage genau einen neuen Unterordner vor. "
-        "Finde außerdem einen übergeordneten Themenbegriff und bis zu drei aussagekräftige Tags. "
+        "Finde außerdem einen übergeordneten Themenbegriff und gib maximal drei aussagekräftige Tags zurück. "
+        "Die Tags müssen jeweils exakt ein Wort enthalten und in der Reihenfolge Komplexität, Priorität, Handlungsauftrag ausgegeben werden. "
         "Antwort ausschließlich als gültiges JSON mit den Schlüsseln 'ranked', 'category', 'proposal' und 'tags'."
     )
 
@@ -159,8 +160,8 @@ def build_classification_prompt(
         '{"ranked": [{"name": "Ordner", "confidence": 0.0-1.0, "reason": "Kurzbegründung"}],'
         ' "category": {"label": "Überbegriff", "matched_folder": "Ordnerpfad oder null", "confidence": 0.0-1.0, "reason": "Warum"},'
         ' "proposal": {"parent": "Überordner", "name": "Neuer Unterordner", "reason": "Warum"} oder null,'
-        ' "tags": ["Tag1", "Tag2"] }\n'
-        "Maximal drei Einträge in 'ranked' und höchstens drei Tags."
+        ' "tags": ["Komplexität", "Priorität", "Handlungsauftrag"] }\n'
+        "Die Tags sind Ein-Wort-Begriffe (z. B. 'hoch', 'dringend', 'todo') und folgen der Reihenfolge Komplexität → Priorität → Handlungsauftrag."
     )
 
     return [
@@ -241,21 +242,59 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
     return None
 
 
+_TAG_CATEGORY_KEYS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("Komplexität", ("Komplexität", "komplexität", "complexity")),
+    ("Priorität", ("Priorität", "priorität", "prioritaet", "priority", "prio")),
+    (
+        "Handlungsauftrag",
+        (
+            "Handlungsauftrag",
+            "handlungsauftrag",
+            "action",
+            "auftrag",
+            "next_step",
+        ),
+    ),
+)
+
+
+def _normalise_tag_word(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    candidate = str(raw).strip()
+    if not candidate:
+        return None
+    token = re.split(r"[\s,;/|]+", candidate, maxsplit=1)[0]
+    cleaned = re.sub(r"[^0-9A-Za-zÄÖÜäöüß+-]", "", token)
+    cleaned = cleaned.strip("-_+")
+    return cleaned[:32] or None
+
+
 def _parse_tags(payload: Any) -> List[str]:
+    if isinstance(payload, dict):
+        ordered: List[str] = []
+        for _, keys in _TAG_CATEGORY_KEYS:
+            value: Any | None = None
+            for key in keys:
+                if key in payload:
+                    value = payload[key]
+                    break
+            ordered.append(_normalise_tag_word(value) or "")
+        return ordered
+
     tags: List[str] = []
     if isinstance(payload, list):
         for item in payload:
-            if not isinstance(item, str):
+            word = _normalise_tag_word(item)
+            if not word or word in tags:
                 continue
-            candidate = item.strip()
-            if not candidate:
-                continue
-            if candidate not in tags:
-                tags.append(candidate[:48])
+            tags.append(word)
             if len(tags) >= 3:
                 break
-    elif isinstance(payload, str) and payload.strip():
-        tags.append(payload.strip()[:48])
+    elif isinstance(payload, str):
+        word = _normalise_tag_word(payload)
+        if word:
+            tags.append(word)
     return tags[:3]
 
 

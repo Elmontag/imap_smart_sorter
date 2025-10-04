@@ -182,18 +182,6 @@ export default function App(): JSX.Element {
             {rescanning ? 'Scan läuft…' : 'Neu scannen'}
           </button>
         </div>
-        {ollamaInfo && (
-          <div
-            className={`ollama-status ${ollamaInfo.reachable ? 'ok' : 'error'}`}
-            title={ollamaInfo.message}
-          >
-            <span className="label">Ollama</span>
-            <span className="value">
-              {ollamaInfo.reachable ? 'verbunden' : 'offline'} ({ollamaInfo.host}) · Klassifikator: {ollamaInfo.classifier} ·
-              Embeddings: {ollamaInfo.embedding}
-            </span>
-          </div>
-        )}
       </header>
 
       {status && (
@@ -219,6 +207,26 @@ export default function App(): JSX.Element {
             loading={foldersLoading}
             saving={savingFolders}
           />
+          {ollamaInfo && (
+            <div
+              className={`ollama-status-card ${ollamaInfo.reachable ? 'ok' : 'error'}`}
+              title={ollamaInfo.message}
+            >
+              <div className="ollama-status-header">
+                <span className="label">Ollama</span>
+                <span className={`indicator ${ollamaInfo.reachable ? 'online' : 'offline'}`}>
+                  {ollamaInfo.reachable ? 'verbunden' : 'offline'}
+                </span>
+              </div>
+              <div className="ollama-status-body">
+                <div className="host">{ollamaInfo.host}</div>
+                <div className="models">
+                  <span>Klassifikator: {ollamaInfo.classifier}</span>
+                  <span>Embeddings: {ollamaInfo.embedding}</span>
+                </div>
+              </div>
+            </div>
+          )}
         </aside>
         <main className="app-main">
           <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />

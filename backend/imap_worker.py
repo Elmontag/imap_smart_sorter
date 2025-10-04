@@ -28,7 +28,7 @@ from database import (
     save_suggestion,
 )
 from feedback import update_profiles_on_accept
-from mailbox import add_message_tag, fetch_recent_messages, move_message
+from mailbox import add_message_tag, fetch_recent_messages, list_folders, move_message
 from models import Suggestion
 from ollama_service import ensure_ollama_ready
 from settings import S
@@ -107,6 +107,7 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
         configured = get_monitored_folders()
         target_folders = configured or [S.IMAP_INBOX]
     messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
+    all_folders = await asyncio.to_thread(list_folders)
     processed = 0
     for folder, payloads in messages.items():
         for uid, meta in payloads.items():
@@ -115,7 +116,7 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
             if not raw_bytes or is_processed(folder, uid_str):
                 continue
             try:
-                await handle_message(uid_str, raw_bytes, folder)
+                await handle_message(uid_str, raw_bytes, folder, all_folders)
                 mark_processed(folder, uid_str)
                 processed += 1
             except Exception:  # pragma: no cover - defensive background handling
@@ -123,7 +124,12 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
     return processed
 
 
-async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
+async def handle_message(
+    uid: str,
+    raw_bytes: bytes,
+    src_folder: str,
+    folder_structure: Sequence[str] | None = None,
+) -> None:
     msg = email.message_from_bytes(raw_bytes, policy=policy.default)
     subject, from_addr = subject_from(msg)
     thread = thread_headers(msg)
@@ -140,13 +146,22 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
     embedding = await embed(prompt)
     ranked_pairs = score_profiles(embedding, profiles) if embedding else []
     folder_names = [fp.name for fp in folder_profiles if fp.name]
+    structure_candidates: list[str] = []
+    if folder_structure:
+        structure_candidates.extend(
+            str(name).strip()
+            for name in folder_structure
+            if isinstance(name, str) and str(name).strip()
+        )
+    structure_candidates.extend(name for name in folder_names if name)
+    structure_overview = list(dict.fromkeys(structure_candidates))
 
     refined_ranked, proposal, category, tags = await classify_with_model(
         subject or "",
         from_addr or "",
         text,
         ranked_pairs,
-        folder_names,
+        structure_overview,
         parent_hint=src_folder,
     )
     top_score = ranked_pairs[0][1] if ranked_pairs else 0.0
