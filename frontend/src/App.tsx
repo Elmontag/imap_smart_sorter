@@ -28,7 +28,8 @@ interface StatusMessage {
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
 export default function App(): JSX.Element {
-  const { data: suggestions, loading, error, refresh } = useSuggestions()
+  const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
+  const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
   const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
   const { data: appConfig, error: configError } = useAppConfig()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
@@ -114,9 +115,20 @@ export default function App(): JSX.Element {
 
   const headline = useMemo(() => {
     if (loading) return 'Lade Vorschläge…'
-    if (!suggestions.length) return 'Keine offenen Vorschläge.'
-    return `${suggestions.length} offene Vorschläge`
-  }, [loading, suggestions])
+    if (suggestionScope === 'open') {
+      if (!suggestions.length) return 'Keine offenen Vorschläge.'
+      return `${suggestions.length} offene Vorschläge`
+    }
+    const total = suggestionStats?.totalCount ?? suggestions.length
+    if (!total) {
+      return 'Noch keine analysierten Vorschläge.'
+    }
+    return `${total} analysierte Vorschläge`
+  }, [loading, suggestions, suggestionScope, suggestionStats?.totalCount])
+
+  const toggleSuggestionScope = useCallback(() => {
+    setSuggestionScope(scope => (scope === 'open' ? 'all' : 'open'))
+  }, [])
 
   const ollamaInfo = useMemo(() => {
     const status = appConfig?.ollama
@@ -206,12 +218,46 @@ export default function App(): JSX.Element {
           <section className="suggestions">
             <div className="suggestions-header">
               <h2>{headline}</h2>
-              <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
-                Aktualisieren
-              </button>
+              <div className="suggestions-actions">
+                <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
+                  Aktualisieren
+                </button>
+                <button type="button" className="ghost" onClick={toggleSuggestionScope} disabled={loading}>
+                  {suggestionScope === 'open'
+                    ? 'Alle analysierten Mails bearbeiten'
+                    : 'Nur offene Vorschläge anzeigen'}
+                </button>
+              </div>
             </div>
+            {suggestionStats && (
+              <div className="suggestions-metrics">
+                <div className="suggestion-metric open">
+                  <span className="label">Zu bearbeiten</span>
+                  <strong>{suggestionStats.openCount}</strong>
+                  <span className="muted">offene Vorschläge</span>
+                </div>
+                <div className="suggestion-metric processed">
+                  <span className="label">Bereits bearbeitet</span>
+                  <strong>{suggestionStats.decidedCount}</strong>
+                  <span className="muted">von {suggestionStats.totalCount}</span>
+                </div>
+                <div
+                  className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}
+                >
+                  <span className="label">Fehler</span>
+                  <strong>{suggestionStats.errorCount}</strong>
+                  <span className="muted">benötigen Prüfung</span>
+                </div>
+              </div>
+            )}
             {loading && <div className="placeholder">Bitte warten…</div>}
-            {!loading && !suggestions.length && <div className="placeholder">Super! Alles abgearbeitet.</div>}
+            {!loading && !suggestions.length && (
+              <div className="placeholder">
+                {suggestionScope === 'open'
+                  ? 'Super! Alles abgearbeitet.'
+                  : 'Es liegen noch keine analysierten Vorschläge vor.'}
+              </div>
+            )}
             {!loading && suggestions.length > 0 && (
               <div className="suggestion-grid">
                 {suggestions.map((item: Suggestion) => (

@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -19,13 +19,14 @@ from database import (
     get_mode,
     get_monitored_folders,
     init_db,
-    list_open_suggestions,
+    list_suggestions,
     mark_failed,
     mark_moved,
     record_decision,
     record_dry_run,
     set_mode,
     set_monitored_folders,
+    suggestion_status_counts,
     update_proposal,
 )
 from imap_worker import one_shot_scan
@@ -66,6 +67,10 @@ class BulkMoveRequest(BaseModel):
 
 class SuggestionsResponse(BaseModel):
     suggestions: List[Suggestion]
+    open_count: int
+    decided_count: int
+    error_count: int
+    total_count: int
 
 
 class FolderSelectionResponse(BaseModel):
@@ -217,8 +222,17 @@ async def api_config() -> ConfigResponse:
 
 
 @app.get("/api/suggestions", response_model=SuggestionsResponse)
-def api_suggestions() -> SuggestionsResponse:
-    return SuggestionsResponse(suggestions=list_open_suggestions())
+def api_suggestions(include: str = Query("open", pattern=r"^(open|all)$")) -> SuggestionsResponse:
+    include_all = include == "all"
+    counts = suggestion_status_counts()
+    suggestions = list_suggestions(include_all)
+    return SuggestionsResponse(
+        suggestions=suggestions,
+        open_count=counts.get("open", 0),
+        decided_count=counts.get("decided", 0),
+        error_count=counts.get("error", 0),
+        total_count=counts.get("total", 0),
+    )
 
 
 @app.get("/api/ollama", response_model=OllamaStatusResponse)

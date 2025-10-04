@@ -17,6 +17,8 @@ export interface NewFolderProposal {
   score_hint?: number
 }
 
+export type SuggestionScope = 'open' | 'all'
+
 export interface Suggestion {
   id?: number
   message_uid: string
@@ -29,6 +31,7 @@ export interface Suggestion {
   status?: string
   decision?: string | null
   move_status?: string | null
+  move_error?: string | null
   dry_run_result?: Record<string, unknown> | null
 }
 
@@ -78,7 +81,13 @@ export interface AppConfig {
 }
 
 interface ModeResponse { mode: MoveMode }
-interface SuggestionsResponse { suggestions: Suggestion[] }
+export interface SuggestionsResponse {
+  suggestions: Suggestion[]
+  open_count: number
+  decided_count: number
+  error_count: number
+  total_count: number
+}
 export interface MoveResponse {
   ok: boolean
   dry_run: boolean
@@ -183,9 +192,9 @@ export async function getFolders(): Promise<FolderSelectionResponse> {
   return request('/api/folders')
 }
 
-export async function getSuggestions(): Promise<Suggestion[]> {
-  const data = await request<SuggestionsResponse>('/api/suggestions')
-  return data.suggestions
+export async function getSuggestions(scope: SuggestionScope = 'open'): Promise<SuggestionsResponse> {
+  const query = scope === 'all' ? '?include=all' : ''
+  return request<SuggestionsResponse>(`/api/suggestions${query}`)
 }
 
 export async function getPendingOverview(): Promise<PendingOverview> {

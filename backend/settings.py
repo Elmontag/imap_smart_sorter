@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     EMBED_PROMPT_MAX_CHARS: int = 8000
 
     DATABASE_URL: str = "sqlite:///data/app.db"
+    INIT_RUN: bool = False
     POLL_INTERVAL_SECONDS: int = 30
     IDLE_FALLBACK: bool = True
     MIN_NEW_FOLDER_SCORE: float = 0.78

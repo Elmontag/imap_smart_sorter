@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set
 
+from sqlalchemy import func
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from models import AppConfig, FolderProfile, Processed, Suggestion
@@ -14,6 +16,9 @@ from settings import S
 
 
 os.makedirs("data", exist_ok=True)
+
+
+logger = logging.getLogger(__name__)
 
 
 def _make_engine():
@@ -24,7 +29,31 @@ def _make_engine():
 engine = _make_engine()
 
 
+def _reset_sqlite_file() -> None:
+    if not S.DATABASE_URL.startswith("sqlite:///"):
+        return
+    path = S.DATABASE_URL.replace("sqlite:///", "", 1)
+    if not path:
+        return
+    try:
+        engine.dispose()
+    except Exception:
+        logger.debug("Failed to dispose engine before reset", exc_info=True)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning("Konnte SQLite-Datei %s nicht löschen: %s", path, exc)
+
+
 def init_db() -> None:
+    if S.INIT_RUN:
+        logger.info("INIT_RUN aktiv – Datenbank wird zurückgesetzt")
+        SQLModel.metadata.drop_all(engine)
+        if S.DATABASE_URL.startswith("sqlite:///"):
+            _reset_sqlite_file()
     SQLModel.metadata.create_all(engine)
 
 
@@ -49,13 +78,31 @@ def save_suggestion(sug: Suggestion) -> None:
         ses.commit()
 
 
-def list_open_suggestions() -> List[Suggestion]:
+def list_suggestions(include_all: bool = False) -> List[Suggestion]:
     with get_session() as ses:
-        return (
-            ses.exec(
-                select(Suggestion).where(Suggestion.status == "open").order_by(Suggestion.id.desc())
-            ).all()
-        )
+        stmt = select(Suggestion).order_by(Suggestion.id.desc())
+        if not include_all:
+            stmt = stmt.where(Suggestion.status == "open")
+        return ses.exec(stmt).all()
+
+
+def suggestion_status_counts() -> Dict[str, int]:
+    counts = {"open": 0, "decided": 0, "error": 0}
+    total = 0
+    with get_session() as ses:
+        rows = ses.exec(select(Suggestion.status, func.count()).group_by(Suggestion.status)).all()
+        for status, amount in rows:
+            count = int(amount or 0)
+            normalized = (status or "open").strip().lower()
+            if normalized == "open":
+                counts["open"] += count
+            elif normalized == "error":
+                counts["error"] += count
+            else:
+                counts["decided"] += count
+            total += count
+    counts["total"] = total
+    return counts
 
 
 def find_suggestion_by_uid(uid: str) -> Optional[Suggestion]:

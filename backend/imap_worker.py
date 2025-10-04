@@ -100,7 +100,12 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
     )
     top_score = ranked_pairs[0][1] if ranked_pairs else 0.0
     if not proposal:
-        proposal = await propose_new_folder_if_needed(top_score, parent_hint=src_folder)
+        proposal = await propose_new_folder_if_needed(
+            top_score,
+            subject or "",
+            from_addr,
+            parent_hint=src_folder,
+        )
 
     suggestion = Suggestion(
         message_uid=uid,
