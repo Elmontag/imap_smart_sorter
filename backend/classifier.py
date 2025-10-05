@@ -357,6 +357,61 @@ def build_classification_prompt(
     ]
 
 
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _strip_code_fence(content: str) -> str:
+    text = content.strip()
+    if not text.startswith("```"):
+        return text
+    stripped = text[3:]
+    stripped = stripped.lstrip()
+    if stripped.lower().startswith("json"):
+        stripped = stripped[4:].lstrip()
+    closing = stripped.rfind("```")
+    if closing != -1:
+        stripped = stripped[:closing]
+    return stripped.strip()
+
+
+def _candidate_json_segments(content: str) -> List[str]:
+    text = content.strip()
+    if not text:
+        return []
+
+    candidates: List[str] = []
+
+    fenced = _strip_code_fence(text)
+    if fenced:
+        candidates.append(fenced)
+
+    if text and text not in candidates:
+        candidates.append(text)
+
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+        inner = text[brace_start : brace_end + 1].strip()
+        if inner and inner not in candidates:
+            candidates.append(inner)
+
+    return candidates
+
+
+def _load_json_payload(content: str) -> Dict[str, Any] | None:
+    for candidate in _candidate_json_segments(content):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                parsed, _ = _JSON_DECODER.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
 async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     payload = {
         "model": S.CLASSIFIER_MODEL,
@@ -848,10 +903,13 @@ async def classify_with_model(
     if not content:
         return _fallback_ranked(ranked), None, None, []
 
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:  # pragma: no cover - depends on LLM output
-        logger.warning("Konnte Ollama-Antwort nicht parsen: %s", exc)
+    parsed = _load_json_payload(content)
+    if not isinstance(parsed, dict):
+        preview = content.strip().splitlines()
+        sample = preview[0][:200] if preview else ""
+        logger.warning(
+            "Konnte Ollama-Antwort nicht parsen (Vorschau: %s)", sample
+        )
         return _fallback_ranked(ranked), None, None, []
 
     refined_ranked = _parse_ranked(parsed.get("ranked"), ranked)
