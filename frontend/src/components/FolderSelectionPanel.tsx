@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 interface Props {
   available: string[]
@@ -85,6 +85,8 @@ export default function FolderSelectionPanel({
   saving,
 }: Props): JSX.Element {
   const [filter, setFilter] = useState('')
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
+  const initialExpansion = useRef(false)
 
   useEffect(() => {
     setFilter('')
@@ -100,6 +102,72 @@ export default function FolderSelectionPanel({
   }, [normalizedAvailable, trimmedFilter])
   const tree = useMemo(() => buildFolderTree(normalizedAvailable), [normalizedAvailable])
   const selectionSet = useMemo(() => new Set(draft), [draft])
+
+  useEffect(() => {
+    if (trimmedFilter || initialExpansion.current || !tree.length) {
+      return
+    }
+    initialExpansion.current = true
+    setExpandedNodes(current => {
+      if (current.size > 0) {
+        return current
+      }
+      const next = new Set<string>()
+      tree.forEach(node => next.add(node.fullPath))
+      return next
+    })
+  }, [tree, trimmedFilter])
+
+  useEffect(() => {
+    if (trimmedFilter || !draft.length) {
+      return
+    }
+    setExpandedNodes(current => {
+      const next = new Set(current)
+      draft.forEach(folder => {
+        const parts = folder.split('/').filter(Boolean)
+        if (parts.length <= 1) {
+          return
+        }
+        let path = ''
+        for (let index = 0; index < parts.length - 1; index += 1) {
+          path = path ? `${path}/${parts[index]}` : parts[index]
+          next.add(path)
+        }
+      })
+      return next
+    })
+  }, [draft, trimmedFilter])
+
+  const toggleExpand = useCallback((path: string) => {
+    setExpandedNodes(current => {
+      const next = new Set(current)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }, [])
+
+  const expandAll = useCallback(() => {
+    const next = new Set<string>()
+    const collect = (nodes: FolderTreeNode[]) => {
+      nodes.forEach(node => {
+        next.add(node.fullPath)
+        if (node.children.length > 0) {
+          collect(node.children)
+        }
+      })
+    }
+    collect(tree)
+    setExpandedNodes(next)
+  }, [tree])
+
+  const collapseAll = useCallback(() => {
+    setExpandedNodes(new Set())
+  }, [])
 
   const toggleFolder = (folder: string) => {
     const exists = draft.includes(folder)
@@ -117,13 +185,30 @@ export default function FolderSelectionPanel({
   const renderNode = (node: FolderTreeNode): JSX.Element => {
     const checked = selectionSet.has(node.fullPath)
     const partial = !checked && hasSelectionInSubtree(node)
+    const hasChildren = node.children.length > 0
+    const expanded = expandedNodes.has(node.fullPath)
+    const rowClass = `folder-tree-row${checked ? ' checked' : ''}${partial ? ' partial' : ''}`
     return (
       <li key={node.fullPath}>
-        <label className={`${checked ? 'checked' : ''}${partial ? ' partial' : ''}`}>
-          <input type="checkbox" checked={checked} onChange={() => toggleFolder(node.fullPath)} disabled={saving} />
-          <span>{node.name}</span>
-        </label>
-        {node.children.length > 0 && <ul>{node.children.map(renderNode)}</ul>}
+        <div className={rowClass}>
+          {hasChildren ? (
+            <button
+              type="button"
+              className={`tree-toggle ${expanded ? 'open' : 'closed'}`}
+              onClick={() => toggleExpand(node.fullPath)}
+              aria-label={expanded ? 'Unterordner einklappen' : 'Unterordner aufklappen'}
+            >
+              {expanded ? '▾' : '▸'}
+            </button>
+          ) : (
+            <span className="tree-toggle spacer" aria-hidden="true" />
+          )}
+          <label>
+            <input type="checkbox" checked={checked} onChange={() => toggleFolder(node.fullPath)} disabled={saving} />
+            <span>{node.name}</span>
+          </label>
+        </div>
+        {hasChildren && expanded && <ul>{node.children.map(renderNode)}</ul>}
       </li>
     )
   }
@@ -160,6 +245,20 @@ export default function FolderSelectionPanel({
           <button type="button" onClick={selectNone} disabled={loading}>
             Keine
           </button>
+          {!trimmedFilter && (
+            <>
+              <button type="button" onClick={expandAll} disabled={loading || !available.length}>
+                Aufklappen
+              </button>
+              <button
+                type="button"
+                onClick={collapseAll}
+                disabled={loading || expandedNodes.size === 0}
+              >
+                Zuklappen
+              </button>
+            </>
+          )}
         </div>
       </div>
       {loading && <div className="placeholder">Ordner werden geladen…</div>}
