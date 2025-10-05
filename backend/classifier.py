@@ -358,13 +358,99 @@ def build_classification_prompt(
 
 
 async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(
-            f"{S.OLLAMA_HOST}/api/chat",
-            json={"model": S.CLASSIFIER_MODEL, "messages": messages, "format": "json"},
-        )
-        response.raise_for_status()
-        return response.json()
+    payload = {
+        "model": S.CLASSIFIER_MODEL,
+        "messages": messages,
+        "format": "json",
+        "stream": True,
+    }
+    timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            async with client.stream("POST", f"{S.OLLAMA_HOST}/api/chat", json=payload) as response:
+                response.raise_for_status()
+
+                content_chunks: List[str] = []
+                final_payload: Dict[str, Any] | None = None
+                latest_payload: Dict[str, Any] | None = None
+
+                decoder = json.JSONDecoder()
+                buffer = ""
+                done_received = False
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = line.strip()
+                    if not chunk:
+                        continue
+                    if chunk.startswith("data:"):
+                        chunk = chunk[5:].strip()
+                        if not chunk:
+                            continue
+                    if chunk in {"[DONE]", "done"}:
+                        break
+
+                    buffer += chunk
+
+                    while buffer:
+                        working = buffer.lstrip()
+                        if working is not buffer:
+                            buffer = working
+                        try:
+                            data, offset = decoder.raw_decode(buffer)
+                        except json.JSONDecodeError:
+                            if len(buffer) > 262144:
+                                buffer = buffer[-262144:]
+                            break
+                        buffer = buffer[offset:]
+                        if isinstance(data, dict) and data.get("error"):
+                            raise RuntimeError(str(data.get("error")))
+                        if not isinstance(data, dict):
+                            continue
+                        latest_payload = data
+                        message = data.get("message")
+                        if isinstance(message, dict):
+                            piece = message.get("content")
+                            if isinstance(piece, str):
+                                content_chunks.append(piece)
+                        elif isinstance(data.get("response"), str):
+                            content_chunks.append(str(data["response"]))
+                        if data.get("done"):
+                            final_payload = data
+                            done_received = True
+                            break
+                    if done_received:
+                        break
+
+                combined = "".join(content_chunks).strip()
+                if not combined and final_payload:
+                    message = final_payload.get("message")
+                    if isinstance(message, dict):
+                        fallback_content = message.get("content")
+                        if isinstance(fallback_content, str) and fallback_content.strip():
+                            combined = fallback_content.strip()
+                    if not combined:
+                        response_text = final_payload.get("response")
+                        if isinstance(response_text, str) and response_text.strip():
+                            combined = response_text.strip()
+
+                if not combined:
+                    raise RuntimeError("Leere Antwort von Ollama")
+
+                source_payload = final_payload or latest_payload or {}
+                base_payload: Dict[str, Any] = source_payload.copy()
+                message_payload = base_payload.get("message")
+                if not isinstance(message_payload, dict):
+                    message_payload = {}
+                message_payload["content"] = combined
+                base_payload["message"] = message_payload
+                return base_payload
+        except httpx.TimeoutException as exc:  # pragma: no cover - network interaction
+            raise RuntimeError("Ollama Chat Timeout überschritten") from exc
+        except httpx.HTTPStatusError as exc:  # pragma: no cover - network interaction
+            status = exc.response.status_code if exc.response is not None else "?"
+            raise RuntimeError(f"Ollama Chat HTTP-Fehler: {status}") from exc
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:

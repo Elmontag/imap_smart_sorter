@@ -64,17 +64,20 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
     known_suggestions = known_suggestion_uids()
 
     pending_entries: List[PendingMail] = []
-    total_messages = 0
+    processed_total = sum(len(items) for items in processed_map.values())
+    suggestion_total = 0
     raw_limit = int(getattr(S, "PENDING_LIST_LIMIT", 0) or 0)
     list_limit = max(raw_limit, 0)
     limit_active = list_limit > 0
 
     for folder, messages in raw_payloads.items():
-        total_messages += len(messages)
         processed_for_folder = processed_map.get(folder, set())
         for uid, meta in messages.items():
             uid_str = str(uid)
-            if uid_str in processed_for_folder or uid_str in known_suggestions:
+            if uid_str in processed_for_folder:
+                continue
+            if uid_str in known_suggestions:
+                suggestion_total += 1
                 continue
             payload = meta.body if isinstance(meta, MessageContent) else meta
             if not payload:
@@ -93,12 +96,14 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
 
     pending_entries.sort(key=lambda item: (item.folder, item.message_uid))
     pending_total = len(pending_entries)
-    processed_count = max(total_messages - pending_total, 0)
+    processed_count = processed_total + suggestion_total
 
     if limit_active:
         visible_entries = pending_entries[:list_limit]
     else:
         visible_entries = pending_entries
+
+    total_messages = pending_total + processed_count
 
     return PendingOverview(
         total_messages=total_messages,
