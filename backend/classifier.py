@@ -358,13 +358,39 @@ def build_classification_prompt(
 
 
 async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    payload = {
+        "model": S.CLASSIFIER_MODEL,
+        "messages": messages,
+        "format": "json",
+        "stream": False,
+    }
     async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(
-            f"{S.OLLAMA_HOST}/api/chat",
-            json={"model": S.CLASSIFIER_MODEL, "messages": messages, "format": "json"},
-        )
+        response = await client.post(f"{S.OLLAMA_HOST}/api/chat", json=payload)
         response.raise_for_status()
-        return response.json()
+
+        def _load_response(text: str) -> Dict[str, Any]:
+            stripped = text.strip()
+            if not stripped:
+                raise json.JSONDecodeError("No JSON content", stripped, 0)
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                # Ollama may return newline-delimited JSON fragments when streaming is disabled.
+                for line in reversed([chunk.strip() for chunk in text.splitlines() if chunk.strip()]):
+                    try:
+                        return json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                raise
+
+        try:
+            return _load_response(response.text)
+        except json.JSONDecodeError as exc:
+            preview = response.text[:200].strip()
+            message = "Ungültige JSON-Antwort von Ollama"
+            if preview:
+                message = f"{message}: {preview}"
+            raise RuntimeError(message) from exc
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
