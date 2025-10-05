@@ -431,6 +431,7 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
                 response.raise_for_status()
 
                 content_chunks: List[str] = []
+                structured_content: Any | None = None
                 final_payload: Dict[str, Any] | None = None
                 latest_payload: Dict[str, Any] | None = None
 
@@ -478,9 +479,16 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
                         if isinstance(message, dict):
                             piece = message.get("content")
                             if isinstance(piece, str):
-                                content_chunks.append(piece)
-                        elif isinstance(data.get("response"), str):
-                            content_chunks.append(str(data["response"]))
+                                if piece:
+                                    content_chunks.append(piece)
+                            elif piece is not None:
+                                structured_content = piece
+                        response_piece = data.get("response")
+                        if isinstance(response_piece, str):
+                            if response_piece:
+                                content_chunks.append(response_piece)
+                        elif response_piece is not None:
+                            structured_content = response_piece
                         if data.get("done"):
                             final_payload = data
                             done_received = True
@@ -489,18 +497,23 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
                         break
 
                 combined = "".join(content_chunks).strip()
-                if not combined and final_payload:
-                    message = final_payload.get("message")
+                fallback_source = final_payload or latest_payload
+                if structured_content is None and not combined and fallback_source:
+                    message = fallback_source.get("message")
                     if isinstance(message, dict):
                         fallback_content = message.get("content")
                         if isinstance(fallback_content, str) and fallback_content.strip():
                             combined = fallback_content.strip()
-                    if not combined:
-                        response_text = final_payload.get("response")
-                        if isinstance(response_text, str) and response_text.strip():
-                            combined = response_text.strip()
+                        elif fallback_content is not None:
+                            structured_content = fallback_content
+                    if structured_content is None and not combined:
+                        response_payload = fallback_source.get("response")
+                        if isinstance(response_payload, str) and response_payload.strip():
+                            combined = response_payload.strip()
+                        elif response_payload is not None:
+                            structured_content = response_payload
 
-                if not combined:
+                if not combined and structured_content is None:
                     raise RuntimeError("Leere Antwort von Ollama")
 
                 source_payload = final_payload or latest_payload or {}
@@ -508,7 +521,10 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
                 message_payload = base_payload.get("message")
                 if not isinstance(message_payload, dict):
                     message_payload = {}
-                message_payload["content"] = combined
+                if structured_content is not None:
+                    message_payload["content"] = structured_content
+                else:
+                    message_payload["content"] = combined
                 base_payload["message"] = message_payload
                 return base_payload
         except httpx.TimeoutException as exc:  # pragma: no cover - network interaction
@@ -917,8 +933,16 @@ async def classify_with_model(
 
     parsed = _load_json_payload(content)
     if not isinstance(parsed, dict):
-        preview = content.strip().splitlines()
-        sample = preview[0][:200] if preview else ""
+        parsed = _load_json_payload(response)
+    if not isinstance(parsed, dict):
+        preview_source = ""
+        if isinstance(content, str):
+            preview_source = content.strip()
+        elif isinstance(response, dict):
+            snippet = json.dumps(response, ensure_ascii=False)
+            preview_source = snippet[:200]
+        preview = preview_source.splitlines() if preview_source else []
+        sample = preview[0][:200] if preview else preview_source
         logger.warning(
             "Konnte Ollama-Antwort nicht parsen (Vorschau: %s)", sample
         )
