@@ -21,7 +21,6 @@ from configuration import (
     get_tag_slots,
     TagSlot,
     max_tag_total,
-    slot_lookup_keys,
     tag_slots_summary,
     tag_slot_options_map,
     top_level_folder_names,
@@ -123,6 +122,26 @@ def _normalise_score_value(raw: Any) -> Tuple[float, float]:
 
 
 _CATALOG_STOPWORDS = {"inbox"}
+
+# Tokens that indicate that the LLM left placeholders unchanged. They are
+# filtered out aggressively so that downstream consumers never see unresolved
+# template markers such as "NAME" or "YYYY".
+_PLACEHOLDER_TOKENS = {
+    "NAME",
+    "ORT",
+    "PLACEHOLDER",
+    "PLATZHALTER",
+    "SAMPLE",
+    "BEISPIEL",
+    "VALUE",
+    "WERT",
+    "TODO",
+    "TBD",
+}
+
+# Numeric placeholders (e.g. YYYY-MM-TT) are tracked separately to avoid false
+# positives for real words that just happen to contain one of the short tokens.
+_PLACEHOLDER_NUMERIC_TOKENS = {"YYYY", "YY", "MM", "TT", "DD"}
 
 
 def _split_catalog_segments(value: str) -> List[str]:
@@ -296,7 +315,7 @@ def build_classification_prompt(
         "100 Punkte bedeuten perfekte Übereinstimmung, 0 Punkte passt gar nicht. "
         "Nutze den Schwellwert von {threshold} Punkten: Liegt die beste Übereinstimmung darunter, gilt der Bereich als nicht zugeordnet. "
         "Das gleiche Bewertungsprinzip gilt für alle Tags (Slots) – wähle exakt eine Option je Slot aus dem Katalog und vergebe eine Punktzahl. "
-        "Extras (Kontext-Tags) werden nur genannt, wenn sie eindeutig sind. Antworte ausschließlich als gültiges JSON mit den Schlüsseln "
+        "Extras (Kontext-Tags) werden nur genannt, wenn sie eindeutig sind. Ersetze konsequent jeden Platzhalter (z. B. NAME, ORT, YYYY) durch konkrete Werte und gib ausschließlich Einzelworte zurück. Antworte ausschließlich als gültiges JSON mit den Schlüsseln "
         "'ranked', 'category', 'proposal', 'tags' und optional 'extras'."
     ).format(threshold=threshold)
 
@@ -347,7 +366,7 @@ def build_classification_prompt(
 
         Schema (JSON):
         {schema_prefix} "tags": {tag_schema} }}
-        Fülle jeden Tag-Slot mit genau einem Wort aus den Optionen (oder bestmöglichem Ein-Wort-Synonym) und ergänze passende Kontext-Tags in 'extras'.
+        Fülle jeden Tag-Slot mit genau einem Wort aus den Optionen (oder bestmöglichem Ein-Wort-Synonym), ersetze alle Platzhalter zuverlässig durch echte Werte und ergänze passende Kontext-Tags in 'extras'.
         """
     ).strip()
 
@@ -766,9 +785,30 @@ def _normalise_tag_word(raw: Any) -> str | None:
     return cleaned[:32] or None
 
 
+def _has_placeholder_token(word: str, *, ignore_prefix: bool = False) -> bool:
+    """Return True when a tag candidate still contains obvious placeholders.
+
+    The classifier prompt strongly encourages the model to replace placeholders
+    such as "NAME" or "YYYY". Should a response still contain these tokens we
+    silently drop the suggestion to avoid propagating incomplete data.
+    """
+
+    if not word:
+        return False
+    segments = [segment for segment in re.split(r"[-_/]+", word) if segment]
+    if ignore_prefix and segments:
+        segments = segments[1:]
+    for segment in segments:
+        upper = segment.upper()
+        if upper in _PLACEHOLDER_TOKENS:
+            return True
+        if upper in _PLACEHOLDER_NUMERIC_TOKENS:
+            return True
+    return False
+
+
 def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
     slots = get_tag_slots()
-    lookup = slot_lookup_keys(slots)
     max_total = max_tag_total()
     threshold = float(S.MIN_MATCH_SCORE or 0)
 
@@ -813,11 +853,11 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
         if isinstance(value, list):
             for item in value:
                 word = _normalise_tag_word(item)
-                if word and word not in extras:
+                if word and word not in extras and not _has_placeholder_token(word, ignore_prefix=True):
                     extras.append(word)
         elif isinstance(value, str):
             word = _normalise_tag_word(value)
-            if word:
+            if word and not _has_placeholder_token(word, ignore_prefix=True):
                 extras.append(word)
         return extras
 
@@ -878,7 +918,8 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
         value_word = _normalise_tag_word(label)
         if slot is None:
             if value_word and value_word not in extras:
-                extras.append(value_word)
+                if not _has_placeholder_token(value_word, ignore_prefix=True):
+                    extras.append(value_word)
             continue
         option = _resolve_option(slot, label if isinstance(label, str) else "") if isinstance(label, str) else None
         if not option:
@@ -890,6 +931,8 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
         value_slug = (_normalise_tag_word(option) or option).lower()
         tag_value = f"{slot_slug}-{value_slug}".strip("-")
         if not tag_value:
+            continue
+        if _has_placeholder_token(tag_value, ignore_prefix=True):
             continue
         previous = assignments.get(slot.name)
         if previous and previous[1] >= rating:
@@ -921,14 +964,14 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
     if isinstance(payload, list):
         for item in payload:
             word = _normalise_tag_word(item)
-            if not word or word in normalised:
+            if not word or word in normalised or _has_placeholder_token(word, ignore_prefix=True):
                 continue
             normalised.append(word)
             if len(normalised) >= max_total:
                 break
     elif isinstance(payload, str):
         word = _normalise_tag_word(payload)
-        if word:
+        if word and not _has_placeholder_token(word, ignore_prefix=True):
             normalised.append(word)
 
     if extras_candidate:
@@ -936,7 +979,7 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
             if word and word not in normalised:
                 normalised.append(word)
 
-    slot_count = len(lookup)
+    slot_count = len(slots)
     if len(normalised) < slot_count:
         normalised.extend([""] * (slot_count - len(normalised)))
     return normalised[:max_total]
@@ -944,6 +987,11 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
 
 def _normalise_proposal(proposal: Any, parent_hint: str | None, top_score: float) -> Dict[str, Any] | None:
     if isinstance(proposal, dict):
+        # Reject explicit proposals whenever a confident catalog match exists –
+        # otherwise we would create duplicates for folders that already scored
+        # above the automatic creation threshold.
+        if top_score >= float(S.MIN_NEW_FOLDER_SCORE or 0):
+            return None
         parent_raw = str(proposal.get("parent", parent_hint or "")).strip()
         ensured_parent = ensure_top_level_parent(parent_raw or parent_hint)
         top_levels = top_level_folder_names()
@@ -961,6 +1009,45 @@ def _normalise_proposal(proposal: Any, parent_hint: str | None, top_score: float
                 "score_hint": float(top_score),
             }
     return None
+
+
+def _align_proposal_with_matches(
+    proposal: Dict[str, Any],
+    ranked: Sequence[Dict[str, Any]],
+    category: Dict[str, Any] | None,
+    parent_hint: str | None,
+) -> Dict[str, Any] | None:
+    """Ensure generated folder proposals remain consistent with known matches."""
+
+    if not proposal:
+        return None
+
+    aligned = proposal.copy()
+    ranked_paths = [
+        str(item.get("name", "")).strip()
+        for item in ranked
+        if isinstance(item.get("name"), str) and str(item.get("name")).strip()
+    ]
+    preferred_parent = _category_parent_segment(category)
+    if not preferred_parent and ranked_paths:
+        preferred_parent = ensure_top_level_parent(ranked_paths[0])
+    if not preferred_parent and parent_hint:
+        preferred_parent = ensure_top_level_parent(parent_hint)
+
+    name = aligned.get("name", "").strip()
+    if preferred_parent and name:
+        aligned["parent"] = preferred_parent
+        aligned["full_path"] = "/".join(
+            segment for segment in (preferred_parent, name) if segment
+        ).strip("/")
+
+    if ranked_paths:
+        ranked_lower = {path.lower() for path in ranked_paths}
+        full_path = str(aligned.get("full_path", "")).strip()
+        if full_path and full_path.lower() in ranked_lower:
+            return None
+
+    return aligned
 
 
 async def classify_with_model(
@@ -1038,6 +1125,8 @@ async def classify_with_model(
         proposal = _normalise_proposal(
             parsed.get("proposal"), parent_hint, best_rating / 100 if best_rating else 0.0
         )
+        if proposal:
+            proposal = _align_proposal_with_matches(proposal, refined_ranked, category, parent_hint)
 
     return refined_ranked, proposal, category, tags
 
