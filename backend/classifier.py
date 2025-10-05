@@ -541,7 +541,8 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
                     numeric = float(existing_rating) if existing_rating is not None else match_rating
                 except (TypeError, ValueError):
                     numeric = match_rating
-                final_rating = max(0.0, min(min(numeric, match_rating), 100.0))
+                numeric = max(0.0, min(numeric, 100.0))
+                final_rating = max(numeric, match_rating)
                 result["rating"] = final_rating
                 result["confidence"] = max(0.0, min(final_rating / 100.0, 1.0))
             else:
@@ -593,7 +594,8 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             rating_value = float(rating_raw) if rating_raw is not None else match_rating
         except (TypeError, ValueError):
             rating_value = match_rating
-        final_rating = max(0.0, min(min(rating_value, match_rating), 100.0))
+        rating_value = max(0.0, min(rating_value, 100.0))
+        final_rating = max(rating_value, match_rating)
         final_score = final_rating / 100.0
         reason_val = entry.get("reason")
         cleaned_entry: Dict[str, Any] = {
