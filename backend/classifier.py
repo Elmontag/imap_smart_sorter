@@ -362,39 +362,71 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
         "model": S.CLASSIFIER_MODEL,
         "messages": messages,
         "format": "json",
-        "stream": False,
+        "stream": True,
     }
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            response = await client.post(f"{S.OLLAMA_HOST}/api/chat", json=payload)
-        except httpx.TimeoutException as exc:  # pragma: no cover - network interaction
-            raise RuntimeError("Ollama Chat Timeout überschritten") from exc
-        response.raise_for_status()
+            async with client.stream("POST", f"{S.OLLAMA_HOST}/api/chat", json=payload) as response:
+                response.raise_for_status()
 
-        def _load_response(text: str) -> Dict[str, Any]:
-            stripped = text.strip()
-            if not stripped:
-                raise json.JSONDecodeError("No JSON content", stripped, 0)
-            try:
-                return json.loads(stripped)
-            except json.JSONDecodeError:
-                # Ollama may return newline-delimited JSON fragments when streaming is disabled.
-                for line in reversed([chunk.strip() for chunk in text.splitlines() if chunk.strip()]):
+                content_chunks: List[str] = []
+                final_payload: Dict[str, Any] | None = None
+                latest_payload: Dict[str, Any] | None = None
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
                     try:
-                        return json.loads(line)
+                        data = json.loads(stripped)
                     except json.JSONDecodeError:
                         continue
-                raise
+                    if isinstance(data, dict) and data.get("error"):
+                        raise RuntimeError(str(data.get("error")))
+                    if isinstance(data, dict):
+                        latest_payload = data
+                        message = data.get("message")
+                        if isinstance(message, dict):
+                            piece = message.get("content")
+                            if isinstance(piece, str):
+                                content_chunks.append(piece)
+                        elif isinstance(data.get("response"), str):
+                            content_chunks.append(str(data["response"]))
+                        if data.get("done"):
+                            final_payload = data
+                            break
 
-        try:
-            return _load_response(response.text)
-        except json.JSONDecodeError as exc:
-            preview = response.text[:200].strip()
-            message = "Ungültige JSON-Antwort von Ollama"
-            if preview:
-                message = f"{message}: {preview}"
-            raise RuntimeError(message) from exc
+                combined = "".join(content_chunks).strip()
+                if not combined and final_payload:
+                    message = final_payload.get("message")
+                    if isinstance(message, dict):
+                        fallback_content = message.get("content")
+                        if isinstance(fallback_content, str) and fallback_content.strip():
+                            combined = fallback_content.strip()
+                    if not combined:
+                        response_text = final_payload.get("response")
+                        if isinstance(response_text, str) and response_text.strip():
+                            combined = response_text.strip()
+
+                if not combined:
+                    raise RuntimeError("Leere Antwort von Ollama")
+
+                source_payload = final_payload or latest_payload or {}
+                base_payload: Dict[str, Any] = source_payload.copy()
+                message_payload = base_payload.get("message")
+                if not isinstance(message_payload, dict):
+                    message_payload = {}
+                message_payload["content"] = combined
+                base_payload["message"] = message_payload
+                return base_payload
+        except httpx.TimeoutException as exc:  # pragma: no cover - network interaction
+            raise RuntimeError("Ollama Chat Timeout überschritten") from exc
+        except httpx.HTTPStatusError as exc:  # pragma: no cover - network interaction
+            status = exc.response.status_code if exc.response is not None else "?"
+            raise RuntimeError(f"Ollama Chat HTTP-Fehler: {status}") from exc
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
