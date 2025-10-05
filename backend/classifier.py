@@ -357,14 +357,165 @@ def build_classification_prompt(
     ]
 
 
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _strip_code_fence(content: str) -> str:
+    text = content.strip()
+    if not text.startswith("```"):
+        return text
+    stripped = text[3:]
+    stripped = stripped.lstrip()
+    if stripped.lower().startswith("json"):
+        stripped = stripped[4:].lstrip()
+    closing = stripped.rfind("```")
+    if closing != -1:
+        stripped = stripped[:closing]
+    return stripped.strip()
+
+
+def _candidate_json_segments(content: Any) -> List[str]:
+    if not isinstance(content, str):
+        return []
+
+    text = content.strip()
+    if not text:
+        return []
+
+    candidates: List[str] = []
+
+    fenced = _strip_code_fence(text)
+    if fenced:
+        candidates.append(fenced)
+
+    if text and text not in candidates:
+        candidates.append(text)
+
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+        inner = text[brace_start : brace_end + 1].strip()
+        if inner and inner not in candidates:
+            candidates.append(inner)
+
+    return candidates
+
+
+def _load_json_payload(content: Any) -> Dict[str, Any] | None:
+    if isinstance(content, dict):
+        return content
+    for candidate in _candidate_json_segments(content):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                parsed, _ = _JSON_DECODER.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
 async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(
-            f"{S.OLLAMA_HOST}/api/chat",
-            json={"model": S.CLASSIFIER_MODEL, "messages": messages, "format": "json"},
-        )
-        response.raise_for_status()
-        return response.json()
+    payload = {
+        "model": S.CLASSIFIER_MODEL,
+        "messages": messages,
+        "format": "json",
+        "stream": True,
+    }
+    timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            async with client.stream("POST", f"{S.OLLAMA_HOST}/api/chat", json=payload) as response:
+                response.raise_for_status()
+
+                content_chunks: List[str] = []
+                final_payload: Dict[str, Any] | None = None
+                latest_payload: Dict[str, Any] | None = None
+
+                decoder = json.JSONDecoder()
+                buffer = ""
+                done_received = False
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = line.strip()
+                    if not chunk:
+                        continue
+                    if chunk.startswith(":"):
+                        continue
+                    prefix = chunk.split(":", 1)[0].strip().lower()
+                    if prefix in {"event", "id", "retry"}:
+                        continue
+                    if chunk.startswith("data:"):
+                        chunk = chunk[5:].strip()
+                        if not chunk:
+                            continue
+                    if chunk in {"[DONE]", "done"}:
+                        break
+
+                    buffer += chunk
+
+                    while buffer:
+                        working = buffer.lstrip()
+                        if working is not buffer:
+                            buffer = working
+                        try:
+                            data, offset = decoder.raw_decode(buffer)
+                        except json.JSONDecodeError:
+                            if len(buffer) > 262144:
+                                buffer = buffer[-262144:]
+                            break
+                        buffer = buffer[offset:]
+                        if isinstance(data, dict) and data.get("error"):
+                            raise RuntimeError(str(data.get("error")))
+                        if not isinstance(data, dict):
+                            continue
+                        latest_payload = data
+                        message = data.get("message")
+                        if isinstance(message, dict):
+                            piece = message.get("content")
+                            if isinstance(piece, str):
+                                content_chunks.append(piece)
+                        elif isinstance(data.get("response"), str):
+                            content_chunks.append(str(data["response"]))
+                        if data.get("done"):
+                            final_payload = data
+                            done_received = True
+                            break
+                    if done_received:
+                        break
+
+                combined = "".join(content_chunks).strip()
+                if not combined and final_payload:
+                    message = final_payload.get("message")
+                    if isinstance(message, dict):
+                        fallback_content = message.get("content")
+                        if isinstance(fallback_content, str) and fallback_content.strip():
+                            combined = fallback_content.strip()
+                    if not combined:
+                        response_text = final_payload.get("response")
+                        if isinstance(response_text, str) and response_text.strip():
+                            combined = response_text.strip()
+
+                if not combined:
+                    raise RuntimeError("Leere Antwort von Ollama")
+
+                source_payload = final_payload or latest_payload or {}
+                base_payload: Dict[str, Any] = source_payload.copy()
+                message_payload = base_payload.get("message")
+                if not isinstance(message_payload, dict):
+                    message_payload = {}
+                message_payload["content"] = combined
+                base_payload["message"] = message_payload
+                return base_payload
+        except httpx.TimeoutException as exc:  # pragma: no cover - network interaction
+            raise RuntimeError("Ollama Chat Timeout überschritten") from exc
+        except httpx.HTTPStatusError as exc:  # pragma: no cover - network interaction
+            status = exc.response.status_code if exc.response is not None else "?"
+            raise RuntimeError(f"Ollama Chat HTTP-Fehler: {status}") from exc
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
@@ -455,7 +606,8 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
                     numeric = float(existing_rating) if existing_rating is not None else match_rating
                 except (TypeError, ValueError):
                     numeric = match_rating
-                final_rating = max(0.0, min(min(numeric, match_rating), 100.0))
+                numeric = max(0.0, min(numeric, 100.0))
+                final_rating = max(numeric, match_rating)
                 result["rating"] = final_rating
                 result["confidence"] = max(0.0, min(final_rating / 100.0, 1.0))
             else:
@@ -473,23 +625,23 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not items:
         return []
     catalog_index = _catalog_index()
+    trimmed: List[Dict[str, Any]] = []
+    for entry in items[: S.MAX_SUGGESTIONS]:
+        cleaned: Dict[str, Any] = {}
+        if isinstance(entry.get("name"), str):
+            cleaned["name"] = entry["name"].strip()
+        score_val = entry.get("score")
+        rating_val = entry.get("rating")
+        if isinstance(score_val, (int, float)):
+            cleaned["score"] = max(0.0, min(float(score_val), 1.0))
+        if isinstance(rating_val, (int, float)):
+            cleaned["rating"] = max(0.0, min(float(rating_val), 100.0))
+        reason_val = entry.get("reason")
+        if isinstance(reason_val, str) and reason_val.strip():
+            cleaned["reason"] = reason_val.strip()
+        if cleaned:
+            trimmed.append(cleaned)
     if not catalog_index:
-        trimmed: List[Dict[str, Any]] = []
-        for entry in items[: S.MAX_SUGGESTIONS]:
-            cleaned: Dict[str, Any] = {}
-            if isinstance(entry.get("name"), str):
-                cleaned["name"] = entry["name"].strip()
-            score_val = entry.get("score")
-            rating_val = entry.get("rating")
-            if isinstance(score_val, (int, float)):
-                cleaned["score"] = max(0.0, min(float(score_val), 1.0))
-            if isinstance(rating_val, (int, float)):
-                cleaned["rating"] = max(0.0, min(float(rating_val), 100.0))
-            reason_val = entry.get("reason")
-            if isinstance(reason_val, str) and reason_val.strip():
-                cleaned["reason"] = reason_val.strip()
-            if cleaned:
-                trimmed.append(cleaned)
         return trimmed
     normalised: Dict[str, Dict[str, Any]] = {}
     for entry in items:
@@ -507,7 +659,8 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             rating_value = float(rating_raw) if rating_raw is not None else match_rating
         except (TypeError, ValueError):
             rating_value = match_rating
-        final_rating = max(0.0, min(min(rating_value, match_rating), 100.0))
+        rating_value = max(0.0, min(rating_value, 100.0))
+        final_rating = max(rating_value, match_rating)
         final_score = final_rating / 100.0
         reason_val = entry.get("reason")
         cleaned_entry: Dict[str, Any] = {
@@ -521,7 +674,9 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if existing is None or existing.get("rating", 0.0) < final_rating:
             normalised[canonical] = cleaned_entry
     ordered = sorted(normalised.values(), key=lambda row: row.get("rating", 0.0), reverse=True)
-    return ordered[: S.MAX_SUGGESTIONS]
+    if ordered:
+        return ordered[: S.MAX_SUGGESTIONS]
+    return trimmed
 
 
 def _normalise_tag_word(raw: Any) -> str | None:
@@ -760,10 +915,13 @@ async def classify_with_model(
     if not content:
         return _fallback_ranked(ranked), None, None, []
 
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:  # pragma: no cover - depends on LLM output
-        logger.warning("Konnte Ollama-Antwort nicht parsen: %s", exc)
+    parsed = _load_json_payload(content)
+    if not isinstance(parsed, dict):
+        preview = content.strip().splitlines()
+        sample = preview[0][:200] if preview else ""
+        logger.warning(
+            "Konnte Ollama-Antwort nicht parsen (Vorschau: %s)", sample
+        )
         return _fallback_ranked(ranked), None, None, []
 
     refined_ranked = _parse_ranked(parsed.get("ranked"), ranked)
