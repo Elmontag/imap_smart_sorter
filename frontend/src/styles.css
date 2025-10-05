@@ -368,6 +368,17 @@ button.link {
   padding-left: 7px;
 }
 
+.folder-tree-row.match {
+  background: #e0f2fe;
+  border-left: 3px solid #38bdf8;
+  padding-left: 7px;
+}
+
+.folder-tree-row.match span {
+  font-weight: 600;
+  color: #0369a1;
+}
+
 .folder-tree-row label {
   display: flex;
   align-items: center;

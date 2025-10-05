@@ -63,6 +63,9 @@ MIN_MATCH_SCORE=60
   setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
   zu kontrollieren.
+- Standardmäßig nutzt der JSON-Klassifikator eine niedrige Temperatur (`CLASSIFIER_TEMPERATURE=0.1`), ein begrenztes Sampling
+  (`CLASSIFIER_TOP_P=0.4`) sowie fixe Grenzen für Kontext (`CLASSIFIER_NUM_CTX=4096`) und Antwortlänge (`CLASSIFIER_NUM_PREDICT=512`).
+  Damit entstehen reproduzierbare, konsistente Ordnerpfade – über Umgebungsvariablen kannst du die Werte feinjustieren.
 - Verbindungsfehler (`httpx.ConnectError` oder Logeintrag `Ollama Embedding fehlgeschlagen`) deuten
   auf einen nicht erreichbaren Ollama-Host hin. Stelle sicher, dass `OLLAMA_HOST` auf `http://ollama:11434`
   zeigt, wenn alle Dienste via Docker Compose laufen. Bei lokal gestarteten Komponenten außerhalb
@@ -106,7 +109,9 @@ MIN_MATCH_SCORE=60
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
   Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
-- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Scan-Controller. Das Frontend bietet zusätzlich einen Button „Einmalig scannen“ (via `/api/rescan`), sodass sich eine sofortige Analyse ohne Dauer-Scan starten lässt. Laufende Dauer-Scans blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Scan starten“ und „Scan stoppen“ für die kontinuierliche Ausführung verfügbar.
+- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Analyse-Controller. Das Frontend bietet zusätzlich einen Button „Einmalige Analyse“ (via `/api/rescan`), sodass sich eine sofortige Auswertung ohne Daueranalyse starten lässt.
+- Laufende Dauer-Analysen blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Analyse starten“ und „Analyse stoppen“ für die kontinuierliche Ausführung verfügbar.
+- Die Ordnerauswahl im Dashboard stellt die überwachten IMAP-Ordner als aufklappbaren Baum dar. Der Filter hebt Treffer farblich hervor und öffnet automatisch die relevanten Äste, sodass komplexe Hierarchien schneller angepasst werden können.
 
 ## Lokale Entwicklung
 

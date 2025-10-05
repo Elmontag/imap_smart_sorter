@@ -18,8 +18,15 @@ class Settings(BaseSettings):
 
     OLLAMA_HOST: str = "http://ollama:11434"
     CLASSIFIER_MODEL: str = "llama3"
+    CLASSIFIER_TEMPERATURE: float = 0.1
+    CLASSIFIER_TOP_P: float = 0.4
+    CLASSIFIER_NUM_PREDICT: int = 512
+    CLASSIFIER_NUM_CTX: int = 4096
     EMBED_MODEL: str = "nomic-embed-text"
-    EMBED_PROMPT_HINT: str = ""
+    EMBED_PROMPT_HINT: str = (
+        "Berücksichtige Absender-Domains, Kundennummern und Bestellbezüge, "
+        "damit ähnliche Mails konsistent zugeordnet werden."
+    )
     EMBED_PROMPT_MAX_CHARS: int = 8000
 
     DATABASE_URL: str = "sqlite:///data/app.db"

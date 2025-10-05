@@ -31,6 +31,18 @@ from settings import S
 logger = logging.getLogger(__name__)
 
 
+_DOMAIN_RE = re.compile(r"@([A-Za-z0-9.-]+)")
+
+
+def _sender_domain(value: str) -> str:
+    if not value:
+        return ""
+    match = _DOMAIN_RE.search(value)
+    if not match:
+        return ""
+    return match.group(1).lower().strip()
+
+
 def _cosine(a: Sequence[float], b: Sequence[float] | None) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -42,18 +54,23 @@ def _cosine(a: Sequence[float], b: Sequence[float] | None) -> float:
 def build_embedding_prompt(subject: str, sender: str, body: str) -> str:
     """Create a consistent prompt for Ollama embeddings."""
 
+    sender_domain = _sender_domain(sender)
+
     header_lines = [
         "Du bist ein Assistent, der E-Mails für eine Ordnerklassifikation analysiert.",
-        "Erstelle eine kompakte semantische Repräsentation aus Betreff, Absender und Kerninhalt.",
+        "Erstelle eine vollständige, strukturierte Repräsentation mit Fokus auf Unternehmen, Geschäftsfall und eindeutige Kennzeichen.",
+        "Arbeite mit vollständigen Sätzen und fasse zusammen, welche Aufgabe oder Anfrage die Mail beschreibt.",
     ]
     hint = S.EMBED_PROMPT_HINT.strip()
     if hint:
         header_lines.append(f"Zusätzliche Vorgabe: {hint}")
 
     email_lines = [
-        f"Betreff: {subject or '-'}",
-        f"Von: {sender or '-'}",
-        "Inhalt (gekürzt):",
+        "Metadaten:",
+        f"- Betreff: {subject or '-'}",
+        f"- Von: {sender or '-'}",
+        f"- Absender-Domain: {sender_domain or '-'}",
+        "Wesentlicher Inhalt (max. 8000 Zeichen):",
         (body.strip() or "(kein Text vorhanden)")[: S.EMBED_PROMPT_MAX_CHARS],
     ]
 
@@ -275,6 +292,7 @@ def build_classification_prompt(
 ) -> List[Dict[str, str]]:
     """Return chat messages instructing the LLM to refine folder suggestions."""
 
+    sender_domain = _sender_domain(sender)
     templates_overview = folder_templates_summary()
     tag_overview = tag_slots_summary()
     context_overview = context_tag_summary()
@@ -309,15 +327,32 @@ def build_classification_prompt(
     schema_parts.append(extras_part)
     tag_schema = "{" + ", ".join(schema_parts) + "}"
 
-    system_prompt = (
-        "Du bist ein Assistent, der eingehende E-Mails ausschließlich anhand eines festen Katalogs klassifiziert. "
-        "Ordner dürfen nur aus dem vorgegebenen Katalog stammen. Bewerte jede mögliche Zuordnung in Punkten (0 bis 100): "
-        "100 Punkte bedeuten perfekte Übereinstimmung, 0 Punkte passt gar nicht. "
-        "Nutze den Schwellwert von {threshold} Punkten: Liegt die beste Übereinstimmung darunter, gilt der Bereich als nicht zugeordnet. "
-        "Das gleiche Bewertungsprinzip gilt für alle Tags (Slots) – wähle exakt eine Option je Slot aus dem Katalog und vergebe eine Punktzahl. "
-        "Extras (Kontext-Tags) werden nur genannt, wenn sie eindeutig sind. Ersetze konsequent jeden Platzhalter (z. B. NAME, ORT, YYYY) durch konkrete Werte und gib ausschließlich Einzelworte zurück. Antworte ausschließlich als gültiges JSON mit den Schlüsseln "
-        "'ranked', 'category', 'proposal', 'tags' und optional 'extras'."
-    ).format(threshold=threshold)
+    system_prompt = textwrap.dedent(
+        f"""
+        Du bist ein Assistent, der eingehende E-Mails anhand eines festen Ordner- und Tag-Katalogs analysiert.
+        Aufgaben:
+        1. Lies Betreff, Absender (inklusive Domain) und Textauszug vollständig und identifiziere das Kernthema.
+        2. Vergleiche die Mail mit dem Ordnerkatalog und den vorhandenen Scores, um die beste Zuordnung zu finden.
+        3. Bewerte jeden Treffer mit 0 bis 100 Punkten und liefere begründete Vorschläge für neue Unterordner nur bei Bedarf.
+
+        Bewertungsrichtlinie:
+        - Verwende ausschließlich Pfade aus dem Ordnerkatalog. Wird der Schwellwert von {threshold} Punkten nicht erreicht, kennzeichne das Ergebnis als "unmatched".
+        - Vergib für jeden Tag-Slot genau eine Option aus dem Tag-Katalog und bewerte sie nach demselben Punkteschema.
+        - Nutze verständliche, kurze deutsche Begründungen.
+
+        Ausgabeformat:
+        - Antworte ausschließlich als gültiges JSON mit den Schlüsseln 'ranked', 'category', 'proposal', 'tags' und optional 'extras'.
+        - 'ranked' enthält bis zu {S.MAX_SUGGESTIONS} Einträge mit 'name', 'score' (0–1), 'rating' (0–100) und einer kurzen 'reason'.
+        - 'category' beschreibt den Top-Level-Ordner, den passenden Pfad und die Bewertung.
+        - 'proposal' enthält nur bei Bedarf einen neuen Unterordner mit Begründung.
+        - 'tags' enthält je Slot exakt eine Option; 'extras' listet eindeutige Kontext-Stichworte.
+
+        Konsistenzregeln:
+        - Ersetze Platzhalter wie NAME, ORT oder YYYY konsequent durch echte Werte.
+        - Nutze identische Pfade für wiederkehrende Geschäftsprozesse (z. B. Amazon-Bestellungen) und bleibe bei ähnlichen Fällen konsistent.
+        - Liefere keine freien Texte außerhalb des JSON.
+        """
+    ).strip()
 
     hint = S.EMBED_PROMPT_HINT.strip()
     if hint:
@@ -332,41 +367,46 @@ def build_classification_prompt(
     )
     user_prompt = textwrap.dedent(
         f"""
-        E-Mail-Daten:
-        Betreff: {subject or '-'}
-        Von: {sender or '-'}
-        Textauszug:
+        ## Metadaten
+        - Betreff: {subject or '-'}
+        - Von: {sender or '-'}
+        - Absender-Domain: {sender_domain or '-'}
+        - Ausgangsordner: {origin}
+
+        ## Textauszug
         {body[: S.EMBED_PROMPT_MAX_CHARS]}
 
-        Ausgangsordner: {origin}
-
-        Konfigurierte Top-Level-Ordner:
+        ## Konfigurierte Top-Level-Ordner
         {top_levels}
 
-        Vorgegebene Struktur:
+        ## Vorgegebene Struktur
         {templates_overview}
 
-        Ordnerkatalog (verwende exakt diese Pfade):
+        ## Ordnerkatalog (verwende exakt diese Pfade)
         {folder_catalog_overview}
 
-        Bekannte Ordnerstruktur (Gruppierung nach erster Ebene):
+        ## Bekannte Ordnerstruktur (Gruppierung nach erster Ebene)
         {structure}
 
-        Tag-Slots:
+        ## Tag-Slots
         {tag_overview}
 
-        Tag-Katalog (Optionen je Slot):
+        ## Tag-Katalog (Optionen je Slot)
         {tag_catalog_overview}
 
-        Kontext-Tags:
+        ## Kontext-Tags
         {context_overview}
 
-        Vorliegende Ordner-Scores:
+        ## Vorliegende Ordner-Scores
         {_format_ranked_for_prompt(ranked)}
 
-        Schema (JSON):
+        ## Schema (JSON)
         {schema_prefix} "tags": {tag_schema} }}
-        Fülle jeden Tag-Slot mit genau einem Wort aus den Optionen (oder bestmöglichem Ein-Wort-Synonym), ersetze alle Platzhalter zuverlässig durch echte Werte und ergänze passende Kontext-Tags in 'extras'.
+
+        Arbeitsanweisung:
+        - Fülle jeden Tag-Slot mit genau einer Option aus dem Katalog (oder einem eindeutigen Ein-Wort-Synonym).
+        - Ergänze in 'extras' nur eindeutige zusätzliche Schlagwörter.
+        - Verwende konsistente Ordnerpfade und kurze deutsche Begründungen.
         """
     ).strip()
 
@@ -496,11 +536,45 @@ def _load_json_payload(
 
 
 async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    try:
+        temperature = float(S.CLASSIFIER_TEMPERATURE)
+    except (TypeError, ValueError):
+        temperature = 0.1
+    temperature = max(0.0, temperature)
+
+    try:
+        top_p = float(S.CLASSIFIER_TOP_P)
+    except (TypeError, ValueError):
+        top_p = 0.4
+    top_p = min(1.0, max(0.0, top_p))
+
+    try:
+        num_predict = int(S.CLASSIFIER_NUM_PREDICT)
+    except (TypeError, ValueError):
+        num_predict = 512
+    if num_predict < 128:
+        num_predict = 128
+
+    try:
+        num_ctx = int(S.CLASSIFIER_NUM_CTX)
+    except (TypeError, ValueError):
+        num_ctx = 4096
+    if num_ctx < 2048:
+        num_ctx = 2048
+
     payload = {
         "model": S.CLASSIFIER_MODEL,
         "messages": messages,
         "format": "json",
         "stream": True,
+        "keep_alive": "15m",
+        "options": {
+            "temperature": temperature,
+            "top_p": top_p,
+            "num_predict": num_predict,
+            "num_ctx": num_ctx,
+            "repeat_penalty": 1.1,
+        },
     }
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
     async with httpx.AsyncClient(timeout=timeout) as client:

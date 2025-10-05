@@ -88,7 +88,7 @@ export default function DashboardPage(): JSX.Element {
       const statusResponse = await getScanStatus()
       setScanStatus(statusResponse)
     } catch (err) {
-      setStatus(prev => prev ?? { kind: 'error', message: `Scan-Status konnte nicht geladen werden: ${toMessage(err)}` })
+      setStatus(prev => prev ?? { kind: 'error', message: `Analyse-Status konnte nicht geladen werden: ${toMessage(err)}` })
     }
   }, [])
 
@@ -136,10 +136,11 @@ export default function DashboardPage(): JSX.Element {
       setScanStatus(response.status)
       setStatus({
         kind: response.started ? 'success' : 'info',
-        message: response.started ? 'Scan gestartet.' : 'Scan läuft bereits.',
+        message: response.started ? 'Analyse gestartet.' : 'Analyse läuft bereits.',
       })
+      await loadScanStatus()
     } catch (err) {
-      setStatus({ kind: 'error', message: `Scan konnte nicht gestartet werden: ${toMessage(err)}` })
+      setStatus({ kind: 'error', message: `Analyse konnte nicht gestartet werden: ${toMessage(err)}` })
     } finally {
       setScanBusy(false)
     }
@@ -152,10 +153,11 @@ export default function DashboardPage(): JSX.Element {
       setScanStatus(response.status)
       setStatus({
         kind: response.stopped ? 'success' : 'info',
-        message: response.stopped ? 'Scan angehalten.' : 'Es war kein Scan aktiv.',
+        message: response.stopped ? 'Analyse gestoppt.' : 'Es war keine Analyse aktiv.',
       })
+      await loadScanStatus()
     } catch (err) {
-      setStatus({ kind: 'error', message: `Scan konnte nicht gestoppt werden: ${toMessage(err)}` })
+      setStatus({ kind: 'error', message: `Analyse konnte nicht gestoppt werden: ${toMessage(err)}` })
     } finally {
       setScanBusy(false)
     }
@@ -169,11 +171,11 @@ export default function DashboardPage(): JSX.Element {
       const noun = response.new_suggestions === 1 ? 'Vorschlag' : 'Vorschläge'
       setStatus({
         kind: 'success',
-        message: `Einmaliger Scan abgeschlossen (${response.new_suggestions} ${noun}).`,
+        message: `Einmalanalyse abgeschlossen (${response.new_suggestions} ${noun}).`,
       })
       void refresh()
     } catch (err) {
-      setStatus({ kind: 'error', message: `Einmaliger Scan fehlgeschlagen: ${toMessage(err)}` })
+      setStatus({ kind: 'error', message: `Einmalanalyse fehlgeschlagen: ${toMessage(err)}` })
     } finally {
       setRescanBusy(false)
     }
@@ -257,14 +259,14 @@ export default function DashboardPage(): JSX.Element {
       folderLabel:
         scanStatus && scanStatus.folders.length > 0
           ? scanStatus.folders.join(', ')
-          : 'Überwachte Ordner',
+          : 'Alle überwachten Ordner',
       pollInterval: scanStatus?.poll_interval ?? null,
       lastStarted: formatTimestamp(scanStatus?.last_started_at),
       lastFinished: formatTimestamp(scanStatus?.last_finished_at),
       lastResultCount,
       resultLabel,
       error: scanStatus?.last_error ?? null,
-      statusLabel: scanStatus?.active ? 'Scan aktiv' : 'Scan pausiert',
+      statusLabel: scanStatus?.active ? 'Analyse aktiv' : 'Analyse pausiert',
     }
   }, [scanStatus])
 
@@ -337,11 +339,11 @@ export default function DashboardPage(): JSX.Element {
           <section className={`scan-status-card ${scanSummary.active ? 'active' : 'idle'}`}>
             <div className="scan-status-header">
               <div>
-                <h2>Scan-Status</h2>
+                <h2>Analyse-Status</h2>
                 <p className="scan-status-subline">
                   {scanSummary.active
-                    ? 'Der automatische Scan läuft kontinuierlich. Einmalige Scans sind währenddessen deaktiviert.'
-                    : 'Starte bei Bedarf den Dauer-Scan oder führe einen Einmal-Scan für eine sofortige Analyse aus.'}
+                    ? 'Die automatische Analyse läuft kontinuierlich. Einmalanalysen sind währenddessen deaktiviert.'
+                    : 'Starte bei Bedarf die Daueranalyse oder führe eine Einmalanalyse für eine sofortige Auswertung aus.'}
                 </p>
               </div>
               <div className="scan-actions">
@@ -351,7 +353,7 @@ export default function DashboardPage(): JSX.Element {
                   onClick={handleRescan}
                   disabled={rescanBusy || scanBusy || scanSummary.active}
                 >
-                  {rescanBusy ? 'Analysiere…' : 'Einmalig scannen'}
+                  {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
                 </button>
                 <button
                   type="button"
@@ -359,7 +361,7 @@ export default function DashboardPage(): JSX.Element {
                   onClick={handleStartScan}
                   disabled={scanBusy || scanSummary.active}
                 >
-                  {scanBusy && !scanSummary.active ? 'Starte…' : 'Scan starten'}
+                  {scanBusy && !scanSummary.active ? 'Starte Analyse…' : 'Analyse starten'}
                 </button>
                 <button
                   type="button"
@@ -367,7 +369,7 @@ export default function DashboardPage(): JSX.Element {
                   onClick={handleStopScan}
                   disabled={scanBusy || !scanSummary.active}
                 >
-                  {scanBusy && scanSummary.active ? 'Stoppe…' : 'Scan stoppen'}
+                  {scanBusy && scanSummary.active ? 'Stoppe Analyse…' : 'Analyse stoppen'}
                 </button>
               </div>
             </div>
