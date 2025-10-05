@@ -64,8 +64,12 @@ MIN_MATCH_SCORE=60
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
   zu kontrollieren.
 - Standardmäßig nutzt der JSON-Klassifikator eine niedrige Temperatur (`CLASSIFIER_TEMPERATURE=0.1`), ein begrenztes Sampling
-  (`CLASSIFIER_TOP_P=0.4`) sowie fixe Grenzen für Kontext (`CLASSIFIER_NUM_CTX=4096`) und Antwortlänge (`CLASSIFIER_NUM_PREDICT=512`).
-  Damit entstehen reproduzierbare, konsistente Ordnerpfade – über Umgebungsvariablen kannst du die Werte feinjustieren.
+  (`CLASSIFIER_TOP_P=0.4`) sowie die von Ollama gemeldete Kontextgrenze (`CLASSIFIER_NUM_CTX_MATCH_MODEL=true`).
+  `CLASSIFIER_NUM_CTX` dient als optionaler Cap und reduziert bei Bedarf das vom Modell angebotene Fenster.
+  Mit `CLASSIFIER_CONTEXT_RESERVE_TOKENS` steuerst du, wie viele Tokens für System- und Kataloginformationen reserviert werden,
+  während `CLASSIFIER_NUM_PREDICT=512` weiterhin die Antwortlänge begrenzt.
+  So entstehen reproduzierbare, konsistente Ordnerpfade ohne die vorherige Trunkierungswarnung – über Umgebungsvariablen kannst
+  du die Werte weiterhin feinjustieren.
 - Verbindungsfehler (`httpx.ConnectError` oder Logeintrag `Ollama Embedding fehlgeschlagen`) deuten
   auf einen nicht erreichbaren Ollama-Host hin. Stelle sicher, dass `OLLAMA_HOST` auf `http://ollama:11434`
   zeigt, wenn alle Dienste via Docker Compose laufen. Bei lokal gestarteten Komponenten außerhalb

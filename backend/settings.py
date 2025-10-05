@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     CLASSIFIER_TOP_P: float = 0.4
     CLASSIFIER_NUM_PREDICT: int = 512
     CLASSIFIER_NUM_CTX: int = 4096
+    CLASSIFIER_NUM_CTX_MATCH_MODEL: bool = True
+    CLASSIFIER_CONTEXT_RESERVE_TOKENS: int = 1200
     EMBED_MODEL: str = "nomic-embed-text"
     EMBED_PROMPT_HINT: str = (
         "Berücksichtige Absender-Domains, Kundennummern und Bestellbezüge, "
