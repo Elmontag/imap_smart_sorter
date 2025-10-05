@@ -8,6 +8,7 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
   Sie erlaubt jetzt auch das Speichern individueller Ordnerauswahlen sowie das direkte Bestätigen oder Ablehnen von KI-Ordner-Vorschlägen.
   Der Kopfbereich zeigt den verbundenen Ollama-Host samt der verwendeten Modelle an und der Vorschlagsbereich bietet Kennzahlen sowie den Zugriff auf bereits bearbeitete Mails.
   Die Ordner-Sidebar visualisiert vorhandene Hierarchien inklusive Unterordnern, sodass Entscheidungen direkt mit der realen Struktur abgeglichen werden können.
+  Über die zusätzliche Unterseite `#/catalog` lässt sich der komplette Ordner- und Tag-Katalog grafisch bearbeiten und anschließend direkt speichern.
 
 Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
 
@@ -71,7 +72,9 @@ MIN_MATCH_SCORE=60
 
 - Jede E-Mail wird strikt gegen einen festen Katalog aus [`backend/llm_config.json`](backend/llm_config.json) gematcht.
   Der Katalog enthält eine mehrstufige Ordnerhierarchie („Events“, „Bestellungen“, „Reisen“, „Projekte“) inklusive
-  Unter- und Subunterordnern. Das LLM darf ausschließlich diese Pfade nutzen.
+  Unter- und Subunterordnern. Das LLM darf ausschließlich diese Pfade nutzen, alle Vorschläge werden nachträglich
+  auf den nächstpassenden Katalogpfad normalisiert – freie Vorschläge wie „INBOX/…“ tauchen daher nicht mehr auf,
+  weil der Normalisierer IMAP-Präfixe entfernt und nur Treffer ≥ `MIN_MATCH_SCORE` akzeptiert.
 - Für jede mögliche Zuordnung vergibt das LLM einen Score zwischen 0 und 100 Punkten. 100 bedeutet perfekte Übereinstimmung,
   0 keinerlei Bezug. Der höchste Score bestimmt den Ordner-Vorschlag. Liegt kein Treffer über dem konfigurierten
   Schwellwert `MIN_MATCH_SCORE`, wird die Mail als `unmatched` markiert und es erfolgen weder Ordner- noch Tag-Vorschläge.
@@ -91,6 +94,9 @@ MIN_MATCH_SCORE=60
 - Der `/api/config`-Endpunkt liefert die komplette Katalogkonfiguration (`folder_templates`, `tag_slots`, `context_tags`),
   sodass auch externe Tools auf die Vorgaben zugreifen können. Änderungen an `llm_config.json` werden beim nächsten Request
   automatisch berücksichtigt.
+- Für interaktive Anpassungen stellt das Frontend eine Editor-Seite unter `#/catalog` bereit. Dort lassen sich Bereiche,
+  Unterordner, Kontext-Tags sowie Tag-Slots (inklusive Aliase) grafisch pflegen und direkt speichern.
+- Das Backend stellt die Rohdaten zusätzlich über `GET /api/catalog` bereit und akzeptiert Aktualisierungen per `PUT /api/catalog`.
 
 ### Schutz- und Monitoring-Einstellungen
 
@@ -165,6 +171,8 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |
 | `POST`  | `/api/proposal`     | Bestätigt oder verwirft einen KI-Ordner-Vorschlag |
 | `POST`  | `/api/rescan`       | Erzwingt einen einmaligen Scan (optional mit `folders`-Liste) |
+| `GET`   | `/api/catalog`      | Gibt den aktuellen Ordner- und Tag-Katalog (inkl. Hierarchie) zurück |
+| `PUT`   | `/api/catalog`      | Persistiert einen aktualisierten Katalog (Ordner & Tag-Slots) |
 
 Alle Endpunkte liefern JSON und verwenden HTTP-Statuscodes für Fehlerzustände.
 

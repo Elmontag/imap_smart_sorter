@@ -16,9 +16,9 @@ const toMessage = (err: unknown) => (err instanceof Error ? err.message : String
 const formatScore = (value: number) => value.toFixed(2)
 
 const DEFAULT_TAG_SLOTS: TagSlotConfig[] = [
-  { name: 'Komplexität', options: [] },
-  { name: 'Priorität', options: [] },
-  { name: 'Handlungsauftrag', options: [] },
+  { name: 'Komplexität', options: [], aliases: [] },
+  { name: 'Priorität', options: [], aliases: [] },
+  { name: 'Handlungsauftrag', options: [], aliases: [] },
 ]
 
 const fallbackTarget = (suggestion: Suggestion) =>

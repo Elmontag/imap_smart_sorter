@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 _CONFIG_PATH = Path(__file__).with_name("llm_config.json")
 
@@ -46,6 +46,33 @@ def _load_raw_config() -> Dict[str, object]:
         raise FileNotFoundError(f"Missing configuration file: {_CONFIG_PATH}")
     with _CONFIG_PATH.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def get_catalog_data() -> Dict[str, Any]:
+    """Return a deep copy of the raw catalog configuration."""
+
+    raw = _load_raw_config()
+    return json.loads(json.dumps(raw))
+
+
+def _write_catalog(data: Dict[str, Any]) -> None:
+    with _CONFIG_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    get_folder_templates.cache_clear()
+    get_tag_slots.cache_clear()
+    get_context_tag_guidelines.cache_clear()
+
+
+def update_catalog(folder_templates: List[Dict[str, Any]], tag_slots: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Persist a new catalog definition and refresh cached views."""
+
+    payload: Dict[str, Any] = {
+        "folder_templates": folder_templates,
+        "tag_slots": tag_slots,
+    }
+    _write_catalog(payload)
+    return payload
 
 
 @lru_cache(maxsize=1)
@@ -201,9 +228,10 @@ def folder_catalog_paths(limit: int | None = None) -> List[str]:
         paths.extend(_iter_child_paths(template.name, template.children))
         if limit is not None and len(paths) >= limit:
             break
+    deduped = list(dict.fromkeys(path for path in paths if path))
     if limit is not None:
-        return paths[:limit]
-    return paths
+        return deduped[:limit]
+    return deduped
 
 
 def tag_slot_count() -> int:

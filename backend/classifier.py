@@ -6,6 +6,7 @@ import logging
 import re
 import textwrap
 from collections import defaultdict
+from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import httpx
@@ -119,6 +120,103 @@ def _normalise_score_value(raw: Any) -> Tuple[float, float]:
     clamped = max(0.0, min(value, 1.0))
     rating = clamped * 100.0
     return clamped, rating
+
+
+_CATALOG_STOPWORDS = {"inbox"}
+
+
+def _split_catalog_segments(value: str) -> List[str]:
+    normalised = re.sub(r"[\\]+", "/", value or "")
+    segments = [segment.strip() for segment in normalised.split("/") if segment.strip()]
+    return segments
+
+
+def _catalog_signature(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+    parts = re.split(r"[\\s/]+", value.lower())
+    tokens: List[str] = []
+    for part in parts:
+        cleaned = re.sub(r"[^0-9a-zäöüß]+", "", part)
+        if cleaned and cleaned not in _CATALOG_STOPWORDS:
+            tokens.append(cleaned)
+    return " ".join(tokens)
+
+
+def _catalog_index() -> List[Tuple[str, str]]:
+    return [(path, _catalog_signature(path)) for path in folder_catalog_paths()]
+
+
+def _match_catalog_path(name: str, catalog_index: Sequence[Tuple[str, str]] | None = None) -> Tuple[str, float] | None:
+    if not isinstance(name, str):
+        return None
+    candidate = name.strip()
+    if not candidate:
+        return None
+    index = list(catalog_index or _catalog_index())
+    if not index:
+        return None
+
+    def _iter_variants(raw: str) -> Iterable[str]:
+        segments = _split_catalog_segments(raw)
+        if not segments:
+            return []
+        seen: set[str] = set()
+        inbox_aliases = {"inbox"}
+        inbox_value = (S.IMAP_INBOX or "").strip().lower()
+        if inbox_value:
+            inbox_aliases.add(inbox_value)
+        joined = "/".join(segments)
+        if joined and joined.lower() not in seen:
+            seen.add(joined.lower())
+            yield joined
+        trimmed = list(segments)
+        while trimmed and trimmed[0].strip().lower() in inbox_aliases:
+            trimmed = trimmed[1:]
+        if trimmed and trimmed != segments:
+            trimmed_joined = "/".join(trimmed)
+            if trimmed_joined and trimmed_joined.lower() not in seen:
+                seen.add(trimmed_joined.lower())
+                yield trimmed_joined
+        for start in range(1, len(segments)):
+            variant_segments = segments[start:]
+            if not variant_segments:
+                continue
+            variant = "/".join(variant_segments)
+            lowered_variant = variant.lower()
+            if lowered_variant in seen:
+                continue
+            seen.add(lowered_variant)
+            yield variant
+
+    lowered = candidate.lower()
+    for path, _ in index:
+        if path.lower() == lowered:
+            return path, 100.0
+
+    best_path: str | None = None
+    best_score = 0.0
+    for variant in _iter_variants(candidate):
+        signature = _catalog_signature(variant)
+        if not signature:
+            continue
+        for path, catalog_sig in index:
+            if not catalog_sig:
+                continue
+            if path.lower() == variant.lower():
+                return path, 100.0
+            ratio = SequenceMatcher(None, signature, catalog_sig).ratio()
+            if ratio > best_score:
+                best_score = ratio
+                best_path = path
+                if ratio >= 0.999:
+                    return best_path, 100.0
+    if best_path is None:
+        return None
+    rating = max(0.0, min(best_score * 100.0, 100.0))
+    if rating < float(S.MIN_MATCH_SCORE or 0):
+        return None
+    return best_path, rating
 
 
 def _summarize_hierarchy(folders: Sequence[str]) -> str:
@@ -270,11 +368,14 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
-    result: List[Dict[str, Any]] = []
+    raw_items: List[Dict[str, Any]] = []
     for name, score in ranked[: S.MAX_SUGGESTIONS]:
         normalised, rating = _normalise_score_value(score)
-        result.append({"name": name, "score": normalised, "rating": rating})
-    return result
+        raw_items.append({"name": name, "score": normalised, "rating": rating})
+    canonical = _canonicalize_ranked(raw_items)
+    if canonical:
+        return canonical
+    return []
 
 
 def _parse_ranked(payload: Any, fallback: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
@@ -301,8 +402,9 @@ def _parse_ranked(payload: Any, fallback: List[Tuple[str, float]]) -> List[Dict[
             if isinstance(reason, str) and reason.strip():
                 item["reason"] = reason.strip()
             ranked.append(item)
-    if ranked:
-        return ranked[: S.MAX_SUGGESTIONS]
+    canonical = _canonicalize_ranked(ranked)
+    if canonical:
+        return canonical
     return _fallback_ranked(fallback)
 
 
@@ -336,10 +438,90 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
             result["confidence"] = max(0.0, min(confidence, 1.0))
         if rating is not None:
             result["rating"] = rating
+        lowered_label = result.get("label", "").strip().lower() if result.get("label") else ""
+        if lowered_label != "unmatched":
+            catalog_match = None
+            if matched:
+                catalog_match = _match_catalog_path(matched)
+            if not catalog_match and label:
+                catalog_match = _match_catalog_path(label)
+            if catalog_match:
+                canonical, match_rating = catalog_match
+                result["matched_folder"] = canonical
+                top_level = canonical.split("/")[0]
+                result["label"] = top_level
+                existing_rating = result.get("rating")
+                try:
+                    numeric = float(existing_rating) if existing_rating is not None else match_rating
+                except (TypeError, ValueError):
+                    numeric = match_rating
+                final_rating = max(0.0, min(min(numeric, match_rating), 100.0))
+                result["rating"] = final_rating
+                result["confidence"] = max(0.0, min(final_rating / 100.0, 1.0))
+            else:
+                resolved_top_level = find_top_level_for_label(label)
+                if resolved_top_level:
+                    result["label"] = resolved_top_level
+                    result.pop("matched_folder", None)
         return result or None
     if isinstance(payload, str) and payload.strip():
         return {"label": payload.strip()}
     return None
+
+
+def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not items:
+        return []
+    catalog_index = _catalog_index()
+    if not catalog_index:
+        trimmed: List[Dict[str, Any]] = []
+        for entry in items[: S.MAX_SUGGESTIONS]:
+            cleaned: Dict[str, Any] = {}
+            if isinstance(entry.get("name"), str):
+                cleaned["name"] = entry["name"].strip()
+            score_val = entry.get("score")
+            rating_val = entry.get("rating")
+            if isinstance(score_val, (int, float)):
+                cleaned["score"] = max(0.0, min(float(score_val), 1.0))
+            if isinstance(rating_val, (int, float)):
+                cleaned["rating"] = max(0.0, min(float(rating_val), 100.0))
+            reason_val = entry.get("reason")
+            if isinstance(reason_val, str) and reason_val.strip():
+                cleaned["reason"] = reason_val.strip()
+            if cleaned:
+                trimmed.append(cleaned)
+        return trimmed
+    normalised: Dict[str, Dict[str, Any]] = {}
+    for entry in items:
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        match = _match_catalog_path(name, catalog_index)
+        if not match:
+            continue
+        canonical, match_rating = match
+        rating_raw = entry.get("rating")
+        if rating_raw is None and "score" in entry:
+            rating_raw = float(entry.get("score", 0.0)) * 100.0
+        try:
+            rating_value = float(rating_raw) if rating_raw is not None else match_rating
+        except (TypeError, ValueError):
+            rating_value = match_rating
+        final_rating = max(0.0, min(min(rating_value, match_rating), 100.0))
+        final_score = final_rating / 100.0
+        reason_val = entry.get("reason")
+        cleaned_entry: Dict[str, Any] = {
+            "name": canonical,
+            "score": final_score,
+            "rating": final_rating,
+        }
+        if isinstance(reason_val, str) and reason_val.strip():
+            cleaned_entry["reason"] = reason_val.strip()
+        existing = normalised.get(canonical)
+        if existing is None or existing.get("rating", 0.0) < final_rating:
+            normalised[canonical] = cleaned_entry
+    ordered = sorted(normalised.values(), key=lambda row: row.get("rating", 0.0), reverse=True)
+    return ordered[: S.MAX_SUGGESTIONS]
 
 
 def _normalise_tag_word(raw: Any) -> str | None:
