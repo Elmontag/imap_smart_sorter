@@ -22,6 +22,11 @@ interface MutableFolderNode extends FolderTreeNode {
   map: Map<string, MutableFolderNode>
 }
 
+interface RenderFolderNode extends FolderTreeNode {
+  matchesFilter?: boolean
+  children: RenderFolderNode[]
+}
+
 const ensureChild = (
   map: Map<string, MutableFolderNode>,
   segment: string,
@@ -75,6 +80,46 @@ const buildFolderTree = (folders: string[]): FolderTreeNode[] => {
   return toTree(root)
 }
 
+const cloneTree = (nodes: FolderTreeNode[]): RenderFolderNode[] =>
+  nodes.map(node => ({ ...node, children: cloneTree(node.children) }))
+
+const filterTree = (
+  nodes: FolderTreeNode[],
+  query: string,
+): { nodes: RenderFolderNode[]; autoExpand: Set<string> } => {
+  if (!query) {
+    return { nodes: cloneTree(nodes), autoExpand: new Set() }
+  }
+  const lower = query.toLowerCase()
+  const autoExpand = new Set<string>()
+
+  const visit = (node: FolderTreeNode): { node: RenderFolderNode; expand: boolean } | null => {
+    const childResults = node.children
+      .map(child => visit(child))
+      .filter((child): child is { node: RenderFolderNode; expand: boolean } => Boolean(child))
+
+    const children = childResults.map(child => child.node)
+    const matches = node.fullPath.toLowerCase().includes(lower)
+    if (!matches && children.length === 0) {
+      return null
+    }
+    const resultNode: RenderFolderNode = { ...node, matchesFilter: matches, children }
+    const childRequiresExpansion = childResults.some(child => child.expand)
+    const shouldExpand = matches || childRequiresExpansion || children.length > 0
+    if (children.length > 0 && shouldExpand) {
+      autoExpand.add(node.fullPath)
+    }
+    return { node: resultNode, expand: shouldExpand }
+  }
+
+  const filtered = nodes
+    .map(node => visit(node))
+    .filter((entry): entry is { node: RenderFolderNode; expand: boolean } => Boolean(entry))
+    .map(entry => entry.node)
+
+  return { nodes: filtered, autoExpand }
+}
+
 export default function FolderSelectionPanel({
   available,
   draft,
@@ -94,13 +139,11 @@ export default function FolderSelectionPanel({
 
   const normalizedAvailable = useMemo(() => normalize(available), [available])
   const trimmedFilter = filter.trim().toLowerCase()
-  const filtered = useMemo(() => {
-    if (!trimmedFilter) {
-      return normalizedAvailable
-    }
-    return normalizedAvailable.filter(folder => folder.toLowerCase().includes(trimmedFilter))
-  }, [normalizedAvailable, trimmedFilter])
   const tree = useMemo(() => buildFolderTree(normalizedAvailable), [normalizedAvailable])
+  const { nodes: visibleTree, autoExpand } = useMemo(
+    () => filterTree(tree, trimmedFilter),
+    [tree, trimmedFilter],
+  )
   const selectionSet = useMemo(() => new Set(draft), [draft])
 
   useEffect(() => {
@@ -139,6 +182,17 @@ export default function FolderSelectionPanel({
     })
   }, [draft, trimmedFilter])
 
+  useEffect(() => {
+    if (!trimmedFilter) {
+      return
+    }
+    setExpandedNodes(current => {
+      const next = new Set(current)
+      autoExpand.forEach(path => next.add(path))
+      return next
+    })
+  }, [trimmedFilter, autoExpand])
+
   const toggleExpand = useCallback((path: string) => {
     setExpandedNodes(current => {
       const next = new Set(current)
@@ -175,19 +229,20 @@ export default function FolderSelectionPanel({
     onDraftChange(normalize(next))
   }
 
-  const hasSelectionInSubtree = (node: FolderTreeNode): boolean => {
+  const hasSelectionInSubtree = (node: RenderFolderNode): boolean => {
     if (!node.children.length) {
       return false
     }
     return node.children.some(child => selectionSet.has(child.fullPath) || hasSelectionInSubtree(child))
   }
 
-  const renderNode = (node: FolderTreeNode): JSX.Element => {
+  const renderNode = (node: RenderFolderNode): JSX.Element => {
     const checked = selectionSet.has(node.fullPath)
     const partial = !checked && hasSelectionInSubtree(node)
     const hasChildren = node.children.length > 0
     const expanded = expandedNodes.has(node.fullPath)
-    const rowClass = `folder-tree-row${checked ? ' checked' : ''}${partial ? ' partial' : ''}`
+    const matched = Boolean(node.matchesFilter)
+    const rowClass = `folder-tree-row${checked ? ' checked' : ''}${partial ? ' partial' : ''}${matched ? ' match' : ''}`
     return (
       <li key={node.fullPath}>
         <div className={rowClass}>
@@ -197,6 +252,7 @@ export default function FolderSelectionPanel({
               className={`tree-toggle ${expanded ? 'open' : 'closed'}`}
               onClick={() => toggleExpand(node.fullPath)}
               aria-label={expanded ? 'Unterordner einklappen' : 'Unterordner aufklappen'}
+              aria-expanded={expanded}
             >
               {expanded ? '▾' : '▸'}
             </button>
@@ -264,27 +320,10 @@ export default function FolderSelectionPanel({
       {loading && <div className="placeholder">Ordner werden geladen…</div>}
       {!loading && !available.length && <div className="placeholder">Keine Ordner verfügbar.</div>}
       {!loading && available.length > 0 && (
-        trimmedFilter ? (
-          <ul className="folder-list">
-            {filtered.map(folder => {
-              const checked = selectionSet.has(folder)
-              return (
-                <li key={folder}>
-                  <label className={checked ? 'checked' : undefined}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleFolder(folder)}
-                      disabled={saving}
-                    />
-                    <span>{folder}</span>
-                  </label>
-                </li>
-              )
-            })}
-          </ul>
+        trimmedFilter && visibleTree.length === 0 ? (
+          <div className="placeholder">Keine Ordner passen zum Filter.</div>
         ) : (
-          <ul className="folder-tree">{tree.map(renderNode)}</ul>
+          <ul className="folder-tree">{visibleTree.map(renderNode)}</ul>
         )
       )}
       <div className="folder-footer">
