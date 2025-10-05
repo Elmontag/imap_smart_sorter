@@ -25,6 +25,7 @@ from configuration import (
     tag_slot_options_map,
     top_level_folder_names,
 )
+from ollama_service import get_model_context_window
 from settings import S
 
 
@@ -32,6 +33,86 @@ logger = logging.getLogger(__name__)
 
 
 _DOMAIN_RE = re.compile(r"@([A-Za-z0-9.-]+)")
+_MIN_NUM_CTX = 2048
+_PROMPT_CHAR_PER_TOKEN = 4
+_PROMPT_HEADROOM_RATIO = 0.9
+_CLASSIFIER_CONTEXT_CACHE: Dict[str, int] = {}
+
+
+def _is_user_override(field_name: str) -> bool:
+    configured = getattr(S, "model_fields_set", set())
+    return field_name in configured if isinstance(configured, set) else False
+
+
+def _configured_num_ctx() -> int:
+    try:
+        num_ctx = int(S.CLASSIFIER_NUM_CTX)
+    except (TypeError, ValueError):
+        num_ctx = 4096
+    return max(_MIN_NUM_CTX, num_ctx)
+
+
+async def _resolve_context_window() -> int:
+    fallback = _configured_num_ctx()
+    user_override = fallback if _is_user_override("CLASSIFIER_NUM_CTX") else None
+
+    if getattr(S, "CLASSIFIER_NUM_CTX_MATCH_MODEL", False):
+        cache_key = S.CLASSIFIER_MODEL.strip()
+        if cache_key:
+            if cache_key in _CLASSIFIER_CONTEXT_CACHE:
+                resolved = _CLASSIFIER_CONTEXT_CACHE[cache_key]
+            else:
+                try:
+                    resolved = await get_model_context_window(cache_key)
+                except Exception as exc:  # pragma: no cover - network interaction
+                    logger.debug("Kontextfenster konnte nicht ermittelt werden: %s", exc)
+                    resolved = None
+                if isinstance(resolved, int) and resolved > 0:
+                    _CLASSIFIER_CONTEXT_CACHE[cache_key] = resolved
+            if cache_key in _CLASSIFIER_CONTEXT_CACHE:
+                resolved = _CLASSIFIER_CONTEXT_CACHE[cache_key]
+                if user_override is not None:
+                    resolved = min(resolved, user_override)
+                return max(_MIN_NUM_CTX, resolved)
+
+    return user_override or fallback
+
+
+def _approx_prompt_char_budget(num_ctx: int) -> int:
+    if num_ctx <= 0:
+        return int(S.EMBED_PROMPT_MAX_CHARS)
+    budget = int(num_ctx * _PROMPT_CHAR_PER_TOKEN * _PROMPT_HEADROOM_RATIO)
+    return max(int(S.EMBED_PROMPT_MAX_CHARS * 0.5), budget)
+
+
+def _catalog_line_limit(num_ctx: int) -> int:
+    if num_ctx <= 0:
+        return 40
+    computed = max(20, num_ctx // 64)
+    return min(80, computed)
+
+
+def _truncate_body_for_context(body: str, num_ctx: int, overhead_chars: int) -> str:
+    if not body:
+        return ""
+
+    char_budget = _approx_prompt_char_budget(num_ctx)
+    available = max(0, char_budget - overhead_chars)
+
+    reserve_tokens = getattr(S, "CLASSIFIER_CONTEXT_RESERVE_TOKENS", 1200)
+    try:
+        reserve_tokens = int(reserve_tokens)
+    except (TypeError, ValueError):
+        reserve_tokens = 1200
+    reserve_tokens = max(400, reserve_tokens)
+    reserve_chars = int(reserve_tokens * _PROMPT_CHAR_PER_TOKEN)
+    if char_budget:
+        available = max(0, min(available, char_budget - reserve_chars))
+
+    max_chars = min(len(body), S.EMBED_PROMPT_MAX_CHARS)
+    if available > 0:
+        max_chars = min(max_chars, available)
+    return body[: max(0, max_chars)]
 
 
 def _sender_domain(value: str) -> str:
@@ -289,6 +370,9 @@ def build_classification_prompt(
     ranked: List[Tuple[str, float]],
     folders: Sequence[str],
     parent_hint: str | None,
+    *,
+    body_snippet: str | None = None,
+    max_catalog_entries: int | None = None,
 ) -> List[Dict[str, str]]:
     """Return chat messages instructing the LLM to refine folder suggestions."""
 
@@ -301,8 +385,9 @@ def build_classification_prompt(
     tag_catalog = tag_slot_options_map()
     threshold = S.MIN_MATCH_SCORE
 
-    folder_catalog_lines = [f"- {path}" for path in folder_catalog[:80]]
-    if len(folder_catalog) > 80:
+    limit = 80 if max_catalog_entries is None else max(5, min(80, max_catalog_entries))
+    folder_catalog_lines = [f"- {path}" for path in folder_catalog[:limit]]
+    if len(folder_catalog) > limit:
         folder_catalog_lines.append("- … (weitere Pfade im Katalog verfügbar)")
     folder_catalog_overview = "\n".join(folder_catalog_lines) or "- (leer)"
 
@@ -365,6 +450,10 @@ def build_classification_prompt(
         ' "category": {"label": "Top-Level oder '"'unmatched'"'", "matched_folder": "Pfad oder null", "score": 0-100, "reason": "Warum"},'
         ' "proposal": {"parent": "Top-Level", "name": "Neuer Unterordner", "reason": "Warum"} oder null,'
     )
+    snippet = body_snippet
+    if snippet is None:
+        snippet = body[: S.EMBED_PROMPT_MAX_CHARS]
+
     user_prompt = textwrap.dedent(
         f"""
         ## Metadaten
@@ -374,7 +463,7 @@ def build_classification_prompt(
         - Ausgangsordner: {origin}
 
         ## Textauszug
-        {body[: S.EMBED_PROMPT_MAX_CHARS]}
+        {snippet}
 
         ## Konfigurierte Top-Level-Ordner
         {top_levels}
@@ -535,7 +624,9 @@ def _load_json_payload(
     return None
 
 
-async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+async def _chat(
+    messages: List[Dict[str, str]], *, num_ctx: int | None = None
+) -> Dict[str, Any]:
     try:
         temperature = float(S.CLASSIFIER_TEMPERATURE)
     except (TypeError, ValueError):
@@ -555,12 +646,8 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     if num_predict < 128:
         num_predict = 128
 
-    try:
-        num_ctx = int(S.CLASSIFIER_NUM_CTX)
-    except (TypeError, ValueError):
-        num_ctx = 4096
-    if num_ctx < 2048:
-        num_ctx = 2048
+    if not isinstance(num_ctx, int) or num_ctx <= 0:
+        num_ctx = _configured_num_ctx()
 
     payload = {
         "model": S.CLASSIFIER_MODEL,
@@ -1140,9 +1227,73 @@ async def classify_with_model(
     if not S.CLASSIFIER_MODEL:
         return _fallback_ranked(ranked), None, None, []
 
-    messages = build_classification_prompt(subject, sender, body, ranked, folders, parent_hint)
+    num_ctx = await _resolve_context_window()
+    catalog_limit = _catalog_line_limit(num_ctx)
+    base_messages = build_classification_prompt(
+        subject,
+        sender,
+        body,
+        ranked,
+        folders,
+        parent_hint,
+        body_snippet="",
+        max_catalog_entries=catalog_limit,
+    )
+    overhead_chars = sum(len(item.get("content", "")) for item in base_messages)
+    body_snippet = _truncate_body_for_context(body, num_ctx, overhead_chars)
+    messages = build_classification_prompt(
+        subject,
+        sender,
+        body,
+        ranked,
+        folders,
+        parent_hint,
+        body_snippet=body_snippet,
+        max_catalog_entries=catalog_limit,
+    )
+    char_budget = _approx_prompt_char_budget(num_ctx)
+    total_chars = sum(len(item.get("content", "")) for item in messages)
+    if body_snippet and total_chars > char_budget and char_budget > 0:
+        overflow = total_chars - char_budget
+        if overflow > 0:
+            adjusted_length = max(0, len(body_snippet) - overflow)
+            if adjusted_length < len(body_snippet):
+                body_snippet = body[:adjusted_length]
+                messages = build_classification_prompt(
+                    subject,
+                    sender,
+                    body,
+                    ranked,
+                    folders,
+                    parent_hint,
+                    body_snippet=body_snippet,
+                    max_catalog_entries=catalog_limit,
+                )
+                total_chars = sum(len(item.get("content", "")) for item in messages)
+    while total_chars > char_budget and char_budget > 0 and catalog_limit > 20:
+        previous_limit = catalog_limit
+        catalog_limit = max(20, catalog_limit - 10)
+        if catalog_limit == previous_limit:
+            break
+        messages = build_classification_prompt(
+            subject,
+            sender,
+            body,
+            ranked,
+            folders,
+            parent_hint,
+            body_snippet=body_snippet,
+            max_catalog_entries=catalog_limit,
+        )
+        total_chars = sum(len(item.get("content", "")) for item in messages)
+    if total_chars > char_budget and char_budget > 0:
+        logger.debug(
+            "Klassifikationsprompt überschreitet das Zielbudget (Budget %s, Länge %s)",
+            char_budget,
+            total_chars,
+        )
     try:
-        response = await _chat(messages)
+        response = await _chat(messages, num_ctx=num_ctx)
     except Exception as exc:  # pragma: no cover - network interaction
         logger.warning("Ollama Klassifikation fehlgeschlagen: %s", exc)
         return _fallback_ranked(ranked), None, None, []

@@ -44,6 +44,8 @@ class OllamaStatus:
 
 _STATUS_CACHE: OllamaStatus | None = None
 _STATUS_LOCK = asyncio.Lock()
+_MODEL_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
+_MODEL_INFO_LOCK = asyncio.Lock()
 
 
 def _normalise_model_name(name: str) -> str:
@@ -65,6 +67,83 @@ def _match_model_entry(
         if value in candidate_set:
             return entry
     return None
+
+
+async def _fetch_model_details(client: httpx.AsyncClient, model: str) -> Dict[str, Any] | None:
+    if not model:
+        return None
+
+    normalised = _normalise_model_name(model)
+
+    async with _MODEL_INFO_LOCK:
+        cached = _MODEL_INFO_CACHE.get(normalised)
+        if cached is not None:
+            return cached
+
+    try:
+        response = await client.post(
+            f"{S.OLLAMA_HOST}/api/show",
+            json={"model": normalised},
+            timeout=httpx.Timeout(60.0, connect=15.0),
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning("Konnte Ollama-Modelldetails nicht laden: %s", exc)
+        return None
+
+    payload = response.json()
+    if isinstance(payload, dict):
+        async with _MODEL_INFO_LOCK:
+            _MODEL_INFO_CACHE[normalised] = payload
+        return payload
+    return None
+
+
+def _extract_context_length(payload: Dict[str, Any]) -> int | None:
+    candidates: List[Any] = []
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("context_length", "num_ctx", "max_context_length"):
+        if key in payload:
+            candidates.append(payload.get(key))
+
+    details = payload.get("details")
+    if isinstance(details, dict):
+        for key in ("context_length", "num_ctx", "max_context_length"):
+            if key in details:
+                candidates.append(details.get(key))
+
+    model_info = payload.get("model_info")
+    if isinstance(model_info, dict):
+        for key in ("context_length", "num_ctx", "max_context_length"):
+            if key in model_info:
+                candidates.append(model_info.get(key))
+
+    for candidate in candidates:
+        if isinstance(candidate, (int, float)):
+            value = int(candidate)
+            if value > 0:
+                return value
+        elif isinstance(candidate, str):
+            stripped = candidate.strip()
+            if stripped.isdigit():
+                value = int(stripped)
+                if value > 0:
+                    return value
+    return None
+
+
+async def get_model_context_window(model: str) -> int | None:
+    if not model:
+        return None
+
+    timeout = httpx.Timeout(60.0, connect=15.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        payload = await _fetch_model_details(client, model)
+    if not payload:
+        return None
+    return _extract_context_length(payload)
 
 
 async def _fetch_tags(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
