@@ -364,8 +364,12 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
         "format": "json",
         "stream": False,
     }
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(f"{S.OLLAMA_HOST}/api/chat", json=payload)
+    timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            response = await client.post(f"{S.OLLAMA_HOST}/api/chat", json=payload)
+        except httpx.TimeoutException as exc:  # pragma: no cover - network interaction
+            raise RuntimeError("Ollama Chat Timeout überschritten") from exc
         response.raise_for_status()
 
         def _load_response(text: str) -> Dict[str, Any]:
