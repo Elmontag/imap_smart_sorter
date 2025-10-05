@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set
@@ -29,6 +30,21 @@ def _make_engine():
 engine = _make_engine()
 
 
+_schema_lock = threading.Lock()
+_schema_ready = False
+
+
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        SQLModel.metadata.create_all(engine)
+        _schema_ready = True
+
+
 def _reset_sqlite_file() -> None:
     if not S.DATABASE_URL.startswith("sqlite:///"):
         return
@@ -49,16 +65,21 @@ def _reset_sqlite_file() -> None:
 
 
 def init_db() -> None:
-    if S.INIT_RUN:
-        logger.info("INIT_RUN aktiv – Datenbank wird zurückgesetzt")
-        SQLModel.metadata.drop_all(engine)
-        if S.DATABASE_URL.startswith("sqlite:///"):
-            _reset_sqlite_file()
-    SQLModel.metadata.create_all(engine)
+    global _schema_ready
+    with _schema_lock:
+        if S.INIT_RUN:
+            logger.info("INIT_RUN aktiv – Datenbank wird zurückgesetzt")
+            SQLModel.metadata.drop_all(engine)
+            _schema_ready = False
+            if S.DATABASE_URL.startswith("sqlite:///"):
+                _reset_sqlite_file()
+        SQLModel.metadata.create_all(engine)
+        _schema_ready = True
 
 
 @contextmanager
 def get_session() -> Iterator[Session]:
+    _ensure_schema()
     with Session(engine) as session:
         yield session
 
