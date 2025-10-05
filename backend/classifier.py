@@ -374,7 +374,10 @@ def _strip_code_fence(content: str) -> str:
     return stripped.strip()
 
 
-def _candidate_json_segments(content: str) -> List[str]:
+def _candidate_json_segments(content: Any) -> List[str]:
+    if not isinstance(content, str):
+        return []
+
     text = content.strip()
     if not text:
         return []
@@ -398,7 +401,9 @@ def _candidate_json_segments(content: str) -> List[str]:
     return candidates
 
 
-def _load_json_payload(content: str) -> Dict[str, Any] | None:
+def _load_json_payload(content: Any) -> Dict[str, Any] | None:
+    if isinstance(content, dict):
+        return content
     for candidate in _candidate_json_segments(content):
         try:
             parsed = json.loads(candidate)
@@ -438,6 +443,11 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
                         continue
                     chunk = line.strip()
                     if not chunk:
+                        continue
+                    if chunk.startswith(":"):
+                        continue
+                    prefix = chunk.split(":", 1)[0].strip().lower()
+                    if prefix in {"event", "id", "retry"}:
                         continue
                     if chunk.startswith("data:"):
                         chunk = chunk[5:].strip()
@@ -615,23 +625,23 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not items:
         return []
     catalog_index = _catalog_index()
+    trimmed: List[Dict[str, Any]] = []
+    for entry in items[: S.MAX_SUGGESTIONS]:
+        cleaned: Dict[str, Any] = {}
+        if isinstance(entry.get("name"), str):
+            cleaned["name"] = entry["name"].strip()
+        score_val = entry.get("score")
+        rating_val = entry.get("rating")
+        if isinstance(score_val, (int, float)):
+            cleaned["score"] = max(0.0, min(float(score_val), 1.0))
+        if isinstance(rating_val, (int, float)):
+            cleaned["rating"] = max(0.0, min(float(rating_val), 100.0))
+        reason_val = entry.get("reason")
+        if isinstance(reason_val, str) and reason_val.strip():
+            cleaned["reason"] = reason_val.strip()
+        if cleaned:
+            trimmed.append(cleaned)
     if not catalog_index:
-        trimmed: List[Dict[str, Any]] = []
-        for entry in items[: S.MAX_SUGGESTIONS]:
-            cleaned: Dict[str, Any] = {}
-            if isinstance(entry.get("name"), str):
-                cleaned["name"] = entry["name"].strip()
-            score_val = entry.get("score")
-            rating_val = entry.get("rating")
-            if isinstance(score_val, (int, float)):
-                cleaned["score"] = max(0.0, min(float(score_val), 1.0))
-            if isinstance(rating_val, (int, float)):
-                cleaned["rating"] = max(0.0, min(float(rating_val), 100.0))
-            reason_val = entry.get("reason")
-            if isinstance(reason_val, str) and reason_val.strip():
-                cleaned["reason"] = reason_val.strip()
-            if cleaned:
-                trimmed.append(cleaned)
         return trimmed
     normalised: Dict[str, Dict[str, Any]] = {}
     for entry in items:
@@ -664,7 +674,9 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if existing is None or existing.get("rating", 0.0) < final_rating:
             normalised[canonical] = cleaned_entry
     ordered = sorted(normalised.values(), key=lambda row: row.get("rating", 0.0), reverse=True)
-    return ordered[: S.MAX_SUGGESTIONS]
+    if ordered:
+        return ordered[: S.MAX_SUGGESTIONS]
+    return trimmed
 
 
 def _normalise_tag_word(raw: Any) -> str | None:
