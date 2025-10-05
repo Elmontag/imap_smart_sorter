@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Suggestion, TagSlotConfig, decide, decideProposal, moveOne } from '../api'
+import { Suggestion, TagSlotConfig, createFolder, decide, decideProposal, moveOne } from '../api'
 
 interface Props {
   suggestion: Suggestion
   onActionComplete: () => Promise<void> | void
   tagSlots?: TagSlotConfig[]
+  availableFolders?: string[]
+  onFolderCreated?: (folder: string) => Promise<void> | void
 }
 
 type BusyState = 'simulate' | 'accept' | 'reject' | 'proposal-accept' | 'proposal-reject' | null
@@ -29,12 +31,20 @@ const fallbackTarget = (suggestion: Suggestion) =>
   suggestion.src_folder ??
   ''
 
-export default function SuggestionCard({ suggestion, onActionComplete, tagSlots }: Props): JSX.Element {
+export default function SuggestionCard({
+  suggestion,
+  onActionComplete,
+  tagSlots,
+  availableFolders = [],
+  onFolderCreated,
+}: Props): JSX.Element {
   const [target, setTarget] = useState<string>(fallbackTarget(suggestion))
   const [busy, setBusy] = useState<BusyState>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [proposal, setProposal] = useState(suggestion.proposal ?? null)
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [recentlyCreated, setRecentlyCreated] = useState<string[]>([])
 
   const statusInfo = useMemo((): { label: string; tone: StatusTone; detail: string | null } => {
     const baseStatus = (suggestion.status ?? 'open').toLowerCase()
@@ -82,7 +92,25 @@ export default function SuggestionCard({ suggestion, onActionComplete, tagSlots 
   useEffect(() => {
     setTarget(fallbackTarget(suggestion))
     setProposal(suggestion.proposal ?? null)
+    setRecentlyCreated([])
   }, [suggestion.message_uid, suggestion.proposal])
+
+  const effectiveFolders = useMemo(() => {
+    const combined = [...availableFolders, ...recentlyCreated]
+    const seen = new Set<string>()
+    return combined.filter(folder => {
+      const trimmed = folder.trim()
+      if (!trimmed || seen.has(trimmed)) {
+        return false
+      }
+      seen.add(trimmed)
+      return true
+    })
+  }, [availableFolders, recentlyCreated])
+
+  const availableSet = useMemo(() => new Set(effectiveFolders), [effectiveFolders])
+  const normalizedTarget = target.trim()
+  const targetExists = !normalizedTarget || availableSet.has(normalizedTarget)
 
   const created = useMemo(() => {
     if (!suggestion.date) return null
@@ -127,7 +155,11 @@ export default function SuggestionCard({ suggestion, onActionComplete, tagSlots 
     try {
       const result = await moveOne(suggestion.message_uid, target, true)
       const folderOk = Boolean(result.checks && result.checks['folder_exists'])
-      setFeedback(folderOk ? 'Ordner vorhanden – bereit zum Verschieben.' : 'Ordner existiert nicht.')
+      setFeedback(
+        folderOk
+          ? 'Ordner vorhanden – bereit zum Verschieben.'
+          : 'Ordner existiert nicht – bitte über „Ordner erstellen“ anlegen.',
+      )
     } catch (err) {
       setError(`Simulation fehlgeschlagen: ${toMessage(err)}`)
     } finally {
@@ -165,10 +197,23 @@ export default function SuggestionCard({ suggestion, onActionComplete, tagSlots 
       const result = await decideProposal(suggestion.message_uid, accept)
       if (result.proposal) {
         setProposal(result.proposal)
-        if (accept && result.proposal.full_path) {
-          setTarget(result.proposal.full_path)
-          setFeedback(`Ordner angelegt: ${result.proposal.full_path}`)
-        } else if (!accept) {
+        if (accept) {
+          const createdPath =
+            result.proposal.full_path ??
+            (result.proposal.parent && result.proposal.name
+              ? `${result.proposal.parent}/${result.proposal.name}`
+              : null)
+          if (createdPath) {
+            setTarget(createdPath)
+            setFeedback(`Ordner angelegt: ${createdPath}`)
+            setRecentlyCreated(current => (current.includes(createdPath) ? current : [...current, createdPath]))
+            if (onFolderCreated) {
+              await onFolderCreated(createdPath)
+            }
+          } else {
+            setError('Ordner konnte nicht angelegt werden: fehlende Pfadangaben.')
+          }
+        } else {
           setFeedback('Ordner-Vorschlag verworfen.')
         }
       }
@@ -177,6 +222,36 @@ export default function SuggestionCard({ suggestion, onActionComplete, tagSlots 
       setError(`Vorschlag konnte nicht verarbeitet werden: ${toMessage(err)}`)
     } finally {
       setBusy(null)
+    }
+  }
+
+  const handleCreateFolder = async () => {
+    const path = normalizedTarget
+    if (!path) {
+      setError('Bitte zuerst einen Zielordner angeben.')
+      return
+    }
+    setCreatingFolder(true)
+    setFeedback(null)
+    setError(null)
+    try {
+      const response = await createFolder(path)
+      if (response.existed) {
+        setFeedback('Ordner ist bereits vorhanden.')
+      } else {
+        setTarget(response.created)
+        setFeedback(`Ordner angelegt: ${response.created}`)
+        setRecentlyCreated(current =>
+          current.includes(response.created) ? current : [...current, response.created],
+        )
+        if (onFolderCreated) {
+          await onFolderCreated(response.created)
+        }
+      }
+    } catch (err) {
+      setError(`Ordner konnte nicht angelegt werden: ${toMessage(err)}`)
+    } finally {
+      setCreatingFolder(false)
     }
   }
 
@@ -282,10 +357,24 @@ export default function SuggestionCard({ suggestion, onActionComplete, tagSlots 
         </div>
       )}
 
-      <label className="target-input">
+      <label className={`target-input${targetExists ? '' : ' missing'}`}>
         <span>Zielordner</span>
         <input value={target} onChange={event => setTarget(event.target.value)} placeholder="Ordnerpfad" />
       </label>
+
+      {!targetExists && (
+        <div className="target-warning" role="status">
+          <span>Dieser Ordner existiert noch nicht.</span>
+          <button
+            type="button"
+            className="ghost"
+            onClick={handleCreateFolder}
+            disabled={creatingFolder || !normalizedTarget}
+          >
+            {creatingFolder ? 'Lege an…' : 'Ordner erstellen'}
+          </button>
+        </div>
+      )}
 
       <div className="actions">
         <button type="button" onClick={handleSimulate} disabled={busy !== null}>

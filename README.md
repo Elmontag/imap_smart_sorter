@@ -5,10 +5,10 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Backend** – FastAPI-Anwendung mit SQLite/SQLModel-Datenbank für Vorschläge, Status und API-Endpunkte.
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
-  Sie erlaubt jetzt auch das Speichern individueller Ordnerauswahlen sowie das direkte Bestätigen oder Ablehnen von KI-Ordner-Vorschlägen.
-  Der Kopfbereich zeigt den verbundenen Ollama-Host samt der verwendeten Modelle an und der Vorschlagsbereich bietet Kennzahlen sowie den Zugriff auf bereits bearbeitete Mails.
-  Die Ordner-Sidebar visualisiert vorhandene Hierarchien inklusive Unterordnern, sodass Entscheidungen direkt mit der realen Struktur abgeglichen werden können.
-  Über die zusätzliche Unterseite `#/catalog` lässt sich der komplette Ordner- und Tag-Katalog grafisch bearbeiten und anschließend direkt speichern.
+  Die Ordnerauswahl präsentiert sich als einklappbare Baumstruktur, neu gefundene Ordner lassen sich direkt aus den Vorschlagskarten anlegen.
+  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons und behältst Statuskarten für Ollama und laufende Analysen im Blick.
+  Tag-Vorschläge erscheinen kontextualisiert direkt innerhalb der jeweiligen Mailkarte, eine separate Tag-Übersicht entfällt.
+  Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
 Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
 
@@ -106,6 +106,7 @@ MIN_MATCH_SCORE=60
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
   Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
+- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Scan-Controller. Das Frontend nutzt die Endpunkte für die neuen Buttons „Scan starten“ und „Scan stoppen“ und zeigt letzte Laufzeiten inklusive Fehlern an.
 
 ## Lokale Entwicklung
 
@@ -170,7 +171,11 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `POST`  | `/api/move`         | Verschiebt oder simuliert eine einzelne Nachricht |
 | `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |
 | `POST`  | `/api/proposal`     | Bestätigt oder verwirft einen KI-Ordner-Vorschlag |
+| `POST`  | `/api/folders/create` | Legt fehlende IMAP-Ordner (inklusive Zwischenebenen) an |
 | `POST`  | `/api/rescan`       | Erzwingt einen einmaligen Scan (optional mit `folders`-Liste) |
+| `GET`   | `/api/scan/status`  | Laufzeitstatus des Scan-Controllers (aktiv, Intervalle, letzte Ergebnisse) |
+| `POST`  | `/api/scan/start`   | Startet den kontinuierlichen Scan für die übergebenen Ordner (oder die gespeicherte Auswahl) |
+| `POST`  | `/api/scan/stop`    | Stoppt den laufenden Scan-Controller |
 | `GET`   | `/api/catalog`      | Gibt den aktuellen Ordner- und Tag-Katalog (inkl. Hierarchie) zurück |
 | `PUT`   | `/api/catalog`      | Persistiert einen aktualisierten Katalog (Ordner & Tag-Slots) |
 

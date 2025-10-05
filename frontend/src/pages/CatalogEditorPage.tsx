@@ -53,6 +53,10 @@ interface CatalogDraft {
   tag_slots: TagSlotDraft[]
 }
 
+type SelectedFolder =
+  | { kind: 'template'; templateId: string }
+  | { kind: 'node'; templateId: string; nodeId: string }
+
 type NodeField = 'name' | 'description'
 type GuidelineField = 'name' | 'description'
 type TemplateField = 'name' | 'description'
@@ -228,231 +232,37 @@ const removeNodeById = (nodes: FolderNodeDraft[], nodeId: string): FolderNodeDra
   })
   return changed ? updated : nodes
 }
-interface FolderNodeEditorProps {
-  node: FolderNodeDraft
-  onChange: NodeChange
-  onAddChild: (nodeId: string) => void
-  onRemove: (nodeId: string) => void
+
+const findNodeById = (nodes: FolderNodeDraft[], nodeId: string): FolderNodeDraft | null => {
+  for (const node of nodes) {
+    if (node.id === nodeId) {
+      return node
+    }
+    const child = findNodeById(node.children, nodeId)
+    if (child) {
+      return child
+    }
+  }
+  return null
 }
 
-const FolderNodeEditor: React.FC<FolderNodeEditorProps> = ({ node, onChange, onAddChild, onRemove }) => (
-  <div className="catalog-node">
-    <div className="catalog-node-header">
-      <input
-        className="catalog-input"
-        value={node.name}
-        onChange={event => onChange(node.id, 'name', event.target.value)}
-        placeholder="Ordnername"
-      />
-      <div className="node-actions">
-        <button type="button" className="ghost" onClick={() => onAddChild(node.id)}>
-          Unterordner
-        </button>
-        <button type="button" className="link danger" onClick={() => onRemove(node.id)}>
-          Entfernen
-        </button>
-      </div>
-    </div>
-    <textarea
-      className="catalog-textarea"
-      value={node.description}
-      onChange={event => onChange(node.id, 'description', event.target.value)}
-      placeholder="Beschreibung"
-      rows={2}
-    />
-    {node.children.length > 0 && (
-      <div className="catalog-node-children">
-        {node.children.map(child => (
-          <FolderNodeEditor key={child.id} node={child} onChange={onChange} onAddChild={onAddChild} onRemove={onRemove} />
-        ))}
-      </div>
-    )}
-  </div>
-)
-
-interface TemplateEditorProps {
-  template: TemplateDraft
-  onFieldChange: (templateId: string, field: TemplateField, value: string) => void
-  onRemoveTemplate: (templateId: string) => void
-  onAddRootChild: (templateId: string) => void
-  onAddGuideline: (templateId: string) => void
-  onGuidelineChange: GuidelineChange
-  onGuidelineRemove: (templateId: string, guidelineId: string) => void
-  onNodeChange: NodeChange
-  onNodeAddChild: (nodeId: string) => void
-  onNodeRemove: (nodeId: string) => void
+const findNodePath = (
+  nodes: FolderNodeDraft[],
+  nodeId: string,
+  trail: FolderNodeDraft[] = [],
+): FolderNodeDraft[] => {
+  for (const node of nodes) {
+    const nextTrail = [...trail, node]
+    if (node.id === nodeId) {
+      return nextTrail
+    }
+    const result = findNodePath(node.children, nodeId, nextTrail)
+    if (result.length > 0) {
+      return result
+    }
+  }
+  return []
 }
-
-const TemplateEditor: React.FC<TemplateEditorProps> = ({
-  template,
-  onFieldChange,
-  onRemoveTemplate,
-  onAddRootChild,
-  onAddGuideline,
-  onGuidelineChange,
-  onGuidelineRemove,
-  onNodeChange,
-  onNodeAddChild,
-  onNodeRemove,
-}) => (
-  <div className="catalog-card">
-    <div className="catalog-card-header">
-      <input
-        className="catalog-input title"
-        value={template.name}
-        onChange={event => onFieldChange(template.id, 'name', event.target.value)}
-        placeholder="Bereich"
-      />
-      <div className="catalog-card-actions">
-        <button type="button" className="ghost" onClick={() => onAddRootChild(template.id)}>
-          Unterordner hinzufügen
-        </button>
-        <button type="button" className="link danger" onClick={() => onRemoveTemplate(template.id)}>
-          Bereich entfernen
-        </button>
-      </div>
-    </div>
-    <textarea
-      className="catalog-textarea"
-      value={template.description}
-      onChange={event => onFieldChange(template.id, 'description', event.target.value)}
-      placeholder="Beschreibung"
-      rows={3}
-    />
-    <div className="catalog-guidelines">
-      <div className="catalog-guidelines-header">
-        <h4>Kontext-Tags</h4>
-        <button type="button" className="link" onClick={() => onAddGuideline(template.id)}>
-          Kontext-Tag hinzufügen
-        </button>
-      </div>
-      {template.tag_guidelines.length === 0 && <div className="muted">Noch keine Kontext-Tags definiert.</div>}
-      {template.tag_guidelines.map(guideline => (
-        <div key={guideline.id} className="catalog-guideline">
-          <input
-            className="catalog-input"
-            value={guideline.name}
-            onChange={event => onGuidelineChange(template.id, guideline.id, 'name', event.target.value)}
-            placeholder="Tag-Schlüssel"
-          />
-          <input
-            className="catalog-input"
-            value={guideline.description}
-            onChange={event => onGuidelineChange(template.id, guideline.id, 'description', event.target.value)}
-            placeholder="Beschreibung"
-          />
-          <button type="button" className="link danger" onClick={() => onGuidelineRemove(template.id, guideline.id)}>
-            Entfernen
-          </button>
-        </div>
-      ))}
-    </div>
-    {template.children.length > 0 && (
-      <div className="catalog-node-children">
-        {template.children.map(child => (
-          <FolderNodeEditor
-            key={child.id}
-            node={child}
-            onChange={onNodeChange}
-            onAddChild={onNodeAddChild}
-            onRemove={onNodeRemove}
-          />
-        ))}
-      </div>
-    )}
-  </div>
-)
-
-interface TagSlotEditorProps {
-  slot: TagSlotDraft
-  onFieldChange: (slotId: string, field: TagSlotField, value: string) => void
-  onRemove: (slotId: string) => void
-  onAddOption: (slotId: string) => void
-  onOptionChange: (slotId: string, index: number, value: string) => void
-  onOptionRemove: (slotId: string, index: number) => void
-  onAddAlias: (slotId: string) => void
-  onAliasChange: (slotId: string, index: number, value: string) => void
-  onAliasRemove: (slotId: string, index: number) => void
-}
-
-const TagSlotEditor: React.FC<TagSlotEditorProps> = ({
-  slot,
-  onFieldChange,
-  onRemove,
-  onAddOption,
-  onOptionChange,
-  onOptionRemove,
-  onAddAlias,
-  onAliasChange,
-  onAliasRemove,
-}) => (
-  <div className="catalog-card">
-    <div className="catalog-card-header">
-      <input
-        className="catalog-input title"
-        value={slot.name}
-        onChange={event => onFieldChange(slot.id, 'name', event.target.value)}
-        placeholder="Slot-Name"
-      />
-      <div className="catalog-card-actions">
-        <button type="button" className="link danger" onClick={() => onRemove(slot.id)}>
-          Slot entfernen
-        </button>
-      </div>
-    </div>
-    <textarea
-      className="catalog-textarea"
-      value={slot.description}
-      onChange={event => onFieldChange(slot.id, 'description', event.target.value)}
-      placeholder="Beschreibung"
-      rows={3}
-    />
-    <div className="catalog-tag-options">
-      <div className="catalog-guidelines-header">
-        <h4>Optionen</h4>
-        <button type="button" className="link" onClick={() => onAddOption(slot.id)}>
-          Option hinzufügen
-        </button>
-      </div>
-      {slot.options.length === 0 && <div className="muted">Keine Optionen definiert.</div>}
-      {slot.options.map((option, index) => (
-        <div key={`${slot.id}-option-${index}`} className="catalog-option-row">
-          <input
-            className="catalog-input"
-            value={option}
-            onChange={event => onOptionChange(slot.id, index, event.target.value)}
-            placeholder="Option"
-          />
-          <button type="button" className="link danger" onClick={() => onOptionRemove(slot.id, index)}>
-            Entfernen
-          </button>
-        </div>
-      ))}
-    </div>
-    <div className="catalog-tag-options">
-      <div className="catalog-guidelines-header">
-        <h4>Aliase</h4>
-        <button type="button" className="link" onClick={() => onAddAlias(slot.id)}>
-          Alias hinzufügen
-        </button>
-      </div>
-      {slot.aliases.length === 0 && <div className="muted">Keine alternativen Bezeichner.</div>}
-      {slot.aliases.map((alias, index) => (
-        <div key={`${slot.id}-alias-${index}`} className="catalog-option-row">
-          <input
-            className="catalog-input"
-            value={alias}
-            onChange={event => onAliasChange(slot.id, index, event.target.value)}
-            placeholder="Alias"
-          />
-          <button type="button" className="link danger" onClick={() => onAliasRemove(slot.id, index)}>
-            Entfernen
-          </button>
-        </div>
-      ))}
-    </div>
-  </div>
-)
 export default function CatalogEditorPage(): JSX.Element {
   const [draft, setDraft] = useState<CatalogDraft | null>(null)
   const [original, setOriginal] = useState<CatalogDefinition | null>(null)
@@ -460,6 +270,9 @@ export default function CatalogEditorPage(): JSX.Element {
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [status, setStatus] = useState<StatusMessage | null>(null)
+  const [selectedFolder, setSelectedFolder] = useState<SelectedFolder | null>(null)
+  const [folderNavExpanded, setFolderNavExpanded] = useState<Set<string>>(new Set())
+  const [selectedTagSlotId, setSelectedTagSlotId] = useState<string | null>(null)
 
   const loadCatalog = useCallback(async () => {
     setLoading(true)
@@ -479,6 +292,105 @@ export default function CatalogEditorPage(): JSX.Element {
   useEffect(() => {
     void loadCatalog()
   }, [loadCatalog])
+
+  const selectFolder = useCallback((selection: SelectedFolder) => {
+    setSelectedFolder(selection)
+    setFolderNavExpanded(current => {
+      const next = new Set(current)
+      next.add(selection.templateId)
+      if (selection.kind === 'node') {
+        next.add(selection.nodeId)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleNavExpand = useCallback((id: string) => {
+    setFolderNavExpanded(current => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!draft) {
+      setSelectedFolder(null)
+      setSelectedTagSlotId(null)
+      setFolderNavExpanded(new Set())
+      return
+    }
+
+    setFolderNavExpanded(current => {
+      const valid = new Set<string>()
+      const collect = (nodes: FolderNodeDraft[]) => {
+        nodes.forEach(node => {
+          valid.add(node.id)
+          if (node.children.length > 0) {
+            collect(node.children)
+          }
+        })
+      }
+      draft.folder_templates.forEach(template => {
+        valid.add(template.id)
+        collect(template.children)
+      })
+      const next = new Set<string>()
+      current.forEach(id => {
+        if (valid.has(id)) {
+          next.add(id)
+        }
+      })
+      if (next.size === current.size) {
+        let identical = true
+        current.forEach(id => {
+          if (!next.has(id)) {
+            identical = false
+          }
+        })
+        if (identical) {
+          return current
+        }
+      }
+      return next
+    })
+
+    if (!selectedFolder) {
+      if (draft.folder_templates.length > 0) {
+        selectFolder({ kind: 'template', templateId: draft.folder_templates[0].id })
+      }
+    } else {
+      const template = draft.folder_templates.find(item => item.id === selectedFolder.templateId)
+      if (!template) {
+        if (draft.folder_templates.length > 0) {
+          selectFolder({ kind: 'template', templateId: draft.folder_templates[0].id })
+        } else {
+          setSelectedFolder(null)
+        }
+      } else if (selectedFolder.kind === 'node') {
+        const nodeExists = Boolean(findNodeById(template.children, selectedFolder.nodeId))
+        if (!nodeExists) {
+          selectFolder({ kind: 'template', templateId: template.id })
+        }
+      }
+    }
+
+    if (!selectedTagSlotId) {
+      if (draft.tag_slots.length > 0) {
+        setSelectedTagSlotId(draft.tag_slots[0].id)
+      }
+    } else if (!draft.tag_slots.some(slot => slot.id === selectedTagSlotId)) {
+      if (draft.tag_slots.length > 0) {
+        setSelectedTagSlotId(draft.tag_slots[0].id)
+      } else {
+        setSelectedTagSlotId(null)
+      }
+    }
+  }, [draft, selectedFolder, selectedTagSlotId, selectFolder])
 
   const currentPayload = useMemo(() => (draft ? draftToPayload(draft) : null), [draft])
 
@@ -507,16 +419,18 @@ export default function CatalogEditorPage(): JSX.Element {
   )
 
   const handleAddTemplate = useCallback(() => {
+    const template = createTemplateDraft()
     setDraft(current => {
       if (!current) {
-        return { folder_templates: [createTemplateDraft()], tag_slots: [] }
+        return { folder_templates: [template], tag_slots: [] }
       }
       return {
         ...current,
-        folder_templates: [...current.folder_templates, createTemplateDraft()],
+        folder_templates: [...current.folder_templates, template],
       }
     })
-  }, [])
+    selectFolder({ kind: 'template', templateId: template.id })
+  }, [selectFolder])
 
   const handleRemoveTemplate = useCallback((templateId: string) => {
     setDraft(current => {
@@ -530,21 +444,26 @@ export default function CatalogEditorPage(): JSX.Element {
     })
   }, [])
 
-  const handleAddRootChild = useCallback((templateId: string) => {
-    setDraft(current => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        folder_templates: current.folder_templates.map(template =>
-          template.id === templateId
-            ? { ...template, children: [...template.children, createFolderNode('Neuer Ordner')] }
-            : template,
-        ),
-      }
-    })
-  }, [])
+  const handleAddRootChild = useCallback(
+    (templateId: string) => {
+      const child = createFolderNode('Neuer Ordner')
+      setDraft(current => {
+        if (!current) {
+          return current
+        }
+        return {
+          ...current,
+          folder_templates: current.folder_templates.map(template =>
+            template.id === templateId
+              ? { ...template, children: [...template.children, child] }
+              : template,
+          ),
+        }
+      })
+      selectFolder({ kind: 'node', templateId, nodeId: child.id })
+    },
+    [selectFolder],
+  )
 
   const handleAddGuideline = useCallback((templateId: string) => {
     setDraft(current => {
@@ -622,20 +541,28 @@ export default function CatalogEditorPage(): JSX.Element {
     })
   }, [])
 
-  const handleNodeAddChild = useCallback((nodeId: string) => {
-    setDraft(current => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        folder_templates: current.folder_templates.map(template => {
-          const updatedChildren = addChildToNode(template.children, nodeId, () => createFolderNode('Neuer Unterordner'))
-          return updatedChildren === template.children ? template : { ...template, children: updatedChildren }
-        }),
-      }
-    })
-  }, [])
+  const handleNodeAddChild = useCallback(
+    (templateId: string, nodeId: string) => {
+      const child = createFolderNode('Neuer Unterordner')
+      setDraft(current => {
+        if (!current) {
+          return current
+        }
+        return {
+          ...current,
+          folder_templates: current.folder_templates.map(template => {
+            if (template.id !== templateId) {
+              return template
+            }
+            const updatedChildren = addChildToNode(template.children, nodeId, () => child)
+            return updatedChildren === template.children ? template : { ...template, children: updatedChildren }
+          }),
+        }
+      })
+      selectFolder({ kind: 'node', templateId, nodeId: child.id })
+    },
+    [selectFolder],
+  )
 
   const handleNodeRemove = useCallback((nodeId: string) => {
     setDraft(current => {
@@ -653,15 +580,17 @@ export default function CatalogEditorPage(): JSX.Element {
   }, [])
 
   const handleAddSlot = useCallback(() => {
+    const slot = createTagSlotDraft()
     setDraft(current => {
       if (!current) {
-        return { folder_templates: [], tag_slots: [createTagSlotDraft()] }
+        return { folder_templates: [], tag_slots: [slot] }
       }
       return {
         ...current,
-        tag_slots: [...current.tag_slots, createTagSlotDraft()],
+        tag_slots: [...current.tag_slots, slot],
       }
     })
+    setSelectedTagSlotId(slot.id)
   }, [])
 
   const handleSlotFieldChange = useCallback(
@@ -811,6 +740,98 @@ export default function CatalogEditorPage(): JSX.Element {
     })
   }, [])
 
+  const selectedTemplate = useMemo(() => {
+    if (!draft || !selectedFolder) {
+      return null
+    }
+    return draft.folder_templates.find(template => template.id === selectedFolder.templateId) ?? null
+  }, [draft, selectedFolder])
+
+  const selectedNode = useMemo(() => {
+    if (!selectedTemplate || !selectedFolder || selectedFolder.kind !== 'node') {
+      return null
+    }
+    return findNodeById(selectedTemplate.children, selectedFolder.nodeId)
+  }, [selectedTemplate, selectedFolder])
+
+  const selectedNodePath = useMemo(() => {
+    if (!selectedTemplate || !selectedFolder || selectedFolder.kind !== 'node') {
+      return []
+    }
+    return findNodePath(selectedTemplate.children, selectedFolder.nodeId)
+  }, [selectedTemplate, selectedFolder])
+
+  const selectedTagSlot = useMemo(() => {
+    if (!draft || !selectedTagSlotId) {
+      return null
+    }
+    return draft.tag_slots.find(slot => slot.id === selectedTagSlotId) ?? null
+  }, [draft, selectedTagSlotId])
+
+  const renderNavNode = (templateId: string, node: FolderNodeDraft, depth = 1): JSX.Element => {
+    const isSelected = selectedFolder?.kind === 'node' && selectedFolder.nodeId === node.id
+    const hasChildren = node.children.length > 0
+    const expanded = folderNavExpanded.has(node.id)
+    return (
+      <li key={node.id}>
+        <div className={`catalog-nav-item level-${depth}${isSelected ? ' active' : ''}`}>
+          {hasChildren ? (
+            <button
+              type="button"
+              className={`tree-toggle ${expanded ? 'open' : 'closed'}`}
+              onClick={() => toggleNavExpand(node.id)}
+              aria-label={expanded ? 'Unterordner einklappen' : 'Unterordner aufklappen'}
+            >
+              {expanded ? '▾' : '▸'}
+            </button>
+          ) : (
+            <span className="tree-toggle spacer" aria-hidden="true" />
+          )}
+          <button
+            type="button"
+            className="catalog-nav-label"
+            onClick={() => selectFolder({ kind: 'node', templateId, nodeId: node.id })}
+          >
+            {node.name || 'Unbenannter Ordner'}
+          </button>
+        </div>
+        {hasChildren && expanded && <ul>{node.children.map(child => renderNavNode(templateId, child, depth + 1))}</ul>}
+      </li>
+    )
+  }
+
+  const renderFolderNav = (template: TemplateDraft): JSX.Element => {
+    const hasChildren = template.children.length > 0
+    const expanded = folderNavExpanded.has(template.id)
+    const isTemplateSelected = selectedFolder?.kind === 'template' && selectedFolder.templateId === template.id
+    return (
+      <li key={template.id}>
+        <div className={`catalog-nav-item level-0${isTemplateSelected ? ' active' : ''}`}>
+          {hasChildren ? (
+            <button
+              type="button"
+              className={`tree-toggle ${expanded ? 'open' : 'closed'}`}
+              onClick={() => toggleNavExpand(template.id)}
+              aria-label={expanded ? 'Unterordner einklappen' : 'Unterordner aufklappen'}
+            >
+              {expanded ? '▾' : '▸'}
+            </button>
+          ) : (
+            <span className="tree-toggle spacer" aria-hidden="true" />
+          )}
+          <button
+            type="button"
+            className="catalog-nav-label"
+            onClick={() => selectFolder({ kind: 'template', templateId: template.id })}
+          >
+            {template.name || 'Unbenannter Bereich'}
+          </button>
+        </div>
+        {hasChildren && expanded && <ul>{template.children.map(child => renderNavNode(template.id, child, 1))}</ul>}
+      </li>
+    )
+  }
+
   const handleReset = useCallback(() => {
     if (!original) {
       return
@@ -871,9 +892,9 @@ export default function CatalogEditorPage(): JSX.Element {
       )}
       {loadError && <div className="status-banner error">{loadError}</div>}
 
-      <main className="catalog-main">
-        <section className="catalog-section">
-          <div className="catalog-section-header">
+      <div className="catalog-body">
+        <aside className="catalog-sidebar folder-nav">
+          <div className="catalog-sidebar-header">
             <h2>Ordnerkatalog</h2>
             <button type="button" className="ghost" onClick={handleAddTemplate} disabled={saving || loading}>
               Bereich hinzufügen
@@ -883,27 +904,13 @@ export default function CatalogEditorPage(): JSX.Element {
           {!loading && draft && draft.folder_templates.length === 0 && (
             <div className="placeholder">Noch keine Bereiche definiert.</div>
           )}
-          {!loading &&
-            draft &&
-            draft.folder_templates.map(template => (
-              <TemplateEditor
-                key={template.id}
-                template={template}
-                onFieldChange={handleTemplateFieldChange}
-                onRemoveTemplate={handleRemoveTemplate}
-                onAddRootChild={handleAddRootChild}
-                onAddGuideline={handleAddGuideline}
-                onGuidelineChange={handleGuidelineChange}
-                onGuidelineRemove={handleGuidelineRemove}
-                onNodeChange={handleNodeChange}
-                onNodeAddChild={handleNodeAddChild}
-                onNodeRemove={handleNodeRemove}
-              />
-            ))}
-        </section>
+          {!loading && draft && draft.folder_templates.length > 0 && (
+            <ul className="catalog-tree">{draft.folder_templates.map(renderFolderNav)}</ul>
+          )}
+        </aside>
 
-        <section className="catalog-section">
-          <div className="catalog-section-header">
+        <aside className="catalog-sidebar tag-nav">
+          <div className="catalog-sidebar-header">
             <h2>Tag-Slots</h2>
             <button type="button" className="ghost" onClick={handleAddSlot} disabled={saving || loading}>
               Slot hinzufügen
@@ -913,24 +920,273 @@ export default function CatalogEditorPage(): JSX.Element {
           {!loading && draft && draft.tag_slots.length === 0 && (
             <div className="placeholder">Noch keine Tag-Slots definiert.</div>
           )}
-          {!loading &&
-            draft &&
-            draft.tag_slots.map(slot => (
-              <TagSlotEditor
-                key={slot.id}
-                slot={slot}
-                onFieldChange={handleSlotFieldChange}
-                onRemove={handleRemoveSlot}
-                onAddOption={handleAddSlotOption}
-                onOptionChange={handleSlotOptionChange}
-                onOptionRemove={handleRemoveSlotOption}
-                onAddAlias={handleAddSlotAlias}
-                onAliasChange={handleSlotAliasChange}
-                onAliasRemove={handleRemoveSlotAlias}
-              />
-            ))}
+          {!loading && draft && draft.tag_slots.length > 0 && (
+            <ul className="tag-nav-list">
+              {draft.tag_slots.map(slot => (
+                <li key={slot.id}>
+                  <button
+                    type="button"
+                    className={`tag-nav-item${selectedTagSlotId === slot.id ? ' active' : ''}`}
+                    onClick={() => setSelectedTagSlotId(slot.id)}
+                  >
+                    {slot.name || 'Unbenannter Slot'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </aside>
+
+        <section className="catalog-panels">
+          <div className="catalog-panel folder-detail">
+            <div className="catalog-panel-header">
+              <h2>Ordnerdetails</h2>
+              {selectedTemplate && selectedFolder?.kind === 'template' && (
+                <div className="catalog-panel-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => handleAddRootChild(selectedTemplate.id)}
+                    disabled={saving || loading}
+                  >
+                    Unterordner hinzufügen
+                  </button>
+                  <button
+                    type="button"
+                    className="link danger"
+                    onClick={() => handleRemoveTemplate(selectedTemplate.id)}
+                    disabled={saving || loading}
+                  >
+                    Bereich entfernen
+                  </button>
+                </div>
+              )}
+              {selectedTemplate && selectedFolder?.kind === 'node' && selectedNode && (
+                <div className="catalog-panel-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => handleNodeAddChild(selectedTemplate.id, selectedNode.id)}
+                    disabled={saving}
+                  >
+                    Unterordner hinzufügen
+                  </button>
+                  <button
+                    type="button"
+                    className="link danger"
+                    onClick={() => handleNodeRemove(selectedNode.id)}
+                    disabled={saving}
+                  >
+                    Ordner entfernen
+                  </button>
+                </div>
+              )}
+            </div>
+            {loading && <div className="placeholder">Katalog wird geladen…</div>}
+            {!loading && !selectedTemplate && (
+              <div className="placeholder">Wähle einen Bereich oder Ordner aus der Sidebar.</div>
+            )}
+            {!loading && selectedTemplate && selectedFolder?.kind === 'template' && (
+              <div className="catalog-form">
+                <label className="catalog-field">
+                  <span>Bereichsname</span>
+                  <input
+                    className="catalog-input"
+                    value={selectedTemplate.name}
+                    onChange={event => handleTemplateFieldChange(selectedTemplate.id, 'name', event.target.value)}
+                  />
+                </label>
+                <label className="catalog-field">
+                  <span>Beschreibung</span>
+                  <textarea
+                    className="catalog-textarea"
+                    value={selectedTemplate.description}
+                    onChange={event => handleTemplateFieldChange(selectedTemplate.id, 'description', event.target.value)}
+                    rows={3}
+                  />
+                </label>
+                <div className="catalog-guidelines">
+                  <div className="catalog-guidelines-header">
+                    <h3>Kontext-Tags</h3>
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => handleAddGuideline(selectedTemplate.id)}
+                      disabled={saving}
+                    >
+                      Kontext-Tag hinzufügen
+                    </button>
+                  </div>
+                  {selectedTemplate.tag_guidelines.length === 0 && (
+                    <div className="muted">Noch keine Kontext-Tags definiert.</div>
+                  )}
+                  {selectedTemplate.tag_guidelines.map(guideline => (
+                    <div key={guideline.id} className="catalog-guideline">
+                      <input
+                        className="catalog-input"
+                        value={guideline.name}
+                        onChange={event =>
+                          handleGuidelineChange(selectedTemplate.id, guideline.id, 'name', event.target.value)
+                        }
+                        placeholder="Tag-Schlüssel"
+                      />
+                      <input
+                        className="catalog-input"
+                        value={guideline.description}
+                        onChange={event =>
+                          handleGuidelineChange(selectedTemplate.id, guideline.id, 'description', event.target.value)
+                        }
+                        placeholder="Beschreibung"
+                      />
+                      <button
+                        type="button"
+                        className="link danger"
+                        onClick={() => handleGuidelineRemove(selectedTemplate.id, guideline.id)}
+                        disabled={saving}
+                      >
+                        Entfernen
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!loading && selectedTemplate && selectedFolder?.kind === 'node' && selectedNode && (
+              <div className="catalog-form">
+                <div className="catalog-breadcrumb">
+                  <span>{selectedTemplate.name || 'Bereich'}</span>
+                  {selectedNodePath.map(node => (
+                    <span key={node.id}>{node.name || 'Ordner'}</span>
+                  ))}
+                </div>
+                <label className="catalog-field">
+                  <span>Ordnername</span>
+                  <input
+                    className="catalog-input"
+                    value={selectedNode.name}
+                    onChange={event => handleNodeChange(selectedNode.id, 'name', event.target.value)}
+                  />
+                </label>
+                <label className="catalog-field">
+                  <span>Beschreibung</span>
+                  <textarea
+                    className="catalog-textarea"
+                    value={selectedNode.description}
+                    onChange={event => handleNodeChange(selectedNode.id, 'description', event.target.value)}
+                    rows={3}
+                  />
+                </label>
+              </div>
+            )}
+            {!loading && selectedTemplate && selectedFolder?.kind === 'node' && !selectedNode && (
+              <div className="placeholder">Der ausgewählte Ordner konnte nicht gefunden werden.</div>
+            )}
+          </div>
+
+          <div className="catalog-panel tag-detail">
+            <div className="catalog-panel-header">
+              <h2>Tag-Slot</h2>
+              {selectedTagSlot && (
+                <button
+                  type="button"
+                  className="link danger"
+                  onClick={() => handleRemoveSlot(selectedTagSlot.id)}
+                  disabled={saving || loading}
+                >
+                  Slot entfernen
+                </button>
+              )}
+            </div>
+            {loading && <div className="placeholder">Lade Tag-Konfiguration…</div>}
+            {!loading && !selectedTagSlot && (
+              <div className="placeholder">Wähle einen Tag-Slot in der Sidebar aus.</div>
+            )}
+            {!loading && selectedTagSlot && (
+              <div className="catalog-form">
+                <label className="catalog-field">
+                  <span>Slot-Name</span>
+                  <input
+                    className="catalog-input"
+                    value={selectedTagSlot.name}
+                    onChange={event => handleSlotFieldChange(selectedTagSlot.id, 'name', event.target.value)}
+                  />
+                </label>
+                <label className="catalog-field">
+                  <span>Beschreibung</span>
+                  <textarea
+                    className="catalog-textarea"
+                    value={selectedTagSlot.description}
+                    onChange={event => handleSlotFieldChange(selectedTagSlot.id, 'description', event.target.value)}
+                    rows={3}
+                  />
+                </label>
+                <div className="catalog-tag-options">
+                  <div className="catalog-guidelines-header">
+                    <h3>Optionen</h3>
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => handleAddSlotOption(selectedTagSlot.id)}
+                      disabled={saving}
+                    >
+                      Option hinzufügen
+                    </button>
+                  </div>
+                  {selectedTagSlot.options.length === 0 && <div className="muted">Keine Optionen definiert.</div>}
+                  {selectedTagSlot.options.map((option, index) => (
+                    <div key={`${selectedTagSlot.id}-option-${index}`} className="catalog-option-row">
+                      <input
+                        className="catalog-input"
+                        value={option}
+                        onChange={event => handleSlotOptionChange(selectedTagSlot.id, index, event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="link danger"
+                        onClick={() => handleRemoveSlotOption(selectedTagSlot.id, index)}
+                        disabled={saving}
+                      >
+                        Entfernen
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="catalog-tag-options">
+                  <div className="catalog-guidelines-header">
+                    <h3>Aliase</h3>
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => handleAddSlotAlias(selectedTagSlot.id)}
+                      disabled={saving}
+                    >
+                      Alias hinzufügen
+                    </button>
+                  </div>
+                  {selectedTagSlot.aliases.length === 0 && <div className="muted">Keine alternativen Bezeichner.</div>}
+                  {selectedTagSlot.aliases.map((alias, index) => (
+                    <div key={`${selectedTagSlot.id}-alias-${index}`} className="catalog-option-row">
+                      <input
+                        className="catalog-input"
+                        value={alias}
+                        onChange={event => handleSlotAliasChange(selectedTagSlot.id, index, event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="link danger"
+                        onClick={() => handleRemoveSlotAlias(selectedTagSlot.id, index)}
+                        disabled={saving}
+                      >
+                        Entfernen
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </section>
-      </main>
+      </div>
 
       <DevtoolsPanel />
     </div>

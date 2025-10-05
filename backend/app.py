@@ -37,6 +37,7 @@ from database import (
 )
 from imap_worker import one_shot_scan
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
+from scan_control import ScanStatus, controller as scan_controller
 from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
 from tags import TagSuggestion, load_tag_suggestions
@@ -87,6 +88,51 @@ class FolderSelectionResponse(BaseModel):
 
 class FolderSelectionUpdate(BaseModel):
     folders: List[str] = Field(default_factory=list)
+
+
+class FolderCreateRequest(BaseModel):
+    path: str
+
+
+class FolderCreateResponse(BaseModel):
+    created: str
+    existed: bool
+
+
+class ScanStatusResponse(BaseModel):
+    active: bool
+    folders: List[str]
+    poll_interval: float
+    last_started_at: datetime | None = None
+    last_finished_at: datetime | None = None
+    last_error: str | None = None
+    last_result_count: int | None = None
+
+    @classmethod
+    def from_status(cls, status: ScanStatus) -> "ScanStatusResponse":
+        return cls(
+            active=status.active,
+            folders=list(status.folders),
+            poll_interval=float(status.poll_interval),
+            last_started_at=status.last_started_at,
+            last_finished_at=status.last_finished_at,
+            last_error=status.last_error,
+            last_result_count=status.last_result_count,
+        )
+
+
+class ScanStartRequest(BaseModel):
+    folders: List[str] | None = Field(default=None)
+
+
+class ScanStartResponse(BaseModel):
+    started: bool
+    status: ScanStatusResponse
+
+
+class ScanStopResponse(BaseModel):
+    stopped: bool
+    status: ScanStatusResponse
 
 
 class ProposalDecisionRequest(BaseModel):
@@ -366,6 +412,23 @@ def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionRespons
     return FolderSelectionResponse(available=available, selected=selected)
 
 
+@app.post("/api/folders/create", response_model=FolderCreateResponse)
+async def api_create_folder(payload: FolderCreateRequest) -> FolderCreateResponse:
+    path = (payload.path or "").strip().strip("/")
+    if not path:
+        raise HTTPException(400, "folder path must not be empty")
+    if folder_exists(path):
+        return FolderCreateResponse(created=path, existed=True)
+    try:
+        created = ensure_folder_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - network interaction
+        logger.error("Failed to create folder %s: %s", path, exc)
+        raise HTTPException(500, f"could not create folder: {exc}") from exc
+    return FolderCreateResponse(created=created, existed=False)
+
+
 @app.get("/api/config", response_model=ConfigResponse)
 async def api_config() -> ConfigResponse:
     status = await get_status(force_refresh=False)
@@ -544,3 +607,21 @@ async def api_rescan(payload: Dict[str, Any] = Body(default={})) -> Dict[str, An
     target_folders = folders if folders is not None else get_monitored_folders()
     count = await one_shot_scan(target_folders)
     return {"ok": True, "new_suggestions": count}
+
+
+@app.get("/api/scan/status", response_model=ScanStatusResponse)
+async def api_scan_status() -> ScanStatusResponse:
+    return ScanStatusResponse.from_status(scan_controller.status)
+
+
+@app.post("/api/scan/start", response_model=ScanStartResponse)
+async def api_scan_start(payload: ScanStartRequest | None = Body(default=None)) -> ScanStartResponse:
+    folders = payload.folders if payload else None
+    started = await scan_controller.start(folders)
+    return ScanStartResponse(started=started, status=ScanStatusResponse.from_status(scan_controller.status))
+
+
+@app.post("/api/scan/stop", response_model=ScanStopResponse)
+async def api_scan_stop() -> ScanStopResponse:
+    stopped = await scan_controller.stop()
+    return ScanStopResponse(stopped=stopped, status=ScanStatusResponse.from_status(scan_controller.status))
