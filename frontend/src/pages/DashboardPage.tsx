@@ -1,12 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   MoveMode,
   Suggestion,
+  ScanStatus,
   getFolders,
   getMode,
+  getScanStatus,
   rescan,
   setMode,
+  startScan,
+  stopScan,
   updateFolderSelection,
 } from '../api'
 import SuggestionCard from '../components/SuggestionCard'
@@ -16,8 +20,6 @@ import DevtoolsPanel from '../components/DevtoolsPanel'
 import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
-import TagCanvas from '../components/TagCanvas'
-import { useTagSuggestions } from '../store/useTagSuggestions'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 
@@ -30,12 +32,22 @@ interface StatusMessage {
 
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
+const formatTimestamp = (value?: string | null) => {
+  if (!value) {
+    return null
+  }
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
+  return parsed.toLocaleString('de-DE')
+}
+
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
   const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
   const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
   const { data: appConfig, error: configError } = useAppConfig()
-  const { data: tagSuggestions, loading: tagsLoading, error: tagsError, refresh: refreshTags } = useTagSuggestions()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -43,7 +55,10 @@ export default function DashboardPage(): JSX.Element {
   const [foldersLoading, setFoldersLoading] = useState(true)
   const [savingFolders, setSavingFolders] = useState(false)
   const [status, setStatus] = useState<StatusMessage | null>(null)
-  const [rescanning, setRescanning] = useState(false)
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
+  const [scanBusy, setScanBusy] = useState(false)
+  const [rescanBusy, setRescanBusy] = useState(false)
+  const lastFinishedRef = useRef<string | null>(null)
 
   const loadMode = useCallback(async () => {
     try {
@@ -68,10 +83,29 @@ export default function DashboardPage(): JSX.Element {
     }
   }, [])
 
+  const loadScanStatus = useCallback(async () => {
+    try {
+      const statusResponse = await getScanStatus()
+      setScanStatus(statusResponse)
+    } catch (err) {
+      setStatus(prev => prev ?? { kind: 'error', message: `Analyse-Status konnte nicht geladen werden: ${toMessage(err)}` })
+    }
+  }, [])
+
   useEffect(() => {
     void loadMode()
     void loadFolders()
-  }, [loadMode, loadFolders])
+    void loadScanStatus()
+  }, [loadMode, loadFolders, loadScanStatus])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void loadScanStatus()
+    }, 15000)
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [loadScanStatus])
 
   const handleModeChange = async (value: MoveMode) => {
     try {
@@ -83,23 +117,69 @@ export default function DashboardPage(): JSX.Element {
     }
   }
 
-  const handleRescan = async () => {
-    setRescanning(true)
+  useEffect(() => {
+    const finishedAt = scanStatus?.last_finished_at ?? null
+    if (!finishedAt) {
+      return
+    }
+    if (lastFinishedRef.current && lastFinishedRef.current !== finishedAt) {
+      void refresh()
+    }
+    lastFinishedRef.current = finishedAt
+  }, [scanStatus?.last_finished_at, refresh])
+
+  const handleStartScan = async () => {
+    setScanBusy(true)
     try {
-      const scanFolders = selectedFolders.length ? selectedFolders : undefined
-      const result = await rescan(scanFolders)
+      const folders = selectedFolders.length ? selectedFolders : undefined
+      const response = await startScan(folders)
+      setScanStatus(response.status)
       setStatus({
-        kind: 'info',
-        message: `Scan abgeschlossen: ${result.new_suggestions} neue Vorschläge.`,
+        kind: response.started ? 'success' : 'info',
+        message: response.started ? 'Analyse gestartet.' : 'Analyse läuft bereits.',
       })
-      await refresh()
-      await refreshTags()
+      await loadScanStatus()
     } catch (err) {
-      setStatus({ kind: 'error', message: `Scan fehlgeschlagen: ${toMessage(err)}` })
+      setStatus({ kind: 'error', message: `Analyse konnte nicht gestartet werden: ${toMessage(err)}` })
     } finally {
-      setRescanning(false)
+      setScanBusy(false)
     }
   }
+
+  const handleStopScan = async () => {
+    setScanBusy(true)
+    try {
+      const response = await stopScan()
+      setScanStatus(response.status)
+      setStatus({
+        kind: response.stopped ? 'success' : 'info',
+        message: response.stopped ? 'Analyse gestoppt.' : 'Es war keine Analyse aktiv.',
+      })
+      await loadScanStatus()
+    } catch (err) {
+      setStatus({ kind: 'error', message: `Analyse konnte nicht gestoppt werden: ${toMessage(err)}` })
+    } finally {
+      setScanBusy(false)
+    }
+  }
+
+  const handleRescan = useCallback(async () => {
+    setRescanBusy(true)
+    try {
+      const folders = selectedFolders.length ? selectedFolders : undefined
+      const response = await rescan(folders)
+      const noun = response.new_suggestions === 1 ? 'Vorschlag' : 'Vorschläge'
+      setStatus({
+        kind: 'success',
+        message: `Einmalanalyse abgeschlossen (${response.new_suggestions} ${noun}).`,
+      })
+      void refresh()
+    } catch (err) {
+      setStatus({ kind: 'error', message: `Einmalanalyse fehlgeschlagen: ${toMessage(err)}` })
+    } finally {
+      setRescanBusy(false)
+    }
+  }, [refresh, selectedFolders])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
@@ -117,6 +197,14 @@ export default function DashboardPage(): JSX.Element {
       setSavingFolders(false)
     }
   }, [folderDraft])
+
+  const handleFolderCreated = useCallback(
+    async (folder: string) => {
+      await loadFolders()
+      setStatus({ kind: 'success', message: `Ordner ${folder} wurde angelegt.` })
+    },
+    [loadFolders],
+  )
 
   const headline = useMemo(() => {
     if (loading) return 'Lade Vorschläge…'
@@ -136,8 +224,8 @@ export default function DashboardPage(): JSX.Element {
   }, [])
 
   const handleSuggestionUpdate = useCallback(async () => {
-    await Promise.all([refresh(), refreshTags()])
-  }, [refresh, refreshTags])
+    await refresh()
+  }, [refresh])
 
   const ollamaInfo = useMemo(() => {
     const status = appConfig?.ollama
@@ -156,6 +244,31 @@ export default function DashboardPage(): JSX.Element {
       embedding: embeddingLabel,
     }
   }, [appConfig])
+
+  const scanSummary = useMemo(() => {
+    const lastResultCount =
+      typeof scanStatus?.last_result_count === 'number' ? scanStatus.last_result_count : null
+    let resultLabel: string | null = null
+    if (lastResultCount !== null) {
+      const absolute = Math.max(0, lastResultCount)
+      const noun = absolute === 1 ? 'neuer Vorschlag' : 'neue Vorschläge'
+      resultLabel = `${absolute} ${noun}`
+    }
+    return {
+      active: Boolean(scanStatus?.active),
+      folderLabel:
+        scanStatus && scanStatus.folders.length > 0
+          ? scanStatus.folders.join(', ')
+          : 'Alle überwachten Ordner',
+      pollInterval: scanStatus?.poll_interval ?? null,
+      lastStarted: formatTimestamp(scanStatus?.last_started_at),
+      lastFinished: formatTimestamp(scanStatus?.last_finished_at),
+      lastResultCount,
+      resultLabel,
+      error: scanStatus?.last_error ?? null,
+      statusLabel: scanStatus?.active ? 'Analyse aktiv' : 'Analyse pausiert',
+    }
+  }, [scanStatus])
 
   return (
     <div className="app-shell">
@@ -178,9 +291,6 @@ export default function DashboardPage(): JSX.Element {
               ))}
             </select>
           </label>
-          <button className="primary" onClick={handleRescan} disabled={rescanning}>
-            {rescanning ? 'Scan läuft…' : 'Neu scannen'}
-          </button>
         </div>
       </header>
 
@@ -226,8 +336,73 @@ export default function DashboardPage(): JSX.Element {
           )}
         </aside>
         <main className="app-main">
+          <section className={`scan-status-card ${scanSummary.active ? 'active' : 'idle'}`}>
+            <div className="scan-status-header">
+              <div>
+                <h2>Analyse-Status</h2>
+                <p className="scan-status-subline">
+                  {scanSummary.active
+                    ? 'Die automatische Analyse läuft kontinuierlich. Einmalanalysen sind währenddessen deaktiviert.'
+                    : 'Starte bei Bedarf die Daueranalyse oder führe eine Einmalanalyse für eine sofortige Auswertung aus.'}
+                </p>
+              </div>
+              <div className="scan-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handleRescan}
+                  disabled={rescanBusy || scanBusy || scanSummary.active}
+                >
+                  {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleStartScan}
+                  disabled={scanBusy || scanSummary.active}
+                >
+                  {scanBusy && !scanSummary.active ? 'Starte Analyse…' : 'Analyse starten'}
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handleStopScan}
+                  disabled={scanBusy || !scanSummary.active}
+                >
+                  {scanBusy && scanSummary.active ? 'Stoppe Analyse…' : 'Analyse stoppen'}
+                </button>
+              </div>
+            </div>
+            <div className="scan-status-body">
+              <div className="scan-stat">
+                <span className="label">Status</span>
+                <strong>{scanSummary.statusLabel}</strong>
+              </div>
+              <div className="scan-stat">
+                <span className="label">Ordner</span>
+                <strong>{scanSummary.folderLabel}</strong>
+              </div>
+              <div className="scan-stat">
+                <span className="label">Intervall</span>
+                <strong>
+                  {scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}
+                </strong>
+              </div>
+              <div className="scan-stat">
+                <span className="label">Letzter Lauf</span>
+                <strong>{scanSummary.lastFinished ?? '–'}</strong>
+              </div>
+              <div className="scan-stat">
+                <span className="label">Ergebnis</span>
+                <strong>{scanSummary.resultLabel ?? '–'}</strong>
+              </div>
+            </div>
+            {scanSummary.lastStarted && (
+              <div className="scan-status-meta">Zuletzt gestartet: {scanSummary.lastStarted}</div>
+            )}
+            {scanSummary.error && <div className="scan-status-error">Letzter Fehler: {scanSummary.error}</div>}
+          </section>
           <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
-          <TagCanvas tags={tagSuggestions} loading={tagsLoading} error={tagsError} onReload={refreshTags} />
 
           <section className="suggestions">
             <div className="suggestions-header">
@@ -278,6 +453,8 @@ export default function DashboardPage(): JSX.Element {
                     suggestion={item}
                     onActionComplete={handleSuggestionUpdate}
                     tagSlots={appConfig?.tag_slots}
+                    availableFolders={availableFolders}
+                    onFolderCreated={handleFolderCreated}
                   />
                 ))}
               </div>

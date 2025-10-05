@@ -13,6 +13,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from uvicorn.protocols.utils import ClientDisconnected
 
 from configuration import (
     get_context_tag_guidelines,
@@ -37,6 +38,7 @@ from database import (
 )
 from imap_worker import one_shot_scan
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
+from scan_control import ScanStatus, controller as scan_controller
 from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
 from tags import TagSuggestion, load_tag_suggestions
@@ -89,6 +91,51 @@ class FolderSelectionUpdate(BaseModel):
     folders: List[str] = Field(default_factory=list)
 
 
+class FolderCreateRequest(BaseModel):
+    path: str
+
+
+class FolderCreateResponse(BaseModel):
+    created: str
+    existed: bool
+
+
+class ScanStatusResponse(BaseModel):
+    active: bool
+    folders: List[str]
+    poll_interval: float
+    last_started_at: datetime | None = None
+    last_finished_at: datetime | None = None
+    last_error: str | None = None
+    last_result_count: int | None = None
+
+    @classmethod
+    def from_status(cls, status: ScanStatus) -> "ScanStatusResponse":
+        return cls(
+            active=status.active,
+            folders=list(status.folders),
+            poll_interval=float(status.poll_interval),
+            last_started_at=status.last_started_at,
+            last_finished_at=status.last_finished_at,
+            last_error=status.last_error,
+            last_result_count=status.last_result_count,
+        )
+
+
+class ScanStartRequest(BaseModel):
+    folders: List[str] | None = Field(default=None)
+
+
+class ScanStartResponse(BaseModel):
+    started: bool
+    status: ScanStatusResponse
+
+
+class ScanStopResponse(BaseModel):
+    stopped: bool
+    status: ScanStatusResponse
+
+
 class ProposalDecisionRequest(BaseModel):
     message_uid: str = Field(..., min_length=1)
     accept: bool
@@ -129,6 +176,7 @@ class FolderChildConfig(BaseModel):
     name: str = Field(..., min_length=1)
     description: str | None = None
     children: List["FolderChildConfig"] = Field(default_factory=list)
+    tag_guidelines: List["TagGuidelineConfig"] = Field(default_factory=list)
 
 
 class TagGuidelineConfig(BaseModel):
@@ -178,6 +226,13 @@ def _child_to_config(child: Any) -> FolderChildConfig:
         name=str(getattr(child, "name", "")).strip(),
         description=(getattr(child, "description", None) or None),
         children=[_child_to_config(grand) for grand in getattr(child, "children", []) or []],
+        tag_guidelines=[
+            TagGuidelineConfig(
+                name=str(getattr(guideline, "name", "")).strip(),
+                description=(getattr(guideline, "description", None) or None),
+            )
+            for guideline in getattr(child, "tag_guidelines", []) or []
+        ],
     )
 
 
@@ -202,6 +257,13 @@ def _serialise_child(child: FolderChildConfig) -> Dict[str, Any]:
         "name": child.name.strip(),
         "description": description,
         "children": [_serialise_child(grand) for grand in child.children],
+        "tag_guidelines": [
+            {
+                "name": guideline.name.strip(),
+                "description": (guideline.description or "").strip(),
+            }
+            for guideline in child.tag_guidelines
+        ],
     }
 
 
@@ -366,6 +428,23 @@ def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionRespons
     return FolderSelectionResponse(available=available, selected=selected)
 
 
+@app.post("/api/folders/create", response_model=FolderCreateResponse)
+async def api_create_folder(payload: FolderCreateRequest) -> FolderCreateResponse:
+    path = (payload.path or "").strip().strip("/")
+    if not path:
+        raise HTTPException(400, "folder path must not be empty")
+    if folder_exists(path):
+        return FolderCreateResponse(created=path, existed=True)
+    try:
+        created = ensure_folder_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - network interaction
+        logger.error("Failed to create folder %s: %s", path, exc)
+        raise HTTPException(500, f"could not create folder: {exc}") from exc
+    return FolderCreateResponse(created=created, existed=False)
+
+
 @app.get("/api/config", response_model=ConfigResponse)
 async def api_config() -> ConfigResponse:
     status = await get_status(force_refresh=False)
@@ -528,9 +607,16 @@ async def ws_stream(ws: WebSocket) -> None:
             try:
                 snapshot = await _pending_overview()
                 await ws.send_json({"type": "pending_overview", "payload": snapshot.dict()})
+            except (WebSocketDisconnect, ClientDisconnected):
+                logger.debug("WebSocket client disconnected during stream")
+                break
             except Exception as exc:  # pragma: no cover - network/IMAP interaction
                 logger.warning("Failed to stream pending overview: %s", exc)
-                await ws.send_json({"type": "pending_error", "error": str(exc)})
+                try:
+                    await ws.send_json({"type": "pending_error", "error": str(exc)})
+                except (WebSocketDisconnect, ClientDisconnected):
+                    logger.debug("WebSocket client disconnected while reporting error")
+                    break
             await asyncio.sleep(5)
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")
@@ -544,3 +630,21 @@ async def api_rescan(payload: Dict[str, Any] = Body(default={})) -> Dict[str, An
     target_folders = folders if folders is not None else get_monitored_folders()
     count = await one_shot_scan(target_folders)
     return {"ok": True, "new_suggestions": count}
+
+
+@app.get("/api/scan/status", response_model=ScanStatusResponse)
+async def api_scan_status() -> ScanStatusResponse:
+    return ScanStatusResponse.from_status(scan_controller.status)
+
+
+@app.post("/api/scan/start", response_model=ScanStartResponse)
+async def api_scan_start(payload: ScanStartRequest | None = Body(default=None)) -> ScanStartResponse:
+    folders = payload.folders if payload else None
+    started = await scan_controller.start(folders)
+    return ScanStartResponse(started=started, status=ScanStatusResponse.from_status(scan_controller.status))
+
+
+@app.post("/api/scan/stop", response_model=ScanStopResponse)
+async def api_scan_stop() -> ScanStopResponse:
+    stopped = await scan_controller.stop()
+    return ScanStopResponse(stopped=stopped, status=ScanStatusResponse.from_status(scan_controller.status))

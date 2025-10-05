@@ -21,15 +21,107 @@ from configuration import (
     get_tag_slots,
     TagSlot,
     max_tag_total,
-    slot_lookup_keys,
     tag_slots_summary,
     tag_slot_options_map,
     top_level_folder_names,
 )
+from ollama_service import get_model_context_window
 from settings import S
 
 
 logger = logging.getLogger(__name__)
+
+
+_DOMAIN_RE = re.compile(r"@([A-Za-z0-9.-]+)")
+_MIN_NUM_CTX = 2048
+_PROMPT_CHAR_PER_TOKEN = 4
+_PROMPT_HEADROOM_RATIO = 0.9
+_CLASSIFIER_CONTEXT_CACHE: Dict[str, int] = {}
+
+
+def _is_user_override(field_name: str) -> bool:
+    configured = getattr(S, "model_fields_set", set())
+    return field_name in configured if isinstance(configured, set) else False
+
+
+def _configured_num_ctx() -> int:
+    try:
+        num_ctx = int(S.CLASSIFIER_NUM_CTX)
+    except (TypeError, ValueError):
+        num_ctx = 4096
+    return max(_MIN_NUM_CTX, num_ctx)
+
+
+async def _resolve_context_window() -> int:
+    fallback = _configured_num_ctx()
+    user_override = fallback if _is_user_override("CLASSIFIER_NUM_CTX") else None
+
+    if getattr(S, "CLASSIFIER_NUM_CTX_MATCH_MODEL", False):
+        cache_key = S.CLASSIFIER_MODEL.strip()
+        if cache_key:
+            if cache_key in _CLASSIFIER_CONTEXT_CACHE:
+                resolved = _CLASSIFIER_CONTEXT_CACHE[cache_key]
+            else:
+                try:
+                    resolved = await get_model_context_window(cache_key)
+                except Exception as exc:  # pragma: no cover - network interaction
+                    logger.debug("Kontextfenster konnte nicht ermittelt werden: %s", exc)
+                    resolved = None
+                if isinstance(resolved, int) and resolved > 0:
+                    _CLASSIFIER_CONTEXT_CACHE[cache_key] = resolved
+            if cache_key in _CLASSIFIER_CONTEXT_CACHE:
+                resolved = _CLASSIFIER_CONTEXT_CACHE[cache_key]
+                if user_override is not None:
+                    resolved = min(resolved, user_override)
+                return max(_MIN_NUM_CTX, resolved)
+
+    return user_override or fallback
+
+
+def _approx_prompt_char_budget(num_ctx: int) -> int:
+    if num_ctx <= 0:
+        return int(S.EMBED_PROMPT_MAX_CHARS)
+    budget = int(num_ctx * _PROMPT_CHAR_PER_TOKEN * _PROMPT_HEADROOM_RATIO)
+    return max(int(S.EMBED_PROMPT_MAX_CHARS * 0.5), budget)
+
+
+def _catalog_line_limit(num_ctx: int) -> int:
+    if num_ctx <= 0:
+        return 40
+    computed = max(20, num_ctx // 64)
+    return min(80, computed)
+
+
+def _truncate_body_for_context(body: str, num_ctx: int, overhead_chars: int) -> str:
+    if not body:
+        return ""
+
+    char_budget = _approx_prompt_char_budget(num_ctx)
+    available = max(0, char_budget - overhead_chars)
+
+    reserve_tokens = getattr(S, "CLASSIFIER_CONTEXT_RESERVE_TOKENS", 1200)
+    try:
+        reserve_tokens = int(reserve_tokens)
+    except (TypeError, ValueError):
+        reserve_tokens = 1200
+    reserve_tokens = max(400, reserve_tokens)
+    reserve_chars = int(reserve_tokens * _PROMPT_CHAR_PER_TOKEN)
+    if char_budget:
+        available = max(0, min(available, char_budget - reserve_chars))
+
+    max_chars = min(len(body), S.EMBED_PROMPT_MAX_CHARS)
+    if available > 0:
+        max_chars = min(max_chars, available)
+    return body[: max(0, max_chars)]
+
+
+def _sender_domain(value: str) -> str:
+    if not value:
+        return ""
+    match = _DOMAIN_RE.search(value)
+    if not match:
+        return ""
+    return match.group(1).lower().strip()
 
 
 def _cosine(a: Sequence[float], b: Sequence[float] | None) -> float:
@@ -43,18 +135,23 @@ def _cosine(a: Sequence[float], b: Sequence[float] | None) -> float:
 def build_embedding_prompt(subject: str, sender: str, body: str) -> str:
     """Create a consistent prompt for Ollama embeddings."""
 
+    sender_domain = _sender_domain(sender)
+
     header_lines = [
         "Du bist ein Assistent, der E-Mails für eine Ordnerklassifikation analysiert.",
-        "Erstelle eine kompakte semantische Repräsentation aus Betreff, Absender und Kerninhalt.",
+        "Erstelle eine vollständige, strukturierte Repräsentation mit Fokus auf Unternehmen, Geschäftsfall und eindeutige Kennzeichen.",
+        "Arbeite mit vollständigen Sätzen und fasse zusammen, welche Aufgabe oder Anfrage die Mail beschreibt.",
     ]
     hint = S.EMBED_PROMPT_HINT.strip()
     if hint:
         header_lines.append(f"Zusätzliche Vorgabe: {hint}")
 
     email_lines = [
-        f"Betreff: {subject or '-'}",
-        f"Von: {sender or '-'}",
-        "Inhalt (gekürzt):",
+        "Metadaten:",
+        f"- Betreff: {subject or '-'}",
+        f"- Von: {sender or '-'}",
+        f"- Absender-Domain: {sender_domain or '-'}",
+        "Wesentlicher Inhalt (max. 8000 Zeichen):",
         (body.strip() or "(kein Text vorhanden)")[: S.EMBED_PROMPT_MAX_CHARS],
     ]
 
@@ -123,6 +220,26 @@ def _normalise_score_value(raw: Any) -> Tuple[float, float]:
 
 
 _CATALOG_STOPWORDS = {"inbox"}
+
+# Tokens that indicate that the LLM left placeholders unchanged. They are
+# filtered out aggressively so that downstream consumers never see unresolved
+# template markers such as "NAME" or "YYYY".
+_PLACEHOLDER_TOKENS = {
+    "NAME",
+    "ORT",
+    "PLACEHOLDER",
+    "PLATZHALTER",
+    "SAMPLE",
+    "BEISPIEL",
+    "VALUE",
+    "WERT",
+    "TODO",
+    "TBD",
+}
+
+# Numeric placeholders (e.g. YYYY-MM-TT) are tracked separately to avoid false
+# positives for real words that just happen to contain one of the short tokens.
+_PLACEHOLDER_NUMERIC_TOKENS = {"YYYY", "YY", "MM", "TT", "DD"}
 
 
 def _split_catalog_segments(value: str) -> List[str]:
@@ -253,9 +370,13 @@ def build_classification_prompt(
     ranked: List[Tuple[str, float]],
     folders: Sequence[str],
     parent_hint: str | None,
+    *,
+    body_snippet: str | None = None,
+    max_catalog_entries: int | None = None,
 ) -> List[Dict[str, str]]:
     """Return chat messages instructing the LLM to refine folder suggestions."""
 
+    sender_domain = _sender_domain(sender)
     templates_overview = folder_templates_summary()
     tag_overview = tag_slots_summary()
     context_overview = context_tag_summary()
@@ -264,8 +385,9 @@ def build_classification_prompt(
     tag_catalog = tag_slot_options_map()
     threshold = S.MIN_MATCH_SCORE
 
-    folder_catalog_lines = [f"- {path}" for path in folder_catalog[:80]]
-    if len(folder_catalog) > 80:
+    limit = 80 if max_catalog_entries is None else max(5, min(80, max_catalog_entries))
+    folder_catalog_lines = [f"- {path}" for path in folder_catalog[:limit]]
+    if len(folder_catalog) > limit:
         folder_catalog_lines.append("- … (weitere Pfade im Katalog verfügbar)")
     folder_catalog_overview = "\n".join(folder_catalog_lines) or "- (leer)"
 
@@ -290,15 +412,32 @@ def build_classification_prompt(
     schema_parts.append(extras_part)
     tag_schema = "{" + ", ".join(schema_parts) + "}"
 
-    system_prompt = (
-        "Du bist ein Assistent, der eingehende E-Mails ausschließlich anhand eines festen Katalogs klassifiziert. "
-        "Ordner dürfen nur aus dem vorgegebenen Katalog stammen. Bewerte jede mögliche Zuordnung in Punkten (0 bis 100): "
-        "100 Punkte bedeuten perfekte Übereinstimmung, 0 Punkte passt gar nicht. "
-        "Nutze den Schwellwert von {threshold} Punkten: Liegt die beste Übereinstimmung darunter, gilt der Bereich als nicht zugeordnet. "
-        "Das gleiche Bewertungsprinzip gilt für alle Tags (Slots) – wähle exakt eine Option je Slot aus dem Katalog und vergebe eine Punktzahl. "
-        "Extras (Kontext-Tags) werden nur genannt, wenn sie eindeutig sind. Antworte ausschließlich als gültiges JSON mit den Schlüsseln "
-        "'ranked', 'category', 'proposal', 'tags' und optional 'extras'."
-    ).format(threshold=threshold)
+    system_prompt = textwrap.dedent(
+        f"""
+        Du bist ein Assistent, der eingehende E-Mails anhand eines festen Ordner- und Tag-Katalogs analysiert.
+        Aufgaben:
+        1. Lies Betreff, Absender (inklusive Domain) und Textauszug vollständig und identifiziere das Kernthema.
+        2. Vergleiche die Mail mit dem Ordnerkatalog und den vorhandenen Scores, um die beste Zuordnung zu finden.
+        3. Bewerte jeden Treffer mit 0 bis 100 Punkten und liefere begründete Vorschläge für neue Unterordner nur bei Bedarf.
+
+        Bewertungsrichtlinie:
+        - Verwende ausschließlich Pfade aus dem Ordnerkatalog. Wird der Schwellwert von {threshold} Punkten nicht erreicht, kennzeichne das Ergebnis als "unmatched".
+        - Vergib für jeden Tag-Slot genau eine Option aus dem Tag-Katalog und bewerte sie nach demselben Punkteschema.
+        - Nutze verständliche, kurze deutsche Begründungen.
+
+        Ausgabeformat:
+        - Antworte ausschließlich als gültiges JSON mit den Schlüsseln 'ranked', 'category', 'proposal', 'tags' und optional 'extras'.
+        - 'ranked' enthält bis zu {S.MAX_SUGGESTIONS} Einträge mit 'name', 'score' (0–1), 'rating' (0–100) und einer kurzen 'reason'.
+        - 'category' beschreibt den Top-Level-Ordner, den passenden Pfad und die Bewertung.
+        - 'proposal' enthält nur bei Bedarf einen neuen Unterordner mit Begründung.
+        - 'tags' enthält je Slot exakt eine Option; 'extras' listet eindeutige Kontext-Stichworte.
+
+        Konsistenzregeln:
+        - Ersetze Platzhalter wie NAME, ORT oder YYYY konsequent durch echte Werte.
+        - Nutze identische Pfade für wiederkehrende Geschäftsprozesse (z. B. Amazon-Bestellungen) und bleibe bei ähnlichen Fällen konsistent.
+        - Liefere keine freien Texte außerhalb des JSON.
+        """
+    ).strip()
 
     hint = S.EMBED_PROMPT_HINT.strip()
     if hint:
@@ -311,43 +450,52 @@ def build_classification_prompt(
         ' "category": {"label": "Top-Level oder '"'unmatched'"'", "matched_folder": "Pfad oder null", "score": 0-100, "reason": "Warum"},'
         ' "proposal": {"parent": "Top-Level", "name": "Neuer Unterordner", "reason": "Warum"} oder null,'
     )
+    snippet = body_snippet
+    if snippet is None:
+        snippet = body[: S.EMBED_PROMPT_MAX_CHARS]
+
     user_prompt = textwrap.dedent(
         f"""
-        E-Mail-Daten:
-        Betreff: {subject or '-'}
-        Von: {sender or '-'}
-        Textauszug:
-        {body[: S.EMBED_PROMPT_MAX_CHARS]}
+        ## Metadaten
+        - Betreff: {subject or '-'}
+        - Von: {sender or '-'}
+        - Absender-Domain: {sender_domain or '-'}
+        - Ausgangsordner: {origin}
 
-        Ausgangsordner: {origin}
+        ## Textauszug
+        {snippet}
 
-        Konfigurierte Top-Level-Ordner:
+        ## Konfigurierte Top-Level-Ordner
         {top_levels}
 
-        Vorgegebene Struktur:
+        ## Vorgegebene Struktur
         {templates_overview}
 
-        Ordnerkatalog (verwende exakt diese Pfade):
+        ## Ordnerkatalog (verwende exakt diese Pfade)
         {folder_catalog_overview}
 
-        Bekannte Ordnerstruktur (Gruppierung nach erster Ebene):
+        ## Bekannte Ordnerstruktur (Gruppierung nach erster Ebene)
         {structure}
 
-        Tag-Slots:
+        ## Tag-Slots
         {tag_overview}
 
-        Tag-Katalog (Optionen je Slot):
+        ## Tag-Katalog (Optionen je Slot)
         {tag_catalog_overview}
 
-        Kontext-Tags:
+        ## Kontext-Tags
         {context_overview}
 
-        Vorliegende Ordner-Scores:
+        ## Vorliegende Ordner-Scores
         {_format_ranked_for_prompt(ranked)}
 
-        Schema (JSON):
+        ## Schema (JSON)
         {schema_prefix} "tags": {tag_schema} }}
-        Fülle jeden Tag-Slot mit genau einem Wort aus den Optionen (oder bestmöglichem Ein-Wort-Synonym) und ergänze passende Kontext-Tags in 'extras'.
+
+        Arbeitsanweisung:
+        - Fülle jeden Tag-Slot mit genau einer Option aus dem Katalog (oder einem eindeutigen Ein-Wort-Synonym).
+        - Ergänze in 'extras' nur eindeutige zusätzliche Schlagwörter.
+        - Verwende konsistente Ordnerpfade und kurze deutsche Begründungen.
         """
     ).strip()
 
@@ -357,40 +505,272 @@ def build_classification_prompt(
     ]
 
 
-async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+_JSON_DECODER = json.JSONDecoder()
+_CLASSIFIER_KEYS = {"ranked", "category", "tags", "extras", "proposal"}
+
+
+def _strip_code_fence(content: str) -> str:
+    text = content.strip()
+    if not text.startswith("```"):
+        return text
+    stripped = text[3:]
+    stripped = stripped.lstrip()
+    if stripped.lower().startswith("json"):
+        stripped = stripped[4:].lstrip()
+    closing = stripped.rfind("```")
+    if closing != -1:
+        stripped = stripped[:closing]
+    return stripped.strip()
+
+
+def _candidate_json_segments(content: Any) -> List[str]:
+    if not isinstance(content, str):
+        return []
+
+    text = content.strip()
+    if not text:
+        return []
+
+    candidates: List[str] = []
+
+    fenced = _strip_code_fence(text)
+    if fenced:
+        candidates.append(fenced)
+
+    if text and text not in candidates:
+        candidates.append(text)
+
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+        inner = text[brace_start : brace_end + 1].strip()
+        if inner and inner not in candidates:
+            candidates.append(inner)
+
+    return candidates
+
+
+def _looks_like_classifier_payload(payload: Dict[str, Any]) -> bool:
+    if any(key in payload for key in _CLASSIFIER_KEYS):
+        return True
+    return False
+
+
+def _load_json_payload(
+    content: Any,
+    *,
+    _visited: set[int] | None = None,
+    _depth: int = 0,
+) -> Dict[str, Any] | None:
+    if _visited is None:
+        _visited = set()
+
+    if isinstance(content, (dict, list)):
+        marker = id(content)
+        if marker in _visited:
+            return None
+        _visited.add(marker)
+
+    if isinstance(content, dict):
+        if _looks_like_classifier_payload(content):
+            return content
+        if _depth > 6:
+            return None
+        nested_keys = (
+            "message",
+            "content",
+            "response",
+            "data",
+            "delta",
+            "value",
+            "payload",
+            "body",
+        )
+        for key in nested_keys:
+            if key in content:
+                parsed = _load_json_payload(
+                    content[key], _visited=_visited, _depth=_depth + 1
+                )
+                if parsed:
+                    return parsed
+        for value in content.values():
+            parsed = _load_json_payload(value, _visited=_visited, _depth=_depth + 1)
+            if parsed:
+                return parsed
+        return None
+
+    if isinstance(content, list):
+        if _depth > 6:
+            return None
+        for item in content:
+            parsed = _load_json_payload(item, _visited=_visited, _depth=_depth + 1)
+            if parsed:
+                return parsed
+        return None
+
+    if isinstance(content, str):
+        for candidate in _candidate_json_segments(content):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                try:
+                    parsed, _ = _JSON_DECODER.raw_decode(candidate)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(parsed, dict) and _looks_like_classifier_payload(parsed):
+                return parsed
+        return None
+
+    return None
+
+
+async def _chat(
+    messages: List[Dict[str, str]], *, num_ctx: int | None = None
+) -> Dict[str, Any]:
+    try:
+        temperature = float(S.CLASSIFIER_TEMPERATURE)
+    except (TypeError, ValueError):
+        temperature = 0.1
+    temperature = max(0.0, temperature)
+
+    try:
+        top_p = float(S.CLASSIFIER_TOP_P)
+    except (TypeError, ValueError):
+        top_p = 0.4
+    top_p = min(1.0, max(0.0, top_p))
+
+    try:
+        num_predict = int(S.CLASSIFIER_NUM_PREDICT)
+    except (TypeError, ValueError):
+        num_predict = 512
+    if num_predict < 128:
+        num_predict = 128
+
+    if not isinstance(num_ctx, int) or num_ctx <= 0:
+        num_ctx = _configured_num_ctx()
+
     payload = {
         "model": S.CLASSIFIER_MODEL,
         "messages": messages,
         "format": "json",
-        "stream": False,
+        "stream": True,
+        "keep_alive": "15m",
+        "options": {
+            "temperature": temperature,
+            "top_p": top_p,
+            "num_predict": num_predict,
+            "num_ctx": num_ctx,
+            "repeat_penalty": 1.1,
+        },
     }
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(f"{S.OLLAMA_HOST}/api/chat", json=payload)
-        response.raise_for_status()
-
-        def _load_response(text: str) -> Dict[str, Any]:
-            stripped = text.strip()
-            if not stripped:
-                raise json.JSONDecodeError("No JSON content", stripped, 0)
-            try:
-                return json.loads(stripped)
-            except json.JSONDecodeError:
-                # Ollama may return newline-delimited JSON fragments when streaming is disabled.
-                for line in reversed([chunk.strip() for chunk in text.splitlines() if chunk.strip()]):
-                    try:
-                        return json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                raise
-
+    timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            return _load_response(response.text)
-        except json.JSONDecodeError as exc:
-            preview = response.text[:200].strip()
-            message = "Ungültige JSON-Antwort von Ollama"
-            if preview:
-                message = f"{message}: {preview}"
-            raise RuntimeError(message) from exc
+            async with client.stream("POST", f"{S.OLLAMA_HOST}/api/chat", json=payload) as response:
+                response.raise_for_status()
+
+                content_chunks: List[str] = []
+                structured_content: Any | None = None
+                final_payload: Dict[str, Any] | None = None
+                latest_payload: Dict[str, Any] | None = None
+
+                decoder = json.JSONDecoder()
+                buffer = ""
+                done_received = False
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = line.strip()
+                    if not chunk:
+                        continue
+                    if chunk.startswith(":"):
+                        continue
+                    prefix = chunk.split(":", 1)[0].strip().lower()
+                    if prefix in {"event", "id", "retry"}:
+                        continue
+                    if chunk.startswith("data:"):
+                        chunk = chunk[5:].strip()
+                        if not chunk:
+                            continue
+                    if chunk in {"[DONE]", "done"}:
+                        break
+
+                    buffer += chunk
+
+                    while buffer:
+                        working = buffer.lstrip()
+                        if working is not buffer:
+                            buffer = working
+                        try:
+                            data, offset = decoder.raw_decode(buffer)
+                        except json.JSONDecodeError:
+                            if len(buffer) > 262144:
+                                buffer = buffer[-262144:]
+                            break
+                        buffer = buffer[offset:]
+                        if isinstance(data, dict) and data.get("error"):
+                            raise RuntimeError(str(data.get("error")))
+                        if not isinstance(data, dict):
+                            continue
+                        latest_payload = data
+                        message = data.get("message")
+                        if isinstance(message, dict):
+                            piece = message.get("content")
+                            if isinstance(piece, str):
+                                if piece:
+                                    content_chunks.append(piece)
+                            elif piece is not None:
+                                structured_content = piece
+                        response_piece = data.get("response")
+                        if isinstance(response_piece, str):
+                            if response_piece:
+                                content_chunks.append(response_piece)
+                        elif response_piece is not None:
+                            structured_content = response_piece
+                        if data.get("done"):
+                            final_payload = data
+                            done_received = True
+                            break
+                    if done_received:
+                        break
+
+                combined = "".join(content_chunks).strip()
+                fallback_source = final_payload or latest_payload
+                if structured_content is None and not combined and fallback_source:
+                    message = fallback_source.get("message")
+                    if isinstance(message, dict):
+                        fallback_content = message.get("content")
+                        if isinstance(fallback_content, str) and fallback_content.strip():
+                            combined = fallback_content.strip()
+                        elif fallback_content is not None:
+                            structured_content = fallback_content
+                    if structured_content is None and not combined:
+                        response_payload = fallback_source.get("response")
+                        if isinstance(response_payload, str) and response_payload.strip():
+                            combined = response_payload.strip()
+                        elif response_payload is not None:
+                            structured_content = response_payload
+
+                if not combined and structured_content is None:
+                    raise RuntimeError("Leere Antwort von Ollama")
+
+                source_payload = final_payload or latest_payload or {}
+                base_payload: Dict[str, Any] = source_payload.copy()
+                message_payload = base_payload.get("message")
+                if not isinstance(message_payload, dict):
+                    message_payload = {}
+                if structured_content is not None:
+                    message_payload["content"] = structured_content
+                else:
+                    message_payload["content"] = combined
+                base_payload["message"] = message_payload
+                return base_payload
+        except httpx.TimeoutException as exc:  # pragma: no cover - network interaction
+            raise RuntimeError("Ollama Chat Timeout überschritten") from exc
+        except httpx.HTTPStatusError as exc:  # pragma: no cover - network interaction
+            status = exc.response.status_code if exc.response is not None else "?"
+            raise RuntimeError(f"Ollama Chat HTTP-Fehler: {status}") from exc
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
@@ -481,7 +861,8 @@ def _parse_category(payload: Any) -> Dict[str, Any] | None:
                     numeric = float(existing_rating) if existing_rating is not None else match_rating
                 except (TypeError, ValueError):
                     numeric = match_rating
-                final_rating = max(0.0, min(min(numeric, match_rating), 100.0))
+                numeric = max(0.0, min(numeric, 100.0))
+                final_rating = max(numeric, match_rating)
                 result["rating"] = final_rating
                 result["confidence"] = max(0.0, min(final_rating / 100.0, 1.0))
             else:
@@ -499,23 +880,23 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not items:
         return []
     catalog_index = _catalog_index()
+    trimmed: List[Dict[str, Any]] = []
+    for entry in items[: S.MAX_SUGGESTIONS]:
+        cleaned: Dict[str, Any] = {}
+        if isinstance(entry.get("name"), str):
+            cleaned["name"] = entry["name"].strip()
+        score_val = entry.get("score")
+        rating_val = entry.get("rating")
+        if isinstance(score_val, (int, float)):
+            cleaned["score"] = max(0.0, min(float(score_val), 1.0))
+        if isinstance(rating_val, (int, float)):
+            cleaned["rating"] = max(0.0, min(float(rating_val), 100.0))
+        reason_val = entry.get("reason")
+        if isinstance(reason_val, str) and reason_val.strip():
+            cleaned["reason"] = reason_val.strip()
+        if cleaned:
+            trimmed.append(cleaned)
     if not catalog_index:
-        trimmed: List[Dict[str, Any]] = []
-        for entry in items[: S.MAX_SUGGESTIONS]:
-            cleaned: Dict[str, Any] = {}
-            if isinstance(entry.get("name"), str):
-                cleaned["name"] = entry["name"].strip()
-            score_val = entry.get("score")
-            rating_val = entry.get("rating")
-            if isinstance(score_val, (int, float)):
-                cleaned["score"] = max(0.0, min(float(score_val), 1.0))
-            if isinstance(rating_val, (int, float)):
-                cleaned["rating"] = max(0.0, min(float(rating_val), 100.0))
-            reason_val = entry.get("reason")
-            if isinstance(reason_val, str) and reason_val.strip():
-                cleaned["reason"] = reason_val.strip()
-            if cleaned:
-                trimmed.append(cleaned)
         return trimmed
     normalised: Dict[str, Dict[str, Any]] = {}
     for entry in items:
@@ -533,7 +914,8 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             rating_value = float(rating_raw) if rating_raw is not None else match_rating
         except (TypeError, ValueError):
             rating_value = match_rating
-        final_rating = max(0.0, min(min(rating_value, match_rating), 100.0))
+        rating_value = max(0.0, min(rating_value, 100.0))
+        final_rating = max(rating_value, match_rating)
         final_score = final_rating / 100.0
         reason_val = entry.get("reason")
         cleaned_entry: Dict[str, Any] = {
@@ -547,7 +929,9 @@ def _canonicalize_ranked(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if existing is None or existing.get("rating", 0.0) < final_rating:
             normalised[canonical] = cleaned_entry
     ordered = sorted(normalised.values(), key=lambda row: row.get("rating", 0.0), reverse=True)
-    return ordered[: S.MAX_SUGGESTIONS]
+    if ordered:
+        return ordered[: S.MAX_SUGGESTIONS]
+    return trimmed
 
 
 def _normalise_tag_word(raw: Any) -> str | None:
@@ -562,9 +946,30 @@ def _normalise_tag_word(raw: Any) -> str | None:
     return cleaned[:32] or None
 
 
+def _has_placeholder_token(word: str, *, ignore_prefix: bool = False) -> bool:
+    """Return True when a tag candidate still contains obvious placeholders.
+
+    The classifier prompt strongly encourages the model to replace placeholders
+    such as "NAME" or "YYYY". Should a response still contain these tokens we
+    silently drop the suggestion to avoid propagating incomplete data.
+    """
+
+    if not word:
+        return False
+    segments = [segment for segment in re.split(r"[-_/]+", word) if segment]
+    if ignore_prefix and segments:
+        segments = segments[1:]
+    for segment in segments:
+        upper = segment.upper()
+        if upper in _PLACEHOLDER_TOKENS:
+            return True
+        if upper in _PLACEHOLDER_NUMERIC_TOKENS:
+            return True
+    return False
+
+
 def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
     slots = get_tag_slots()
-    lookup = slot_lookup_keys(slots)
     max_total = max_tag_total()
     threshold = float(S.MIN_MATCH_SCORE or 0)
 
@@ -609,11 +1014,11 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
         if isinstance(value, list):
             for item in value:
                 word = _normalise_tag_word(item)
-                if word and word not in extras:
+                if word and word not in extras and not _has_placeholder_token(word, ignore_prefix=True):
                     extras.append(word)
         elif isinstance(value, str):
             word = _normalise_tag_word(value)
-            if word:
+            if word and not _has_placeholder_token(word, ignore_prefix=True):
                 extras.append(word)
         return extras
 
@@ -674,7 +1079,8 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
         value_word = _normalise_tag_word(label)
         if slot is None:
             if value_word and value_word not in extras:
-                extras.append(value_word)
+                if not _has_placeholder_token(value_word, ignore_prefix=True):
+                    extras.append(value_word)
             continue
         option = _resolve_option(slot, label if isinstance(label, str) else "") if isinstance(label, str) else None
         if not option:
@@ -686,6 +1092,8 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
         value_slug = (_normalise_tag_word(option) or option).lower()
         tag_value = f"{slot_slug}-{value_slug}".strip("-")
         if not tag_value:
+            continue
+        if _has_placeholder_token(tag_value, ignore_prefix=True):
             continue
         previous = assignments.get(slot.name)
         if previous and previous[1] >= rating:
@@ -717,14 +1125,14 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
     if isinstance(payload, list):
         for item in payload:
             word = _normalise_tag_word(item)
-            if not word or word in normalised:
+            if not word or word in normalised or _has_placeholder_token(word, ignore_prefix=True):
                 continue
             normalised.append(word)
             if len(normalised) >= max_total:
                 break
     elif isinstance(payload, str):
         word = _normalise_tag_word(payload)
-        if word:
+        if word and not _has_placeholder_token(word, ignore_prefix=True):
             normalised.append(word)
 
     if extras_candidate:
@@ -732,7 +1140,7 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
             if word and word not in normalised:
                 normalised.append(word)
 
-    slot_count = len(lookup)
+    slot_count = len(slots)
     if len(normalised) < slot_count:
         normalised.extend([""] * (slot_count - len(normalised)))
     return normalised[:max_total]
@@ -740,6 +1148,11 @@ def _parse_tags(payload: Any, extras_payload: Any | None = None) -> List[str]:
 
 def _normalise_proposal(proposal: Any, parent_hint: str | None, top_score: float) -> Dict[str, Any] | None:
     if isinstance(proposal, dict):
+        # Reject explicit proposals whenever a confident catalog match exists –
+        # otherwise we would create duplicates for folders that already scored
+        # above the automatic creation threshold.
+        if top_score >= float(S.MIN_NEW_FOLDER_SCORE or 0):
+            return None
         parent_raw = str(proposal.get("parent", parent_hint or "")).strip()
         ensured_parent = ensure_top_level_parent(parent_raw or parent_hint)
         top_levels = top_level_folder_names()
@@ -759,6 +1172,45 @@ def _normalise_proposal(proposal: Any, parent_hint: str | None, top_score: float
     return None
 
 
+def _align_proposal_with_matches(
+    proposal: Dict[str, Any],
+    ranked: Sequence[Dict[str, Any]],
+    category: Dict[str, Any] | None,
+    parent_hint: str | None,
+) -> Dict[str, Any] | None:
+    """Ensure generated folder proposals remain consistent with known matches."""
+
+    if not proposal:
+        return None
+
+    aligned = proposal.copy()
+    ranked_paths = [
+        str(item.get("name", "")).strip()
+        for item in ranked
+        if isinstance(item.get("name"), str) and str(item.get("name")).strip()
+    ]
+    preferred_parent = _category_parent_segment(category)
+    if not preferred_parent and ranked_paths:
+        preferred_parent = ensure_top_level_parent(ranked_paths[0])
+    if not preferred_parent and parent_hint:
+        preferred_parent = ensure_top_level_parent(parent_hint)
+
+    name = aligned.get("name", "").strip()
+    if preferred_parent and name:
+        aligned["parent"] = preferred_parent
+        aligned["full_path"] = "/".join(
+            segment for segment in (preferred_parent, name) if segment
+        ).strip("/")
+
+    if ranked_paths:
+        ranked_lower = {path.lower() for path in ranked_paths}
+        full_path = str(aligned.get("full_path", "")).strip()
+        if full_path and full_path.lower() in ranked_lower:
+            return None
+
+    return aligned
+
+
 async def classify_with_model(
     subject: str,
     sender: str,
@@ -775,9 +1227,73 @@ async def classify_with_model(
     if not S.CLASSIFIER_MODEL:
         return _fallback_ranked(ranked), None, None, []
 
-    messages = build_classification_prompt(subject, sender, body, ranked, folders, parent_hint)
+    num_ctx = await _resolve_context_window()
+    catalog_limit = _catalog_line_limit(num_ctx)
+    base_messages = build_classification_prompt(
+        subject,
+        sender,
+        body,
+        ranked,
+        folders,
+        parent_hint,
+        body_snippet="",
+        max_catalog_entries=catalog_limit,
+    )
+    overhead_chars = sum(len(item.get("content", "")) for item in base_messages)
+    body_snippet = _truncate_body_for_context(body, num_ctx, overhead_chars)
+    messages = build_classification_prompt(
+        subject,
+        sender,
+        body,
+        ranked,
+        folders,
+        parent_hint,
+        body_snippet=body_snippet,
+        max_catalog_entries=catalog_limit,
+    )
+    char_budget = _approx_prompt_char_budget(num_ctx)
+    total_chars = sum(len(item.get("content", "")) for item in messages)
+    if body_snippet and total_chars > char_budget and char_budget > 0:
+        overflow = total_chars - char_budget
+        if overflow > 0:
+            adjusted_length = max(0, len(body_snippet) - overflow)
+            if adjusted_length < len(body_snippet):
+                body_snippet = body[:adjusted_length]
+                messages = build_classification_prompt(
+                    subject,
+                    sender,
+                    body,
+                    ranked,
+                    folders,
+                    parent_hint,
+                    body_snippet=body_snippet,
+                    max_catalog_entries=catalog_limit,
+                )
+                total_chars = sum(len(item.get("content", "")) for item in messages)
+    while total_chars > char_budget and char_budget > 0 and catalog_limit > 20:
+        previous_limit = catalog_limit
+        catalog_limit = max(20, catalog_limit - 10)
+        if catalog_limit == previous_limit:
+            break
+        messages = build_classification_prompt(
+            subject,
+            sender,
+            body,
+            ranked,
+            folders,
+            parent_hint,
+            body_snippet=body_snippet,
+            max_catalog_entries=catalog_limit,
+        )
+        total_chars = sum(len(item.get("content", "")) for item in messages)
+    if total_chars > char_budget and char_budget > 0:
+        logger.debug(
+            "Klassifikationsprompt überschreitet das Zielbudget (Budget %s, Länge %s)",
+            char_budget,
+            total_chars,
+        )
     try:
-        response = await _chat(messages)
+        response = await _chat(messages, num_ctx=num_ctx)
     except Exception as exc:  # pragma: no cover - network interaction
         logger.warning("Ollama Klassifikation fehlgeschlagen: %s", exc)
         return _fallback_ranked(ranked), None, None, []
@@ -786,10 +1302,21 @@ async def classify_with_model(
     if not content:
         return _fallback_ranked(ranked), None, None, []
 
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:  # pragma: no cover - depends on LLM output
-        logger.warning("Konnte Ollama-Antwort nicht parsen: %s", exc)
+    parsed = _load_json_payload(content)
+    if not isinstance(parsed, dict):
+        parsed = _load_json_payload(response)
+    if not isinstance(parsed, dict):
+        preview_source = ""
+        if isinstance(content, str):
+            preview_source = content.strip()
+        elif isinstance(response, dict):
+            snippet = json.dumps(response, ensure_ascii=False)
+            preview_source = snippet[:200]
+        preview = preview_source.splitlines() if preview_source else []
+        sample = preview[0][:200] if preview else preview_source
+        logger.warning(
+            "Konnte Ollama-Antwort nicht parsen (Vorschau: %s)", sample
+        )
         return _fallback_ranked(ranked), None, None, []
 
     refined_ranked = _parse_ranked(parsed.get("ranked"), ranked)
@@ -823,6 +1350,8 @@ async def classify_with_model(
         proposal = _normalise_proposal(
             parsed.get("proposal"), parent_hint, best_rating / 100 if best_rating else 0.0
         )
+        if proposal:
+            proposal = _align_proposal_with_matches(proposal, refined_ranked, category, parent_hint)
 
     return refined_ranked, proposal, category, tags
 

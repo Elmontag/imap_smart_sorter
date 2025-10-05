@@ -101,6 +101,7 @@ export interface FolderChildConfig {
   name: string
   description?: string | null
   children: FolderChildConfig[]
+  tag_guidelines: TagGuidelineConfig[]
 }
 
 export interface TagGuidelineConfig {
@@ -174,9 +175,34 @@ export interface FolderSelectionResponse {
   selected: string[]
 }
 
+export interface FolderCreateResponse {
+  created: string
+  existed: boolean
+}
+
 export interface ProposalDecisionResponse {
   ok: boolean
   proposal: NewFolderProposal | null
+}
+
+export interface ScanStatus {
+  active: boolean
+  folders: string[]
+  poll_interval: number
+  last_started_at?: string | null
+  last_finished_at?: string | null
+  last_error?: string | null
+  last_result_count?: number | null
+}
+
+export interface ScanStartResponse {
+  started: boolean
+  status: ScanStatus
+}
+
+export interface ScanStopResponse {
+  stopped: boolean
+  status: ScanStatus
 }
 
 export type StreamEvent =
@@ -313,11 +339,33 @@ export async function updateFolderSelection(folders: string[]): Promise<FolderSe
   })
 }
 
+export async function createFolder(path: string): Promise<FolderCreateResponse> {
+  return request<FolderCreateResponse>('/api/folders/create', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
+}
+
 export async function decideProposal(message_uid: string, accept: boolean): Promise<ProposalDecisionResponse> {
   return request('/api/proposal', {
     method: 'POST',
     body: JSON.stringify({ message_uid, accept }),
   })
+}
+
+export async function getScanStatus(): Promise<ScanStatus> {
+  return request<ScanStatus>('/api/scan/status')
+}
+
+export async function startScan(folders?: string[]): Promise<ScanStartResponse> {
+  return request<ScanStartResponse>('/api/scan/start', {
+    method: 'POST',
+    body: JSON.stringify({ folders }),
+  })
+}
+
+export async function stopScan(): Promise<ScanStopResponse> {
+  return request<ScanStopResponse>('/api/scan/stop', { method: 'POST' })
 }
 
 export function openStream(onEvent: (event: StreamEvent) => void): WebSocket {

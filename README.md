@@ -5,10 +5,10 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Backend** – FastAPI-Anwendung mit SQLite/SQLModel-Datenbank für Vorschläge, Status und API-Endpunkte.
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
-  Sie erlaubt jetzt auch das Speichern individueller Ordnerauswahlen sowie das direkte Bestätigen oder Ablehnen von KI-Ordner-Vorschlägen.
-  Der Kopfbereich zeigt den verbundenen Ollama-Host samt der verwendeten Modelle an und der Vorschlagsbereich bietet Kennzahlen sowie den Zugriff auf bereits bearbeitete Mails.
-  Die Ordner-Sidebar visualisiert vorhandene Hierarchien inklusive Unterordnern, sodass Entscheidungen direkt mit der realen Struktur abgeglichen werden können.
-  Über die zusätzliche Unterseite `#/catalog` lässt sich der komplette Ordner- und Tag-Katalog grafisch bearbeiten und anschließend direkt speichern.
+  Die Ordnerauswahl präsentiert sich als einklappbare Baumstruktur, neu gefundene Ordner lassen sich direkt aus den Vorschlagskarten anlegen.
+  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons und behältst Statuskarten für Ollama und laufende Analysen im Blick.
+  Tag-Vorschläge erscheinen kontextualisiert direkt innerhalb der jeweiligen Mailkarte, eine separate Tag-Übersicht entfällt.
+  Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
 Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
 
@@ -63,6 +63,13 @@ MIN_MATCH_SCORE=60
   setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
   zu kontrollieren.
+- Standardmäßig nutzt der JSON-Klassifikator eine niedrige Temperatur (`CLASSIFIER_TEMPERATURE=0.1`), ein begrenztes Sampling
+  (`CLASSIFIER_TOP_P=0.4`) sowie die von Ollama gemeldete Kontextgrenze (`CLASSIFIER_NUM_CTX_MATCH_MODEL=true`).
+  `CLASSIFIER_NUM_CTX` dient als optionaler Cap und reduziert bei Bedarf das vom Modell angebotene Fenster.
+  Mit `CLASSIFIER_CONTEXT_RESERVE_TOKENS` steuerst du, wie viele Tokens für System- und Kataloginformationen reserviert werden,
+  während `CLASSIFIER_NUM_PREDICT=512` weiterhin die Antwortlänge begrenzt.
+  So entstehen reproduzierbare, konsistente Ordnerpfade ohne die vorherige Trunkierungswarnung – über Umgebungsvariablen kannst
+  du die Werte weiterhin feinjustieren.
 - Verbindungsfehler (`httpx.ConnectError` oder Logeintrag `Ollama Embedding fehlgeschlagen`) deuten
   auf einen nicht erreichbaren Ollama-Host hin. Stelle sicher, dass `OLLAMA_HOST` auf `http://ollama:11434`
   zeigt, wenn alle Dienste via Docker Compose laufen. Bei lokal gestarteten Komponenten außerhalb
@@ -89,8 +96,8 @@ MIN_MATCH_SCORE=60
 - `backend/llm_config.json` bündelt sowohl den Ordnerkatalog als auch die Tag-Slots. Die verschachtelte Struktur
   erlaubt beliebige Unterebenen (z. B. `Bestellungen/Onlinehandel/Versand`).
 - Über `tag_slots` legst du benannte Slots samt erlaubter Optionen und Aliase fest. Die Reihenfolge der Einträge
-  entspricht der Darstellung im Frontend. Zusätzliche Kontext-Tags werden pro Top-Level über `tag_guidelines`
-  beschrieben (z. B. `veranstalter-NAME`, `transport-bahn`).
+  entspricht der Darstellung im Frontend. Zusätzliche Kontext-Tags werden pro Ordner (Bereich wie Unterordner)
+  über `tag_guidelines` beschrieben (z. B. `veranstalter-NAME`, `ticketstatus-zugestellt`).
 - Der `/api/config`-Endpunkt liefert die komplette Katalogkonfiguration (`folder_templates`, `tag_slots`, `context_tags`),
   sodass auch externe Tools auf die Vorgaben zugreifen können. Änderungen an `llm_config.json` werden beim nächsten Request
   automatisch berücksichtigt.
@@ -106,6 +113,9 @@ MIN_MATCH_SCORE=60
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
   Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
+- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Analyse-Controller. Das Frontend bietet zusätzlich einen Button „Einmalige Analyse“ (via `/api/rescan`), sodass sich eine sofortige Auswertung ohne Daueranalyse starten lässt.
+- Laufende Dauer-Analysen blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Analyse starten“ und „Analyse stoppen“ für die kontinuierliche Ausführung verfügbar.
+- Die Ordnerauswahl im Dashboard stellt die überwachten IMAP-Ordner als aufklappbaren Baum dar. Der Filter hebt Treffer farblich hervor und öffnet automatisch die relevanten Äste, sodass komplexe Hierarchien schneller angepasst werden können.
 
 ## Lokale Entwicklung
 
@@ -170,7 +180,11 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `POST`  | `/api/move`         | Verschiebt oder simuliert eine einzelne Nachricht |
 | `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |
 | `POST`  | `/api/proposal`     | Bestätigt oder verwirft einen KI-Ordner-Vorschlag |
+| `POST`  | `/api/folders/create` | Legt fehlende IMAP-Ordner (inklusive Zwischenebenen) an |
 | `POST`  | `/api/rescan`       | Erzwingt einen einmaligen Scan (optional mit `folders`-Liste) |
+| `GET`   | `/api/scan/status`  | Laufzeitstatus des Scan-Controllers (aktiv, Intervalle, letzte Ergebnisse) |
+| `POST`  | `/api/scan/start`   | Startet den kontinuierlichen Scan für die übergebenen Ordner (oder die gespeicherte Auswahl) |
+| `POST`  | `/api/scan/stop`    | Stoppt den laufenden Scan-Controller |
 | `GET`   | `/api/catalog`      | Gibt den aktuellen Ordner- und Tag-Katalog (inkl. Hierarchie) zurück |
 | `PUT`   | `/api/catalog`      | Persistiert einen aktualisierten Katalog (Ordner & Tag-Slots) |
 

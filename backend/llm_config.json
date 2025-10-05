@@ -7,6 +7,12 @@
         {
           "name": "Tickets",
           "description": "Alles zum Ticketkauf und Einlass.",
+          "tag_guidelines": [
+            {
+              "name": "ticketstatus",
+              "description": "Nutze 'ticketstatus-offen', 'ticketstatus-zugestellt' oder 'ticketstatus-abholung'."
+            }
+          ],
           "children": [
             { "name": "Bestellung", "description": "Bestell- und Zahlungsbestätigungen, Rechnungen." },
             { "name": "Versand", "description": "Ticket-Versandhinweise, Abholinfos, PDF-Tickets." },
