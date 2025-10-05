@@ -367,13 +367,30 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     async with httpx.AsyncClient(timeout=90) as client:
         response = await client.post(f"{S.OLLAMA_HOST}/api/chat", json=payload)
         response.raise_for_status()
+
+        def _load_response(text: str) -> Dict[str, Any]:
+            stripped = text.strip()
+            if not stripped:
+                raise json.JSONDecodeError("No JSON content", stripped, 0)
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                # Ollama may return newline-delimited JSON fragments when streaming is disabled.
+                for line in reversed([chunk.strip() for chunk in text.splitlines() if chunk.strip()]):
+                    try:
+                        return json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                raise
+
         try:
-            return response.json()
+            return _load_response(response.text)
         except json.JSONDecodeError as exc:
             preview = response.text[:200].strip()
-            raise RuntimeError(
-                "Ungültige JSON-Antwort von Ollama" + (f": {preview}" if preview else "")
-            ) from exc
+            message = "Ungültige JSON-Antwort von Ollama"
+            if preview:
+                message = f"{message}: {preview}"
+            raise RuntimeError(message) from exc
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
