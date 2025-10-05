@@ -358,6 +358,7 @@ def build_classification_prompt(
 
 
 _JSON_DECODER = json.JSONDecoder()
+_CLASSIFIER_KEYS = {"ranked", "category", "tags", "extras", "proposal"}
 
 
 def _strip_code_fence(content: str) -> str:
@@ -401,19 +402,77 @@ def _candidate_json_segments(content: Any) -> List[str]:
     return candidates
 
 
-def _load_json_payload(content: Any) -> Dict[str, Any] | None:
+def _looks_like_classifier_payload(payload: Dict[str, Any]) -> bool:
+    if any(key in payload for key in _CLASSIFIER_KEYS):
+        return True
+    return False
+
+
+def _load_json_payload(
+    content: Any,
+    *,
+    _visited: set[int] | None = None,
+    _depth: int = 0,
+) -> Dict[str, Any] | None:
+    if _visited is None:
+        _visited = set()
+
+    if isinstance(content, (dict, list)):
+        marker = id(content)
+        if marker in _visited:
+            return None
+        _visited.add(marker)
+
     if isinstance(content, dict):
-        return content
-    for candidate in _candidate_json_segments(content):
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
+        if _looks_like_classifier_payload(content):
+            return content
+        if _depth > 6:
+            return None
+        nested_keys = (
+            "message",
+            "content",
+            "response",
+            "data",
+            "delta",
+            "value",
+            "payload",
+            "body",
+        )
+        for key in nested_keys:
+            if key in content:
+                parsed = _load_json_payload(
+                    content[key], _visited=_visited, _depth=_depth + 1
+                )
+                if parsed:
+                    return parsed
+        for value in content.values():
+            parsed = _load_json_payload(value, _visited=_visited, _depth=_depth + 1)
+            if parsed:
+                return parsed
+        return None
+
+    if isinstance(content, list):
+        if _depth > 6:
+            return None
+        for item in content:
+            parsed = _load_json_payload(item, _visited=_visited, _depth=_depth + 1)
+            if parsed:
+                return parsed
+        return None
+
+    if isinstance(content, str):
+        for candidate in _candidate_json_segments(content):
             try:
-                parsed, _ = _JSON_DECODER.raw_decode(candidate)
+                parsed = json.loads(candidate)
             except json.JSONDecodeError:
-                continue
-        if isinstance(parsed, dict):
-            return parsed
+                try:
+                    parsed, _ = _JSON_DECODER.raw_decode(candidate)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(parsed, dict) and _looks_like_classifier_payload(parsed):
+                return parsed
+        return None
+
     return None
 
 
