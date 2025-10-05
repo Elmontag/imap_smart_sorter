@@ -100,6 +100,7 @@ export interface OllamaStatus {
 export interface FolderChildConfig {
   name: string
   description?: string | null
+  children: FolderChildConfig[]
 }
 
 export interface TagGuidelineConfig {
@@ -118,12 +119,18 @@ export interface TagSlotConfig {
   name: string
   description?: string | null
   options: string[]
+  aliases: string[]
 }
 
 export interface ContextTagConfig {
   name: string
   description?: string | null
   folder: string
+}
+
+export interface CatalogDefinition {
+  folder_templates: FolderTemplateConfig[]
+  tag_slots: TagSlotConfig[]
 }
 
 export interface AppConfig {
@@ -265,6 +272,17 @@ export async function getTagSuggestions(): Promise<TagSuggestion[]> {
 
 export async function getAppConfig(): Promise<AppConfig> {
   return request<AppConfig>('/api/config')
+}
+
+export async function getCatalogDefinition(): Promise<CatalogDefinition> {
+  return request<CatalogDefinition>('/api/catalog')
+}
+
+export async function updateCatalogDefinition(payload: CatalogDefinition): Promise<CatalogDefinition> {
+  return request<CatalogDefinition>('/api/catalog', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function decide(message_uid: string, target_folder: string, decision: 'accept' | 'reject', dry_run = false): Promise<DecideResponse | MoveResponse> {

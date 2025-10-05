@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 _CONFIG_PATH = Path(__file__).with_name("llm_config.json")
 
@@ -15,6 +15,7 @@ _CONFIG_PATH = Path(__file__).with_name("llm_config.json")
 class FolderChild:
     name: str
     description: str
+    children: List["FolderChild"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,33 @@ def _load_raw_config() -> Dict[str, object]:
         return json.load(handle)
 
 
+def get_catalog_data() -> Dict[str, Any]:
+    """Return a deep copy of the raw catalog configuration."""
+
+    raw = _load_raw_config()
+    return json.loads(json.dumps(raw))
+
+
+def _write_catalog(data: Dict[str, Any]) -> None:
+    with _CONFIG_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    get_folder_templates.cache_clear()
+    get_tag_slots.cache_clear()
+    get_context_tag_guidelines.cache_clear()
+
+
+def update_catalog(folder_templates: List[Dict[str, Any]], tag_slots: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Persist a new catalog definition and refresh cached views."""
+
+    payload: Dict[str, Any] = {
+        "folder_templates": folder_templates,
+        "tag_slots": tag_slots,
+    }
+    _write_catalog(payload)
+    return payload
+
+
 @lru_cache(maxsize=1)
 def get_folder_templates() -> List[FolderTemplate]:
     raw = _load_raw_config().get("folder_templates", [])
@@ -59,16 +87,29 @@ def get_folder_templates() -> List[FolderTemplate]:
         description = str(entry.get("description") or "").strip()
         if not name:
             continue
-        children: List[FolderChild] = []
-        children_raw = entry.get("children")
-        if isinstance(children_raw, list):
-            for child in children_raw:
+        def _parse_children(payload: object) -> List[FolderChild]:
+            parsed: List[FolderChild] = []
+            if not isinstance(payload, list):
+                return parsed
+            for child in payload:
                 if not isinstance(child, dict):
                     continue
                 child_name = str(child.get("name") or "").strip()
                 child_desc = str(child.get("description") or "").strip()
-                if child_name:
-                    children.append(FolderChild(name=child_name, description=child_desc))
+                if not child_name:
+                    continue
+                nested_raw = child.get("children")
+                nested_children = _parse_children(nested_raw) if isinstance(nested_raw, list) else []
+                parsed.append(
+                    FolderChild(
+                        name=child_name,
+                        description=child_desc,
+                        children=nested_children,
+                    )
+                )
+            return parsed
+
+        children = _parse_children(entry.get("children"))
         tag_guidelines: List[ContextTagGuideline] = []
         guidelines_raw = entry.get("tag_guidelines")
         if isinstance(guidelines_raw, list):
@@ -126,11 +167,19 @@ def folder_templates_summary() -> str:
     if not templates:
         return "Keine Vorlagen definiert."
     lines: List[str] = []
+
+    def _render_children(children: Sequence[FolderChild], indent: str = "  ") -> List[str]:
+        rendered: List[str] = []
+        for child in children:
+            rendered.append(f"{indent}- {child.name}: {child.description or 'keine Beschreibung'}")
+            if child.children:
+                rendered.extend(_render_children(child.children, indent + "  "))
+        return rendered
+
     for template in templates:
-        child_names = ", ".join(child.name for child in template.children)
         lines.append(f"- {template.name}: {template.description or 'keine Beschreibung'}")
-        if child_names:
-            lines.append(f"  Unterordner: {child_names}")
+        if template.children:
+            lines.extend(_render_children(template.children))
         if template.tag_guidelines:
             tags = "; ".join(
                 f"{guideline.name} → {guideline.description}" for guideline in template.tag_guidelines
@@ -162,6 +211,27 @@ def context_tag_summary() -> str:
 
 def top_level_folder_names() -> List[str]:
     return [template.name for template in get_folder_templates()]
+
+
+def _iter_child_paths(prefix: str, children: Sequence[FolderChild]) -> Iterable[str]:
+    for child in children:
+        path = f"{prefix}/{child.name}" if prefix else child.name
+        yield path
+        if child.children:
+            yield from _iter_child_paths(path, child.children)
+
+
+def folder_catalog_paths(limit: int | None = None) -> List[str]:
+    paths: List[str] = []
+    for template in get_folder_templates():
+        paths.append(template.name)
+        paths.extend(_iter_child_paths(template.name, template.children))
+        if limit is not None and len(paths) >= limit:
+            break
+    deduped = list(dict.fromkeys(path for path in paths if path))
+    if limit is not None:
+        return deduped[:limit]
+    return deduped
 
 
 def tag_slot_count() -> int:
@@ -226,3 +296,7 @@ def iter_slot_options(slots: Sequence[TagSlot]) -> Iterable[str]:
     for slot in slots:
         for option in slot.options:
             yield option
+
+
+def tag_slot_options_map() -> Dict[str, List[str]]:
+    return {slot.name: list(slot.options) for slot in get_tag_slots()}

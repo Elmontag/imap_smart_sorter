@@ -166,10 +166,13 @@ async def handle_message(
         structure_overview,
         parent_hint=src_folder,
     )
-    top_score = ranked_pairs[0][1] if ranked_pairs else 0.0
-    if not proposal:
+    match_score = refined_ranked[0]["score"] if refined_ranked else 0.0
+    match_rating = refined_ranked[0].get("rating", match_score * 100.0) if refined_ranked else 0.0
+    meets_threshold = match_rating >= float(S.MIN_MATCH_SCORE or 0)
+
+    if meets_threshold and not proposal:
         proposal = await propose_new_folder_if_needed(
-            top_score,
+            match_score,
             subject or "",
             from_addr,
             parent_hint=src_folder,
@@ -196,7 +199,7 @@ async def handle_message(
 
     mode = get_mode() or S.MOVE_MODE
     should_auto_move = mode == "AUTO" and (
-        (top_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
+        (match_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
     )
 
     if should_auto_move and refined_ranked:
