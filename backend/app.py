@@ -9,29 +9,37 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from configuration import (
+    get_context_tag_guidelines,
+    get_folder_templates,
+    get_tag_slots,
+    update_catalog,
+)
 from database import (
     find_suggestion_by_uid,
     get_mode,
     get_monitored_folders,
     init_db,
-    list_open_suggestions,
+    list_suggestions,
     mark_failed,
     mark_moved,
     record_decision,
     record_dry_run,
     set_mode,
     set_monitored_folders,
+    suggestion_status_counts,
     update_proposal,
 )
 from imap_worker import one_shot_scan
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
+from tags import TagSuggestion, load_tag_suggestions
 from ollama_service import ensure_ollama_ready, get_status, status_as_dict
 from settings import S
 
@@ -66,6 +74,10 @@ class BulkMoveRequest(BaseModel):
 
 class SuggestionsResponse(BaseModel):
     suggestions: List[Suggestion]
+    open_count: int
+    decided_count: int
+    error_count: int
+    total_count: int
 
 
 class FolderSelectionResponse(BaseModel):
@@ -106,7 +118,155 @@ class ConfigResponse(BaseModel):
     pending_list_limit: int
     protected_tag: str | None = None
     processed_tag: str | None = None
+    ai_tag_prefix: str | None = None
     ollama: OllamaStatusResponse | None = None
+    folder_templates: List["FolderTemplateConfig"] = Field(default_factory=list)
+    tag_slots: List["TagSlotConfig"] = Field(default_factory=list)
+    context_tags: List["ContextTagConfig"] = Field(default_factory=list)
+
+
+class FolderChildConfig(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+    children: List["FolderChildConfig"] = Field(default_factory=list)
+
+
+class TagGuidelineConfig(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+
+
+class FolderTemplateConfig(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+    children: List[FolderChildConfig] = Field(default_factory=list)
+    tag_guidelines: List[TagGuidelineConfig] = Field(default_factory=list)
+
+
+class TagSlotConfig(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+    options: List[str] = Field(default_factory=list)
+    aliases: List[str] = Field(default_factory=list)
+
+
+class ContextTagConfig(BaseModel):
+    name: str
+    description: str | None = None
+    folder: str
+
+
+ConfigResponse.model_rebuild()
+
+
+class CatalogResponse(BaseModel):
+    folder_templates: List[FolderTemplateConfig] = Field(default_factory=list)
+    tag_slots: List[TagSlotConfig] = Field(default_factory=list)
+
+
+class CatalogUpdateRequest(CatalogResponse):
+    pass
+
+
+FolderChildConfig.model_rebuild()
+FolderTemplateConfig.model_rebuild()
+CatalogResponse.model_rebuild()
+
+
+def _child_to_config(child: Any) -> FolderChildConfig:
+    return FolderChildConfig(
+        name=str(getattr(child, "name", "")).strip(),
+        description=(getattr(child, "description", None) or None),
+        children=[_child_to_config(grand) for grand in getattr(child, "children", []) or []],
+    )
+
+
+def _template_to_config(template: Any) -> FolderTemplateConfig:
+    return FolderTemplateConfig(
+        name=str(getattr(template, "name", "")).strip(),
+        description=(getattr(template, "description", None) or None),
+        children=[_child_to_config(child) for child in getattr(template, "children", []) or []],
+        tag_guidelines=[
+            TagGuidelineConfig(
+                name=str(getattr(guideline, "name", "")).strip(),
+                description=(getattr(guideline, "description", None) or None),
+            )
+            for guideline in getattr(template, "tag_guidelines", []) or []
+        ],
+    )
+
+
+def _serialise_child(child: FolderChildConfig) -> Dict[str, Any]:
+    description = (child.description or "").strip()
+    return {
+        "name": child.name.strip(),
+        "description": description,
+        "children": [_serialise_child(grand) for grand in child.children],
+    }
+
+
+def _serialise_template(template: FolderTemplateConfig) -> Dict[str, Any]:
+    return {
+        "name": template.name.strip(),
+        "description": (template.description or "").strip(),
+        "children": [_serialise_child(child) for child in template.children],
+        "tag_guidelines": [
+            {
+                "name": guideline.name.strip(),
+                "description": (guideline.description or "").strip(),
+            }
+            for guideline in template.tag_guidelines
+        ],
+    }
+
+
+def _serialise_tag_slot(slot: TagSlotConfig) -> Dict[str, Any]:
+    options = [option.strip() for option in slot.options if option.strip()]
+    aliases = [alias.strip() for alias in slot.aliases if alias.strip()]
+    return {
+        "name": slot.name.strip(),
+        "description": (slot.description or "").strip(),
+        "options": options,
+        "aliases": aliases,
+    }
+
+
+def _catalog_response() -> CatalogResponse:
+    templates = [_template_to_config(template) for template in get_folder_templates()]
+    slots = [
+        TagSlotConfig(
+            name=slot.name,
+            description=slot.description or None,
+            options=list(slot.options),
+            aliases=list(slot.aliases),
+        )
+        for slot in get_tag_slots()
+    ]
+    return CatalogResponse(folder_templates=templates, tag_slots=slots)
+
+
+class TagExampleResponse(BaseModel):
+    message_uid: str
+    subject: str
+    from_addr: str | None = None
+    folder: str | None = None
+    date: str | None = None
+
+
+class TagSuggestionResponse(BaseModel):
+    tag: str
+    occurrences: int
+    last_seen: datetime | None = None
+    examples: List[TagExampleResponse] = Field(default_factory=list)
+
+    @classmethod
+    def from_domain(cls, suggestion: TagSuggestion) -> "TagSuggestionResponse":
+        return cls(
+            tag=suggestion.tag,
+            occurrences=suggestion.occurrences,
+            last_seen=suggestion.last_seen,
+            examples=[TagExampleResponse(**example) for example in suggestion.serialisable_examples()],
+        )
 
 
 class PendingMailResponse(BaseModel):
@@ -135,6 +295,7 @@ class PendingOverviewResponse(BaseModel):
     pending: List[PendingMailResponse]
     displayed_pending: int
     list_limit: int
+    limit_active: bool
 
     @classmethod
     def from_domain(cls, overview: PendingOverview) -> "PendingOverviewResponse":
@@ -146,6 +307,7 @@ class PendingOverviewResponse(BaseModel):
             pending=[PendingMailResponse.from_domain(item) for item in overview.pending],
             displayed_pending=overview.displayed_pending,
             list_limit=overview.list_limit,
+            limit_active=overview.limit_active,
         )
 
 
@@ -207,18 +369,49 @@ def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionRespons
 @app.get("/api/config", response_model=ConfigResponse)
 async def api_config() -> ConfigResponse:
     status = await get_status(force_refresh=False)
+    catalog = _catalog_response()
+    context_tags = [
+        ContextTagConfig(name=guideline.name, description=guideline.description or None, folder=guideline.folder)
+        for guideline in get_context_tag_guidelines()
+    ]
     return ConfigResponse(
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
         protected_tag=S.IMAP_PROTECTED_TAG or None,
         processed_tag=S.IMAP_PROCESSED_TAG or None,
+        ai_tag_prefix=S.IMAP_AI_TAG_PREFIX or None,
         ollama=OllamaStatusResponse.model_validate(status_as_dict(status)),
+        folder_templates=catalog.folder_templates,
+        tag_slots=catalog.tag_slots,
+        context_tags=context_tags,
     )
 
 
+@app.get("/api/catalog", response_model=CatalogResponse)
+def api_catalog_definition() -> CatalogResponse:
+    return _catalog_response()
+
+
+@app.put("/api/catalog", response_model=CatalogResponse)
+def api_update_catalog_definition(payload: CatalogUpdateRequest) -> CatalogResponse:
+    templates = [_serialise_template(template) for template in payload.folder_templates]
+    slots = [_serialise_tag_slot(slot) for slot in payload.tag_slots]
+    update_catalog(templates, slots)
+    return _catalog_response()
+
+
 @app.get("/api/suggestions", response_model=SuggestionsResponse)
-def api_suggestions() -> SuggestionsResponse:
-    return SuggestionsResponse(suggestions=list_open_suggestions())
+def api_suggestions(include: str = Query("open", pattern=r"^(open|all)$")) -> SuggestionsResponse:
+    include_all = include == "all"
+    counts = suggestion_status_counts()
+    suggestions = list_suggestions(include_all)
+    return SuggestionsResponse(
+        suggestions=suggestions,
+        open_count=counts.get("open", 0),
+        decided_count=counts.get("decided", 0),
+        error_count=counts.get("error", 0),
+        total_count=counts.get("total", 0),
+    )
 
 
 @app.get("/api/ollama", response_model=OllamaStatusResponse)
@@ -235,6 +428,12 @@ async def _pending_overview() -> PendingOverviewResponse:
 @app.get("/api/pending", response_model=PendingOverviewResponse)
 async def api_pending() -> PendingOverviewResponse:
     return await _pending_overview()
+
+
+@app.get("/api/tags", response_model=List[TagSuggestionResponse])
+def api_tags() -> List[TagSuggestionResponse]:
+    suggestions = load_tag_suggestions()
+    return [TagSuggestionResponse.from_domain(item) for item in suggestions]
 
 
 def _ensure_suggestion(uid: str) -> Suggestion:

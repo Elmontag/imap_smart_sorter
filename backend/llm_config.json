@@ -1,0 +1,187 @@
+{
+  "folder_templates": [
+    {
+      "name": "Events",
+      "description": "Ordne Konzert- und Eventkommunikation nach Ticketprozess, Reiseplanung und organisatorischen Informationen.",
+      "children": [
+        {
+          "name": "Tickets",
+          "description": "Alles zum Ticketkauf und Einlass.",
+          "children": [
+            { "name": "Bestellung", "description": "Bestell- und Zahlungsbestätigungen, Rechnungen." },
+            { "name": "Versand", "description": "Ticket-Versandhinweise, Abholinfos, PDF-Tickets." },
+            { "name": "Einlass", "description": "QR-Codes, Zugangsbeschreibungen und Sitzplatzdetails." }
+          ]
+        },
+        {
+          "name": "Reise",
+          "description": "Begleitende Reisevorbereitung zum Event.",
+          "children": [
+            { "name": "Anreise", "description": "Flug-, Bahn- oder Auto-Informationen zum Event." },
+            { "name": "Unterkunft", "description": "Hotel- oder Airbnb-Bestätigungen rund um das Event." }
+          ]
+        },
+        {
+          "name": "Organisation",
+          "description": "Kommunikation mit Veranstaltern, Zeitplänen und Zusatzinfos.",
+          "children": [
+            { "name": "Kommunikation", "description": "Allgemeiner Schriftverkehr, Updates, Support." },
+            { "name": "Infos", "description": "FAQ, Ablaufpläne, Hinweise zur Veranstaltung." }
+          ]
+        }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "datum",
+          "description": "Verwende 'datum-YYYY-MM-TT' für das konkrete Eventdatum."
+        },
+        {
+          "name": "veranstalter",
+          "description": "Nutze 'veranstalter-NAME' für den Hauptveranstalter (ein Wort)."
+        }
+      ]
+    },
+    {
+      "name": "Bestellungen",
+      "description": "Alle Einkäufe und Serviceaufträge, strukturiert nach Prozessschritt.",
+      "children": [
+        {
+          "name": "Onlinehandel",
+          "description": "E-Commerce und Plattformbestellungen.",
+          "children": [
+            { "name": "Auftragsbestaetigung", "description": "Bestätigungen direkt nach dem Kauf." },
+            { "name": "Versand", "description": "Versandankündigungen, Tracking, Liefertermine." },
+            { "name": "Ruecksendung", "description": "Retouren, Widerruf und Reklamationen." }
+          ]
+        },
+        {
+          "name": "Rechnungen",
+          "description": "Rechnungen, Zahlungsaufforderungen und Quittungen.",
+          "children": [
+            { "name": "Rechnung", "description": "Rechnungsdokumente mit Zahlungsziel." },
+            { "name": "Zahlung", "description": "Zahlungsbestätigungen, Mahnungen oder Gutschriften." }
+          ]
+        },
+        {
+          "name": "Service",
+          "description": "Supportvorgänge rund um Bestellungen.",
+          "children": [
+            { "name": "Support", "description": "Kundendienst, Rückfragen, Problemlösungen." },
+            { "name": "Garantie", "description": "Garantiefälle, Reparatur- oder Austauschprozesse." }
+          ]
+        }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "haendler",
+          "description": "Nutze 'haendler-NAME' mit kompaktem Händlernamen (ein Wort)."
+        },
+        {
+          "name": "belegart",
+          "description": "Nutze 'belegart-bestaetigung', 'belegart-rechnung', 'belegart-versand'."
+        }
+      ]
+    },
+    {
+      "name": "Reisen",
+      "description": "Alle Reiseunterlagen nach Transport, Unterkunft und Aktivitäten ordnen.",
+      "children": [
+        {
+          "name": "Transport",
+          "description": "Tickets und Mobilität.",
+          "children": [
+            { "name": "Flug", "description": "Boardingpässe, Buchungen, Airline-Kommunikation." },
+            { "name": "Bahn", "description": "Fahrkarten, Reservierungen, Bahn-Infos." },
+            { "name": "Auto", "description": "Mietwagen, Carsharing, Parken." }
+          ]
+        },
+        {
+          "name": "Unterkunft",
+          "description": "Hotels, Ferienwohnungen und Abrechnung.",
+          "children": [
+            { "name": "Buchung", "description": "Reservierungsbestätigungen und Check-in-Infos." },
+            { "name": "Rechnung", "description": "Rechnungen, Zahlungsbelege, Quittungen." },
+            { "name": "Service", "description": "Kommunikation mit der Unterkunft, Sonderwünsche." }
+          ]
+        },
+        {
+          "name": "Aktivitaeten",
+          "description": "Ausflüge, Meetings und Zusatzleistungen vor Ort.",
+          "children": [
+            { "name": "Planung", "description": "Agenda, Tickets für Aktivitäten, Reservierungen." }
+          ]
+        }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "reiseort",
+          "description": "Nutze 'reiseort-ORT' als Zielort (ein Wort)."
+        },
+        {
+          "name": "transport",
+          "description": "Nutze 'transport-flug', 'transport-bahn', 'transport-auto', 'transport-hotelshuttle'."
+        }
+      ]
+    },
+    {
+      "name": "Projekte",
+      "description": "Projektkommunikation nach Dokumenttyp und Phase strukturieren.",
+      "children": [
+        {
+          "name": "Kommunikation",
+          "description": "Laufende Abstimmung und Informationen.",
+          "children": [
+            { "name": "Status", "description": "Statusberichte, wöchentliche Updates." },
+            { "name": "Anfrage", "description": "Fragen, Klärungen, Supporttickets." }
+          ]
+        },
+        {
+          "name": "Vertraege",
+          "description": "Rechtliche Dokumente und Freigaben.",
+          "children": [
+            { "name": "Dokumente", "description": "Verträge, NDAs, Angebotsunterlagen." },
+            { "name": "Freigabe", "description": "Unterschriften, Prüfungen, Compliance." }
+          ]
+        },
+        {
+          "name": "Planung",
+          "description": "Roadmaps, Aufgaben, Sprintplanung.",
+          "children": [
+            { "name": "Roadmap", "description": "Zeitpläne, Releases, Meilensteine." },
+            { "name": "Meeting", "description": "Agenda, Protokolle, To-Dos." }
+          ]
+        }
+      ],
+      "tag_guidelines": [
+        {
+          "name": "projekt",
+          "description": "Wähle 'projekt-NAME' als konzentrierten Projektschlüssel (ein Wort)."
+        },
+        {
+          "name": "phase",
+          "description": "Nutze 'phase-planung', 'phase-review', 'phase-umsetzung', 'phase-abschluss'."
+        }
+      ]
+    }
+  ],
+  "tag_slots": [
+    {
+      "name": "Komplexität",
+      "aliases": ["Komplexitaet", "komplexitaet", "complexity"],
+      "description": "Wie aufwendig ist die Bearbeitung der E-Mail?",
+      "options": ["niedrig", "mittel", "hoch", "kritisch"]
+    },
+    {
+      "name": "Priorität",
+      "aliases": ["Prioritaet", "prioritaet", "priority", "prio"],
+      "description": "Wie dringend ist eine Reaktion?",
+      "options": ["niedrig", "normal", "hoch", "sofort"]
+    },
+    {
+      "name": "Handlungsauftrag",
+      "aliases": ["Handlung", "auftrag", "action"],
+      "description": "Welche Aktion wird erwartet?",
+      "options": ["archivieren", "pruefen", "antworten", "planen", "buchen"]
+    }
+  ]
+}

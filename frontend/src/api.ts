@@ -17,6 +17,15 @@ export interface NewFolderProposal {
   score_hint?: number
 }
 
+export interface SuggestionCategory {
+  label?: string
+  matched_folder?: string | null
+  confidence?: number | null
+  reason?: string | null
+}
+
+export type SuggestionScope = 'open' | 'all'
+
 export interface Suggestion {
   id?: number
   message_uid: string
@@ -26,9 +35,12 @@ export interface Suggestion {
   date?: string | null
   ranked?: SuggestionScore[]
   proposal?: NewFolderProposal | null
+  category?: SuggestionCategory | null
+  tags?: string[] | null
   status?: string
   decision?: string | null
   move_status?: string | null
+  move_error?: string | null
   dry_run_result?: Record<string, unknown> | null
 }
 
@@ -48,6 +60,22 @@ export interface PendingOverview {
   pending: PendingMail[]
   displayed_pending?: number
   list_limit?: number
+  limit_active?: boolean
+}
+
+export interface TagExample {
+  message_uid: string
+  subject: string
+  from_addr?: string | null
+  folder?: string | null
+  date?: string | null
+}
+
+export interface TagSuggestion {
+  tag: string
+  occurrences: number
+  last_seen?: string | null
+  examples: TagExample[]
 }
 
 export interface OllamaModelStatus {
@@ -69,16 +97,62 @@ export interface OllamaStatus {
   models: OllamaModelStatus[]
 }
 
+export interface FolderChildConfig {
+  name: string
+  description?: string | null
+  children: FolderChildConfig[]
+}
+
+export interface TagGuidelineConfig {
+  name: string
+  description?: string | null
+}
+
+export interface FolderTemplateConfig {
+  name: string
+  description?: string | null
+  children: FolderChildConfig[]
+  tag_guidelines: TagGuidelineConfig[]
+}
+
+export interface TagSlotConfig {
+  name: string
+  description?: string | null
+  options: string[]
+  aliases: string[]
+}
+
+export interface ContextTagConfig {
+  name: string
+  description?: string | null
+  folder: string
+}
+
+export interface CatalogDefinition {
+  folder_templates: FolderTemplateConfig[]
+  tag_slots: TagSlotConfig[]
+}
+
 export interface AppConfig {
   dev_mode: boolean
   pending_list_limit: number
   protected_tag: string | null
   processed_tag: string | null
+  ai_tag_prefix: string | null
   ollama?: OllamaStatus | null
+  folder_templates: FolderTemplateConfig[]
+  tag_slots: TagSlotConfig[]
+  context_tags: ContextTagConfig[]
 }
 
 interface ModeResponse { mode: MoveMode }
-interface SuggestionsResponse { suggestions: Suggestion[] }
+export interface SuggestionsResponse {
+  suggestions: Suggestion[]
+  open_count: number
+  decided_count: number
+  error_count: number
+  total_count: number
+}
 export interface MoveResponse {
   ok: boolean
   dry_run: boolean
@@ -183,17 +257,32 @@ export async function getFolders(): Promise<FolderSelectionResponse> {
   return request('/api/folders')
 }
 
-export async function getSuggestions(): Promise<Suggestion[]> {
-  const data = await request<SuggestionsResponse>('/api/suggestions')
-  return data.suggestions
+export async function getSuggestions(scope: SuggestionScope = 'open'): Promise<SuggestionsResponse> {
+  const query = scope === 'all' ? '?include=all' : ''
+  return request<SuggestionsResponse>(`/api/suggestions${query}`)
 }
 
 export async function getPendingOverview(): Promise<PendingOverview> {
   return request<PendingOverview>('/api/pending')
 }
 
+export async function getTagSuggestions(): Promise<TagSuggestion[]> {
+  return request<TagSuggestion[]>('/api/tags')
+}
+
 export async function getAppConfig(): Promise<AppConfig> {
   return request<AppConfig>('/api/config')
+}
+
+export async function getCatalogDefinition(): Promise<CatalogDefinition> {
+  return request<CatalogDefinition>('/api/catalog')
+}
+
+export async function updateCatalogDefinition(payload: CatalogDefinition): Promise<CatalogDefinition> {
+  return request<CatalogDefinition>('/api/catalog', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function decide(message_uid: string, target_folder: string, decision: 'accept' | 'reject', dry_run = false): Promise<DecideResponse | MoveResponse> {

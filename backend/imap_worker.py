@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import email
 import logging
+import re
 from email import policy
 from typing import Sequence
 
@@ -15,6 +16,7 @@ from classifier import (
     propose_new_folder_if_needed,
     score_profiles,
 )
+from configuration import max_tag_total
 from database import (
     get_mode,
     get_monitored_folders,
@@ -27,7 +29,7 @@ from database import (
     save_suggestion,
 )
 from feedback import update_profiles_on_accept
-from mailbox import add_message_tag, fetch_recent_messages, move_message
+from mailbox import add_message_tag, fetch_recent_messages, list_folders, move_message
 from models import Suggestion
 from ollama_service import ensure_ollama_ready
 from settings import S
@@ -35,6 +37,53 @@ from utils import extract_text, subject_from, thread_headers
 
 
 logger = logging.getLogger(__name__)
+
+
+_TAG_SANITIZE_RE = re.compile(r"[^0-9A-Za-z._+/:-]+")
+
+
+def _format_ai_tag(label: str) -> str | None:
+    cleaned = label.strip()
+    if not cleaned:
+        return None
+    normalized = re.sub(r"\s+", "-", cleaned)
+    normalized = _TAG_SANITIZE_RE.sub("", normalized)
+    normalized = normalized.strip("-/")[:48]
+    if not normalized:
+        return None
+    prefix = S.IMAP_AI_TAG_PREFIX.strip()
+    if prefix:
+        base = prefix.strip("/")
+        if not base:
+            return normalized
+        return f"{base}/{normalized}"
+    return normalized
+
+
+def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
+    if not raw_tags:
+        return
+    processed_marker = (S.IMAP_PROCESSED_TAG or "").strip()
+    unique: list[str] = []
+    limit = max_tag_total()
+    for tag in raw_tags:
+        if not isinstance(tag, str):
+            continue
+        formatted = _format_ai_tag(tag)
+        if not formatted:
+            continue
+        if processed_marker and formatted == processed_marker:
+            continue
+        if formatted in unique:
+            continue
+        unique.append(formatted)
+        if len(unique) >= limit:
+            break
+    if not unique:
+        return
+    logger.debug("Adding AI Tags %s to %s", unique, uid)
+    for tag in unique:
+        add_message_tag(uid, folder, tag)
 
 
 async def process_loop() -> None:
@@ -60,6 +109,7 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
         configured = get_monitored_folders()
         target_folders = configured or [S.IMAP_INBOX]
     messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
+    all_folders = await asyncio.to_thread(list_folders)
     processed = 0
     for folder, payloads in messages.items():
         for uid, meta in payloads.items():
@@ -68,7 +118,7 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
             if not raw_bytes or is_processed(folder, uid_str):
                 continue
             try:
-                await handle_message(uid_str, raw_bytes, folder)
+                await handle_message(uid_str, raw_bytes, folder, all_folders)
                 mark_processed(folder, uid_str)
                 processed += 1
             except Exception:  # pragma: no cover - defensive background handling
@@ -76,31 +126,58 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
     return processed
 
 
-async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
+async def handle_message(
+    uid: str,
+    raw_bytes: bytes,
+    src_folder: str,
+    folder_structure: Sequence[str] | None = None,
+) -> None:
     msg = email.message_from_bytes(raw_bytes, policy=policy.default)
     subject, from_addr = subject_from(msg)
     thread = thread_headers(msg)
     text = extract_text(msg)
     prompt = build_embedding_prompt(subject or "", from_addr or "", text)
 
+    folder_profiles = list_folder_profiles()
     profiles = [
         {"name": fp.name, "centroid": fp.centroid}
-        for fp in list_folder_profiles()
+        for fp in folder_profiles
         if fp.centroid
     ]
 
     embedding = await embed(prompt)
     ranked_pairs = score_profiles(embedding, profiles) if embedding else []
-    refined_ranked, proposal = await classify_with_model(
+    folder_names = [fp.name for fp in folder_profiles if fp.name]
+    structure_candidates: list[str] = []
+    if folder_structure:
+        structure_candidates.extend(
+            str(name).strip()
+            for name in folder_structure
+            if isinstance(name, str) and str(name).strip()
+        )
+    structure_candidates.extend(name for name in folder_names if name)
+    structure_overview = list(dict.fromkeys(structure_candidates))
+
+    refined_ranked, proposal, category, tags = await classify_with_model(
         subject or "",
         from_addr or "",
         text,
         ranked_pairs,
+        structure_overview,
         parent_hint=src_folder,
     )
-    top_score = ranked_pairs[0][1] if ranked_pairs else 0.0
-    if not proposal:
-        proposal = await propose_new_folder_if_needed(top_score, parent_hint=src_folder)
+    match_score = refined_ranked[0]["score"] if refined_ranked else 0.0
+    match_rating = refined_ranked[0].get("rating", match_score * 100.0) if refined_ranked else 0.0
+    meets_threshold = match_rating >= float(S.MIN_MATCH_SCORE or 0)
+
+    if meets_threshold and not proposal:
+        proposal = await propose_new_folder_if_needed(
+            match_score,
+            subject or "",
+            from_addr,
+            parent_hint=src_folder,
+            category=category,
+        )
 
     suggestion = Suggestion(
         message_uid=uid,
@@ -111,15 +188,18 @@ async def handle_message(uid: str, raw_bytes: bytes, src_folder: str) -> None:
         thread_id=thread.get("message_id"),
         ranked=refined_ranked,
         proposal=proposal,
+        category=category,
+        tags=tags or None,
         status="open",
         move_status="pending",
     )
     save_suggestion(suggestion)
     add_message_tag(uid, src_folder, S.IMAP_PROCESSED_TAG)
+    _apply_ai_tags(uid, src_folder, tags)
 
     mode = get_mode() or S.MOVE_MODE
     should_auto_move = mode == "AUTO" and (
-        (top_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
+        (match_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
     )
 
     if should_auto_move and refined_ranked:

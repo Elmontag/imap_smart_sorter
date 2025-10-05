@@ -2,7 +2,7 @@
 version: "3.9"
 services:
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.12.3
     container_name: imap_smart_sorter_v2-ollama-1
     ports: ["11434:11434"]
     volumes: [ "ollama:/root/.ollama" ]
