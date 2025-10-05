@@ -13,6 +13,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi import WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from uvicorn.protocols.utils import ClientDisconnected
 
 from configuration import (
     get_context_tag_guidelines,
@@ -175,6 +176,7 @@ class FolderChildConfig(BaseModel):
     name: str = Field(..., min_length=1)
     description: str | None = None
     children: List["FolderChildConfig"] = Field(default_factory=list)
+    tag_guidelines: List["TagGuidelineConfig"] = Field(default_factory=list)
 
 
 class TagGuidelineConfig(BaseModel):
@@ -224,6 +226,13 @@ def _child_to_config(child: Any) -> FolderChildConfig:
         name=str(getattr(child, "name", "")).strip(),
         description=(getattr(child, "description", None) or None),
         children=[_child_to_config(grand) for grand in getattr(child, "children", []) or []],
+        tag_guidelines=[
+            TagGuidelineConfig(
+                name=str(getattr(guideline, "name", "")).strip(),
+                description=(getattr(guideline, "description", None) or None),
+            )
+            for guideline in getattr(child, "tag_guidelines", []) or []
+        ],
     )
 
 
@@ -248,6 +257,13 @@ def _serialise_child(child: FolderChildConfig) -> Dict[str, Any]:
         "name": child.name.strip(),
         "description": description,
         "children": [_serialise_child(grand) for grand in child.children],
+        "tag_guidelines": [
+            {
+                "name": guideline.name.strip(),
+                "description": (guideline.description or "").strip(),
+            }
+            for guideline in child.tag_guidelines
+        ],
     }
 
 
@@ -591,9 +607,16 @@ async def ws_stream(ws: WebSocket) -> None:
             try:
                 snapshot = await _pending_overview()
                 await ws.send_json({"type": "pending_overview", "payload": snapshot.dict()})
+            except (WebSocketDisconnect, ClientDisconnected):
+                logger.debug("WebSocket client disconnected during stream")
+                break
             except Exception as exc:  # pragma: no cover - network/IMAP interaction
                 logger.warning("Failed to stream pending overview: %s", exc)
-                await ws.send_json({"type": "pending_error", "error": str(exc)})
+                try:
+                    await ws.send_json({"type": "pending_error", "error": str(exc)})
+                except (WebSocketDisconnect, ClientDisconnected):
+                    logger.debug("WebSocket client disconnected while reporting error")
+                    break
             await asyncio.sleep(5)
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")

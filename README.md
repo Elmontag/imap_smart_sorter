@@ -89,8 +89,8 @@ MIN_MATCH_SCORE=60
 - `backend/llm_config.json` bündelt sowohl den Ordnerkatalog als auch die Tag-Slots. Die verschachtelte Struktur
   erlaubt beliebige Unterebenen (z. B. `Bestellungen/Onlinehandel/Versand`).
 - Über `tag_slots` legst du benannte Slots samt erlaubter Optionen und Aliase fest. Die Reihenfolge der Einträge
-  entspricht der Darstellung im Frontend. Zusätzliche Kontext-Tags werden pro Top-Level über `tag_guidelines`
-  beschrieben (z. B. `veranstalter-NAME`, `transport-bahn`).
+  entspricht der Darstellung im Frontend. Zusätzliche Kontext-Tags werden pro Ordner (Bereich wie Unterordner)
+  über `tag_guidelines` beschrieben (z. B. `veranstalter-NAME`, `ticketstatus-zugestellt`).
 - Der `/api/config`-Endpunkt liefert die komplette Katalogkonfiguration (`folder_templates`, `tag_slots`, `context_tags`),
   sodass auch externe Tools auf die Vorgaben zugreifen können. Änderungen an `llm_config.json` werden beim nächsten Request
   automatisch berücksichtigt.
@@ -106,7 +106,7 @@ MIN_MATCH_SCORE=60
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
   Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
-- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Scan-Controller. Das Frontend nutzt die Endpunkte für die neuen Buttons „Scan starten“ und „Scan stoppen“ und zeigt letzte Laufzeiten inklusive Fehlern an.
+- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Scan-Controller. Das Frontend bietet zusätzlich einen Button „Einmalig scannen“ (via `/api/rescan`), sodass sich eine sofortige Analyse ohne Dauer-Scan starten lässt. Laufende Dauer-Scans blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Scan starten“ und „Scan stoppen“ für die kontinuierliche Ausführung verfügbar.
 
 ## Lokale Entwicklung
 

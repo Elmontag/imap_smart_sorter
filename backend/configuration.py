@@ -16,6 +16,7 @@ class FolderChild:
     name: str
     description: str
     children: List["FolderChild"] = field(default_factory=list)
+    tag_guidelines: List["ContextTagGuideline"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ def get_folder_templates() -> List[FolderTemplate]:
         description = str(entry.get("description") or "").strip()
         if not name:
             continue
-        def _parse_children(payload: object) -> List[FolderChild]:
+        def _parse_children(payload: object, parent_path: str) -> List[FolderChild]:
             parsed: List[FolderChild] = []
             if not isinstance(payload, list):
                 return parsed
@@ -98,18 +99,35 @@ def get_folder_templates() -> List[FolderTemplate]:
                 child_desc = str(child.get("description") or "").strip()
                 if not child_name:
                     continue
-                nested_raw = child.get("children")
-                nested_children = _parse_children(nested_raw) if isinstance(nested_raw, list) else []
+                full_path = f"{parent_path}/{child_name}" if parent_path else child_name
+                nested_children = _parse_children(child.get("children"), full_path)
+                guidelines: List[ContextTagGuideline] = []
+                guidelines_raw = child.get("tag_guidelines")
+                if isinstance(guidelines_raw, list):
+                    for item in guidelines_raw:
+                        if not isinstance(item, dict):
+                            continue
+                        tag_name = str(item.get("name") or "").strip()
+                        tag_description = str(item.get("description") or "").strip()
+                        if tag_name:
+                            guidelines.append(
+                                ContextTagGuideline(
+                                    name=tag_name,
+                                    description=tag_description,
+                                    folder=full_path,
+                                )
+                            )
                 parsed.append(
                     FolderChild(
                         name=child_name,
                         description=child_desc,
                         children=nested_children,
+                        tag_guidelines=guidelines,
                     )
                 )
             return parsed
 
-        children = _parse_children(entry.get("children"))
+        children = _parse_children(entry.get("children"), name)
         tag_guidelines: List[ContextTagGuideline] = []
         guidelines_raw = entry.get("tag_guidelines")
         if isinstance(guidelines_raw, list):
@@ -157,8 +175,17 @@ def get_tag_slots() -> List[TagSlot]:
 def get_context_tag_guidelines() -> List[ContextTagGuideline]:
     templates = get_folder_templates()
     guidelines: List[ContextTagGuideline] = []
+
+    def _collect(children: Sequence[FolderChild]) -> None:
+        for child in children:
+            guidelines.extend(child.tag_guidelines)
+            if child.children:
+                _collect(child.children)
+
     for template in templates:
         guidelines.extend(template.tag_guidelines)
+        if template.children:
+            _collect(template.children)
     return guidelines
 
 
@@ -172,6 +199,18 @@ def folder_templates_summary() -> str:
         rendered: List[str] = []
         for child in children:
             rendered.append(f"{indent}- {child.name}: {child.description or 'keine Beschreibung'}")
+            if child.tag_guidelines:
+                child_tags = "; ".join(
+                    f"{guideline.name} → {guideline.description}"
+                    for guideline in child.tag_guidelines
+                    if guideline.description
+                )
+                if child_tags:
+                    rendered.append(f"{indent}  Kontext-Tags: {child_tags}")
+                else:
+                    rendered.append(
+                        f"{indent}  Kontext-Tags: {', '.join(guideline.name for guideline in child.tag_guidelines)}"
+                    )
             if child.children:
                 rendered.extend(_render_children(child.children, indent + "  "))
         return rendered

@@ -7,6 +7,7 @@ import {
   getFolders,
   getMode,
   getScanStatus,
+  rescan,
   setMode,
   startScan,
   stopScan,
@@ -56,6 +57,7 @@ export default function DashboardPage(): JSX.Element {
   const [status, setStatus] = useState<StatusMessage | null>(null)
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
   const [scanBusy, setScanBusy] = useState(false)
+  const [rescanBusy, setRescanBusy] = useState(false)
   const lastFinishedRef = useRef<string | null>(null)
 
   const loadMode = useCallback(async () => {
@@ -158,6 +160,24 @@ export default function DashboardPage(): JSX.Element {
       setScanBusy(false)
     }
   }
+
+  const handleRescan = useCallback(async () => {
+    setRescanBusy(true)
+    try {
+      const folders = selectedFolders.length ? selectedFolders : undefined
+      const response = await rescan(folders)
+      const noun = response.new_suggestions === 1 ? 'Vorschlag' : 'Vorschläge'
+      setStatus({
+        kind: 'success',
+        message: `Einmaliger Scan abgeschlossen (${response.new_suggestions} ${noun}).`,
+      })
+      void refresh()
+    } catch (err) {
+      setStatus({ kind: 'error', message: `Einmaliger Scan fehlgeschlagen: ${toMessage(err)}` })
+    } finally {
+      setRescanBusy(false)
+    }
+  }, [refresh, selectedFolders])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
@@ -320,11 +340,19 @@ export default function DashboardPage(): JSX.Element {
                 <h2>Scan-Status</h2>
                 <p className="scan-status-subline">
                   {scanSummary.active
-                    ? 'Der automatische Scan läuft kontinuierlich.'
-                    : 'Scans können bei Bedarf gestartet werden.'}
+                    ? 'Der automatische Scan läuft kontinuierlich. Einmalige Scans sind währenddessen deaktiviert.'
+                    : 'Starte bei Bedarf den Dauer-Scan oder führe einen Einmal-Scan für eine sofortige Analyse aus.'}
                 </p>
               </div>
               <div className="scan-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handleRescan}
+                  disabled={rescanBusy || scanBusy || scanSummary.active}
+                >
+                  {rescanBusy ? 'Analysiere…' : 'Einmalig scannen'}
+                </button>
                 <button
                   type="button"
                   className="primary"

@@ -101,6 +101,7 @@ export interface FolderChildConfig {
   name: string
   description?: string | null
   children: FolderChildConfig[]
+  tag_guidelines: TagGuidelineConfig[]
 }
 
 export interface TagGuidelineConfig {

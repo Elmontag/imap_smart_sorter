@@ -24,6 +24,7 @@ interface FolderNodeDraft {
   name: string
   description: string
   children: FolderNodeDraft[]
+  tag_guidelines: TagGuidelineDraft[]
 }
 
 interface TagGuidelineDraft {
@@ -62,7 +63,7 @@ type GuidelineField = 'name' | 'description'
 type TemplateField = 'name' | 'description'
 type TagSlotField = 'name' | 'description'
 
-type GuidelineChange = (templateId: string, guidelineId: string, field: GuidelineField, value: string) => void
+type GuidelineChange = (guidelineId: string, field: GuidelineField, value: string) => void
 type NodeChange = (nodeId: string, field: NodeField, value: string) => void
 
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
@@ -72,6 +73,7 @@ const createFolderNode = (name = 'Neuer Ordner'): FolderNodeDraft => ({
   name,
   description: '',
   children: [],
+  tag_guidelines: [],
 })
 
 const createTemplateDraft = (): TemplateDraft => ({
@@ -101,6 +103,11 @@ const toNodeDraft = (node: FolderChildConfig): FolderNodeDraft => ({
   name: node.name,
   description: node.description ?? '',
   children: (node.children ?? []).map(toNodeDraft),
+  tag_guidelines: (node.tag_guidelines ?? []).map(guideline => ({
+    id: createId(),
+    name: guideline.name,
+    description: guideline.description ?? '',
+  })),
 })
 
 const toTemplateDraft = (template: FolderTemplateConfig): TemplateDraft => ({
@@ -131,6 +138,12 @@ const toDraft = (definition: CatalogDefinition): CatalogDraft => ({
 const normalizeNodeConfig = (node: FolderChildConfig): FolderChildConfig => ({
   name: node.name.trim(),
   description: (node.description ?? '').trim(),
+  tag_guidelines: (node.tag_guidelines ?? [])
+    .map(guideline => ({
+      name: guideline.name.trim(),
+      description: (guideline.description ?? '').trim(),
+    }))
+    .filter(guideline => guideline.name.length > 0),
   children: (node.children ?? []).map(normalizeNodeConfig),
 })
 
@@ -157,6 +170,10 @@ const normalizeCatalog = (definition: CatalogDefinition): CatalogDefinition => (
 const nodeDraftToConfig = (node: FolderNodeDraft): FolderChildConfig => ({
   name: node.name,
   description: node.description,
+  tag_guidelines: node.tag_guidelines.map(guideline => ({
+    name: guideline.name,
+    description: guideline.description,
+  })),
   children: node.children.map(nodeDraftToConfig),
 })
 
@@ -465,63 +482,51 @@ export default function CatalogEditorPage(): JSX.Element {
     [selectFolder],
   )
 
-  const handleAddGuideline = useCallback((templateId: string) => {
-    setDraft(current => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        folder_templates: current.folder_templates.map(template =>
-          template.id === templateId
-            ? { ...template, tag_guidelines: [...template.tag_guidelines, createGuidelineDraft()] }
-            : template,
-        ),
-      }
-    })
-  }, [])
+  const updateSelectedGuidelines = useCallback(
+    (mutator: (guidelines: TagGuidelineDraft[]) => TagGuidelineDraft[]) => {
+      setDraft(current => {
+        if (!current || !selectedFolder) {
+          return current
+        }
+        return {
+          ...current,
+          folder_templates: current.folder_templates.map(template => {
+            if (template.id !== selectedFolder.templateId) {
+              return template
+            }
+            if (selectedFolder.kind === 'template') {
+              return {
+                ...template,
+                tag_guidelines: mutator(template.tag_guidelines),
+              }
+            }
+            return {
+              ...template,
+              children: updateNodeList(template.children, selectedFolder.nodeId, node => ({
+                ...node,
+                tag_guidelines: mutator(node.tag_guidelines),
+              })),
+            }
+          }),
+        }
+      })
+    },
+    [selectedFolder],
+  )
 
-  const handleGuidelineChange = useCallback<GuidelineChange>((templateId, guidelineId, field, value) => {
-    setDraft(current => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        folder_templates: current.folder_templates.map(template => {
-          if (template.id !== templateId) {
-            return template
-          }
-          return {
-            ...template,
-            tag_guidelines: template.tag_guidelines.map(guideline =>
-              guideline.id === guidelineId ? { ...guideline, [field]: value } : guideline,
-            ),
-          }
-        }),
-      }
-    })
-  }, [])
+  const handleGuidelineAdd = useCallback(() => {
+    updateSelectedGuidelines(guidelines => [...guidelines, createGuidelineDraft()])
+  }, [updateSelectedGuidelines])
 
-  const handleGuidelineRemove = useCallback((templateId: string, guidelineId: string) => {
-    setDraft(current => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        folder_templates: current.folder_templates.map(template => {
-          if (template.id !== templateId) {
-            return template
-          }
-          return {
-            ...template,
-            tag_guidelines: template.tag_guidelines.filter(guideline => guideline.id !== guidelineId),
-          }
-        }),
-      }
-    })
-  }, [])
+  const handleGuidelineChange = useCallback<GuidelineChange>((guidelineId, field, value) => {
+    updateSelectedGuidelines(guidelines =>
+      guidelines.map(guideline => (guideline.id === guidelineId ? { ...guideline, [field]: value } : guideline)),
+    )
+  }, [updateSelectedGuidelines])
+
+  const handleGuidelineRemove = useCallback((guidelineId: string) => {
+    updateSelectedGuidelines(guidelines => guidelines.filter(guideline => guideline.id !== guidelineId))
+  }, [updateSelectedGuidelines])
 
   const handleNodeChange = useCallback<NodeChange>((nodeId, field, value) => {
     setDraft(current => {
@@ -768,6 +773,44 @@ export default function CatalogEditorPage(): JSX.Element {
     return draft.tag_slots.find(slot => slot.id === selectedTagSlotId) ?? null
   }, [draft, selectedTagSlotId])
 
+  const selectedGuidelines = useMemo(() => {
+    if (!selectedTemplate || !selectedFolder) {
+      return []
+    }
+    if (selectedFolder.kind === 'template') {
+      return selectedTemplate.tag_guidelines
+    }
+    if (selectedNode) {
+      return selectedNode.tag_guidelines
+    }
+    return []
+  }, [selectedFolder, selectedNode, selectedTemplate])
+
+  const selectedGuidelinePath = useMemo(() => {
+    if (!selectedTemplate || !selectedFolder) {
+      return null
+    }
+    if (selectedFolder.kind === 'template') {
+      return selectedTemplate.name || 'Bereich'
+    }
+    if (!selectedNode) {
+      return null
+    }
+    const segments = selectedNodePath.map(node => node.name || 'Ordner')
+    const base = selectedTemplate.name || 'Bereich'
+    return [base, ...segments].join(' / ')
+  }, [selectedFolder, selectedNode, selectedNodePath, selectedTemplate])
+
+  const canEditGuidelines = useMemo(
+    () =>
+      Boolean(
+        selectedTemplate &&
+          selectedFolder &&
+          (selectedFolder.kind === 'template' || selectedNode),
+      ),
+    [selectedFolder, selectedNode, selectedTemplate],
+  )
+
   const renderNavNode = (templateId: string, node: FolderNodeDraft, depth = 1): JSX.Element => {
     const isSelected = selectedFolder?.kind === 'node' && selectedFolder.nodeId === node.id
     const hasChildren = node.children.length > 0
@@ -893,57 +936,30 @@ export default function CatalogEditorPage(): JSX.Element {
       {loadError && <div className="status-banner error">{loadError}</div>}
 
       <div className="catalog-body">
-        <aside className="catalog-sidebar folder-nav">
-          <div className="catalog-sidebar-header">
-            <h2>Ordnerkatalog</h2>
-            <button type="button" className="ghost" onClick={handleAddTemplate} disabled={saving || loading}>
-              Bereich hinzufügen
-            </button>
-          </div>
-          {loading && <div className="placeholder">Katalog wird geladen…</div>}
-          {!loading && draft && draft.folder_templates.length === 0 && (
-            <div className="placeholder">Noch keine Bereiche definiert.</div>
-          )}
-          {!loading && draft && draft.folder_templates.length > 0 && (
-            <ul className="catalog-tree">{draft.folder_templates.map(renderFolderNav)}</ul>
-          )}
-        </aside>
+        <section className="catalog-section folder-section">
+          <aside className="catalog-sidebar folder-nav">
+            <div className="catalog-sidebar-header">
+              <h2>Ordnerkatalog</h2>
+              <button type="button" className="ghost" onClick={handleAddTemplate} disabled={saving || loading}>
+                Bereich hinzufügen
+              </button>
+            </div>
+            {loading && <div className="placeholder">Katalog wird geladen…</div>}
+            {!loading && draft && draft.folder_templates.length === 0 && (
+              <div className="placeholder">Noch keine Bereiche definiert.</div>
+            )}
+            {!loading && draft && draft.folder_templates.length > 0 && (
+              <ul className="catalog-tree">{draft.folder_templates.map(renderFolderNav)}</ul>
+            )}
+          </aside>
 
-        <aside className="catalog-sidebar tag-nav">
-          <div className="catalog-sidebar-header">
-            <h2>Tag-Slots</h2>
-            <button type="button" className="ghost" onClick={handleAddSlot} disabled={saving || loading}>
-              Slot hinzufügen
-            </button>
-          </div>
-          {loading && <div className="placeholder">Lade Tag-Konfiguration…</div>}
-          {!loading && draft && draft.tag_slots.length === 0 && (
-            <div className="placeholder">Noch keine Tag-Slots definiert.</div>
-          )}
-          {!loading && draft && draft.tag_slots.length > 0 && (
-            <ul className="tag-nav-list">
-              {draft.tag_slots.map(slot => (
-                <li key={slot.id}>
-                  <button
-                    type="button"
-                    className={`tag-nav-item${selectedTagSlotId === slot.id ? ' active' : ''}`}
-                    onClick={() => setSelectedTagSlotId(slot.id)}
-                  >
-                    {slot.name || 'Unbenannter Slot'}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </aside>
-
-        <section className="catalog-panels">
-          <div className="catalog-panel folder-detail">
-            <div className="catalog-panel-header">
-              <h2>Ordnerdetails</h2>
-              {selectedTemplate && selectedFolder?.kind === 'template' && (
-                <div className="catalog-panel-actions">
-                  <button
+          <div className="catalog-content folder-content">
+            <div className="catalog-panel folder-detail">
+              <div className="catalog-panel-header">
+                <h2>Ordnerdetails</h2>
+                {selectedTemplate && selectedFolder?.kind === 'template' && (
+                  <div className="catalog-panel-actions">
+                    <button
                     type="button"
                     className="ghost"
                     onClick={() => handleAddRootChild(selectedTemplate.id)}
@@ -1005,50 +1021,6 @@ export default function CatalogEditorPage(): JSX.Element {
                     rows={3}
                   />
                 </label>
-                <div className="catalog-guidelines">
-                  <div className="catalog-guidelines-header">
-                    <h3>Kontext-Tags</h3>
-                    <button
-                      type="button"
-                      className="link"
-                      onClick={() => handleAddGuideline(selectedTemplate.id)}
-                      disabled={saving}
-                    >
-                      Kontext-Tag hinzufügen
-                    </button>
-                  </div>
-                  {selectedTemplate.tag_guidelines.length === 0 && (
-                    <div className="muted">Noch keine Kontext-Tags definiert.</div>
-                  )}
-                  {selectedTemplate.tag_guidelines.map(guideline => (
-                    <div key={guideline.id} className="catalog-guideline">
-                      <input
-                        className="catalog-input"
-                        value={guideline.name}
-                        onChange={event =>
-                          handleGuidelineChange(selectedTemplate.id, guideline.id, 'name', event.target.value)
-                        }
-                        placeholder="Tag-Schlüssel"
-                      />
-                      <input
-                        className="catalog-input"
-                        value={guideline.description}
-                        onChange={event =>
-                          handleGuidelineChange(selectedTemplate.id, guideline.id, 'description', event.target.value)
-                        }
-                        placeholder="Beschreibung"
-                      />
-                      <button
-                        type="button"
-                        className="link danger"
-                        onClick={() => handleGuidelineRemove(selectedTemplate.id, guideline.id)}
-                        disabled={saving}
-                      >
-                        Entfernen
-                      </button>
-                    </div>
-                  ))}
-                </div>
               </div>
             )}
             {!loading && selectedTemplate && selectedFolder?.kind === 'node' && selectedNode && (
@@ -1081,14 +1053,107 @@ export default function CatalogEditorPage(): JSX.Element {
             {!loading && selectedTemplate && selectedFolder?.kind === 'node' && !selectedNode && (
               <div className="placeholder">Der ausgewählte Ordner konnte nicht gefunden werden.</div>
             )}
-          </div>
+            </div>
 
-          <div className="catalog-panel tag-detail">
-            <div className="catalog-panel-header">
-              <h2>Tag-Slot</h2>
-              {selectedTagSlot && (
+            <div className="catalog-panel guideline-detail">
+              <div className="catalog-panel-header">
+                <h2>Kontext-Tags</h2>
                 <button
                   type="button"
+                  className="link"
+                  onClick={handleGuidelineAdd}
+                  disabled={saving || loading || !canEditGuidelines}
+                >
+                  Kontext-Tag hinzufügen
+                </button>
+              </div>
+              {loading && <div className="placeholder">Katalog wird geladen…</div>}
+              {!loading && !selectedTemplate && (
+                <div className="placeholder">Wähle einen Bereich oder Ordner, um Kontext-Tags zu verwalten.</div>
+              )}
+              {!loading && selectedTemplate && selectedFolder?.kind === 'node' && !selectedNode && (
+                <div className="placeholder">Der ausgewählte Ordner konnte nicht gefunden werden.</div>
+              )}
+              {!loading && canEditGuidelines && (
+                <div className="catalog-guideline-section">
+                  {selectedGuidelinePath && (
+                    <div className="catalog-guideline-target">
+                      <span>{selectedGuidelinePath}</span>
+                    </div>
+                  )}
+                  <div className="catalog-guidelines">
+                    {selectedGuidelines.length === 0 && (
+                      <div className="muted">Noch keine Kontext-Tags definiert.</div>
+                    )}
+                    {selectedGuidelines.map(guideline => (
+                      <div key={guideline.id} className="catalog-guideline">
+                        <input
+                          className="catalog-input"
+                          value={guideline.name}
+                          onChange={event => handleGuidelineChange(guideline.id, 'name', event.target.value)}
+                          placeholder="Tag-Schlüssel"
+                        />
+                        <input
+                          className="catalog-input"
+                          value={guideline.description}
+                          onChange={event =>
+                            handleGuidelineChange(guideline.id, 'description', event.target.value)
+                          }
+                          placeholder="Beschreibung"
+                        />
+                        <button
+                          type="button"
+                          className="link danger"
+                          onClick={() => handleGuidelineRemove(guideline.id)}
+                          disabled={saving}
+                        >
+                          Entfernen
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="catalog-section tag-section">
+          <aside className="catalog-sidebar tag-nav">
+            <div className="catalog-sidebar-header">
+              <h2>Tag-Slots</h2>
+              <button type="button" className="ghost" onClick={handleAddSlot} disabled={saving || loading}>
+                Slot hinzufügen
+              </button>
+            </div>
+            {loading && <div className="placeholder">Lade Tag-Konfiguration…</div>}
+            {!loading && draft && draft.tag_slots.length === 0 && (
+              <div className="placeholder">Noch keine Tag-Slots definiert.</div>
+            )}
+            {!loading && draft && draft.tag_slots.length > 0 && (
+              <ul className="tag-nav-list">
+                {draft.tag_slots.map(slot => (
+                  <li key={slot.id}>
+                    <button
+                      type="button"
+                      className={`tag-nav-item${selectedTagSlotId === slot.id ? ' active' : ''}`}
+                      onClick={() => setSelectedTagSlotId(slot.id)}
+                    >
+                      {slot.name || 'Unbenannter Slot'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </aside>
+
+          <div className="catalog-content tag-content">
+            <div className="catalog-panel tag-detail">
+              <div className="catalog-panel-header">
+                <h2>Tag-Slot</h2>
+                {selectedTagSlot && (
+                  <button
+                    type="button"
                   className="link danger"
                   onClick={() => handleRemoveSlot(selectedTagSlot.id)}
                   disabled={saving || loading}
@@ -1183,7 +1248,8 @@ export default function CatalogEditorPage(): JSX.Element {
                   ))}
                 </div>
               </div>
-            )}
+              )}
+            </div>
           </div>
         </section>
       </div>
