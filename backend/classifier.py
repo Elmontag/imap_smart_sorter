@@ -374,19 +374,40 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
                 final_payload: Dict[str, Any] | None = None
                 latest_payload: Dict[str, Any] | None = None
 
+                decoder = json.JSONDecoder()
+                buffer = ""
+                done_received = False
+
                 async for line in response.aiter_lines():
                     if not line:
                         continue
-                    stripped = line.strip()
-                    if not stripped:
+                    chunk = line.strip()
+                    if not chunk:
                         continue
-                    try:
-                        data = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(data, dict) and data.get("error"):
-                        raise RuntimeError(str(data.get("error")))
-                    if isinstance(data, dict):
+                    if chunk.startswith("data:"):
+                        chunk = chunk[5:].strip()
+                        if not chunk:
+                            continue
+                    if chunk in {"[DONE]", "done"}:
+                        break
+
+                    buffer += chunk
+
+                    while buffer:
+                        working = buffer.lstrip()
+                        if working is not buffer:
+                            buffer = working
+                        try:
+                            data, offset = decoder.raw_decode(buffer)
+                        except json.JSONDecodeError:
+                            if len(buffer) > 262144:
+                                buffer = buffer[-262144:]
+                            break
+                        buffer = buffer[offset:]
+                        if isinstance(data, dict) and data.get("error"):
+                            raise RuntimeError(str(data.get("error")))
+                        if not isinstance(data, dict):
+                            continue
                         latest_payload = data
                         message = data.get("message")
                         if isinstance(message, dict):
@@ -397,7 +418,10 @@ async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
                             content_chunks.append(str(data["response"]))
                         if data.get("done"):
                             final_payload = data
+                            done_received = True
                             break
+                    if done_received:
+                        break
 
                 combined = "".join(content_chunks).strip()
                 if not combined and final_payload:
