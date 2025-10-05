@@ -358,13 +358,22 @@ def build_classification_prompt(
 
 
 async def _chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    payload = {
+        "model": S.CLASSIFIER_MODEL,
+        "messages": messages,
+        "format": "json",
+        "stream": False,
+    }
     async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(
-            f"{S.OLLAMA_HOST}/api/chat",
-            json={"model": S.CLASSIFIER_MODEL, "messages": messages, "format": "json"},
-        )
+        response = await client.post(f"{S.OLLAMA_HOST}/api/chat", json=payload)
         response.raise_for_status()
-        return response.json()
+        try:
+            return response.json()
+        except json.JSONDecodeError as exc:
+            preview = response.text[:200].strip()
+            raise RuntimeError(
+                "Ungültige JSON-Antwort von Ollama" + (f": {preview}" if preview else "")
+            ) from exc
 
 
 def _fallback_ranked(ranked: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
