@@ -40,3 +40,15 @@ class Processed(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     folder: str
     message_uid: str
+
+
+class FilterHit(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message_uid: str
+    rule_name: str
+    src_folder: Optional[str] = None
+    target_folder: str
+    applied_tags: Optional[List[str]] = Field(default=None, sa_column=Column(SAJSON))
+    matched_terms: Optional[List[str]] = Field(default=None, sa_column=Column(SAJSON))
+    message_date: Optional[datetime] = None
+    matched_at: datetime = Field(default_factory=datetime.utcnow)

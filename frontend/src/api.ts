@@ -134,6 +134,60 @@ export interface CatalogDefinition {
   tag_slots: TagSlotConfig[]
 }
 
+export type KeywordFilterField = 'subject' | 'sender' | 'body'
+
+export interface KeywordFilterMatchConfig {
+  mode: 'all' | 'any'
+  fields: KeywordFilterField[]
+  terms: string[]
+}
+
+export interface KeywordFilterDateConfig {
+  after?: string | null
+  before?: string | null
+}
+
+export interface KeywordFilterRuleConfig {
+  name: string
+  description?: string | null
+  enabled: boolean
+  target_folder: string
+  tags: string[]
+  match: KeywordFilterMatchConfig
+  date?: KeywordFilterDateConfig | null
+}
+
+export interface KeywordFilterConfig {
+  rules: KeywordFilterRuleConfig[]
+}
+
+export interface KeywordFilterActivityRule {
+  name: string
+  target_folder: string
+  count: number
+  last_match?: string | null
+  tags: string[]
+}
+
+export interface KeywordFilterRecentEntry {
+  message_uid: string
+  rule_name: string
+  src_folder?: string | null
+  target_folder: string
+  applied_tags: string[]
+  matched_terms: string[]
+  matched_at: string
+  message_date?: string | null
+}
+
+export interface KeywordFilterActivity {
+  total_hits: number
+  hits_last_24h: number
+  window_days: number
+  rules: KeywordFilterActivityRule[]
+  recent: KeywordFilterRecentEntry[]
+}
+
 export interface AppConfig {
   dev_mode: boolean
   pending_list_limit: number
@@ -309,6 +363,21 @@ export async function updateCatalogDefinition(payload: CatalogDefinition): Promi
     method: 'PUT',
     body: JSON.stringify(payload),
   })
+}
+
+export async function getKeywordFilters(): Promise<KeywordFilterConfig> {
+  return request<KeywordFilterConfig>('/api/filters')
+}
+
+export async function updateKeywordFilters(payload: KeywordFilterConfig): Promise<KeywordFilterConfig> {
+  return request<KeywordFilterConfig>('/api/filters', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getKeywordFilterActivity(): Promise<KeywordFilterActivity> {
+  return request<KeywordFilterActivity>('/api/filters/activity')
 }
 
 export async function decide(message_uid: string, target_folder: string, decision: 'accept' | 'reject', dry_run = false): Promise<DecideResponse | MoveResponse> {

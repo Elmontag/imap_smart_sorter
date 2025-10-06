@@ -26,14 +26,22 @@ from database import (
     mark_moved,
     mark_processed,
     record_decision,
+    record_filter_hit,
     save_suggestion,
 )
 from feedback import update_profiles_on_accept
-from mailbox import add_message_tag, fetch_recent_messages, list_folders, move_message
+from mailbox import (
+    add_message_tag,
+    ensure_folder_path,
+    fetch_recent_messages,
+    list_folders,
+    move_message,
+)
 from models import Suggestion
 from ollama_service import ensure_ollama_ready
 from settings import S
-from utils import extract_text, subject_from, thread_headers
+from keyword_filters import evaluate_filters
+from utils import extract_text, message_received_at, subject_from, thread_headers
 
 
 logger = logging.getLogger(__name__)
@@ -136,6 +144,43 @@ async def handle_message(
     subject, from_addr = subject_from(msg)
     thread = thread_headers(msg)
     text = extract_text(msg)
+    received_at = message_received_at(msg)
+
+    try:
+        match = evaluate_filters(subject or "", from_addr or "", text, received_at)
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Keyword filter evaluation failed for message %s", uid)
+        match = None
+    if match:
+        target_folder = match.rule.target_folder
+        logger.info(
+            "Routing message %s from %s via keyword rule '%s' to %s",
+            uid,
+            src_folder,
+            match.rule.name,
+            target_folder,
+        )
+        try:
+            await asyncio.to_thread(ensure_folder_path, target_folder)
+        except Exception:  # pragma: no cover - network interaction
+            logger.exception("Failed to ensure folder %s before routing message %s", target_folder, uid)
+            return
+        await asyncio.to_thread(move_message, uid, target_folder, src_folder)
+        processed_tag = (S.IMAP_PROCESSED_TAG or "").strip()
+        if processed_tag:
+            await asyncio.to_thread(add_message_tag, uid, target_folder, processed_tag)
+        for tag in match.rule.tags:
+            await asyncio.to_thread(add_message_tag, uid, target_folder, tag)
+        record_filter_hit(
+            message_uid=uid,
+            rule_name=match.rule.name,
+            src_folder=src_folder,
+            target_folder=target_folder,
+            applied_tags=match.rule.tags,
+            matched_terms=match.matched_terms,
+            message_date=received_at,
+        )
+        return
     prompt = build_embedding_prompt(subject or "", from_addr or "", text)
 
     folder_profiles = list_folder_profiles()
