@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import email
 import logging
+import os
 import re
 from email import policy
 from typing import Sequence
@@ -18,7 +19,6 @@ from classifier import (
 )
 from configuration import max_tag_total
 from database import (
-    get_mode,
     get_monitored_folders,
     is_processed,
     list_folder_profiles,
@@ -40,6 +40,7 @@ from mailbox import (
 from models import Suggestion
 from ollama_service import ensure_ollama_ready
 from settings import S
+from runtime_settings import resolve_mailbox_tags, resolve_move_mode
 from keyword_filters import evaluate_filters
 from utils import extract_text, message_received_at, subject_from, thread_headers
 
@@ -50,7 +51,7 @@ logger = logging.getLogger(__name__)
 _TAG_SANITIZE_RE = re.compile(r"[^0-9A-Za-z._+/:-]+")
 
 
-def _format_ai_tag(label: str) -> str | None:
+def _format_ai_tag(label: str, prefix: str | None) -> str | None:
     cleaned = label.strip()
     if not cleaned:
         return None
@@ -59,7 +60,6 @@ def _format_ai_tag(label: str) -> str | None:
     normalized = normalized.strip("-/")[:48]
     if not normalized:
         return None
-    prefix = S.IMAP_AI_TAG_PREFIX.strip()
     if prefix:
         base = prefix.strip("/")
         if not base:
@@ -71,13 +71,14 @@ def _format_ai_tag(label: str) -> str | None:
 def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
     if not raw_tags:
         return
-    processed_marker = (S.IMAP_PROCESSED_TAG or "").strip()
+    _, processed_marker, prefix = resolve_mailbox_tags()
+    processed_marker = (processed_marker or "").strip()
     unique: list[str] = []
     limit = max_tag_total()
     for tag in raw_tags:
         if not isinstance(tag, str):
             continue
-        formatted = _format_ai_tag(tag)
+        formatted = _format_ai_tag(tag, prefix)
         if not formatted:
             continue
         if processed_marker and formatted == processed_marker:
@@ -92,6 +93,20 @@ def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
     logger.debug("Adding AI Tags %s to %s", unique, uid)
     for tag in unique:
         add_message_tag(uid, folder, tag)
+
+
+def _should_autostart() -> bool:
+    raw = os.getenv("IMAP_WORKER_AUTOSTART")
+    if raw is None:
+        return False
+    normalized = raw.strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
+
+
+async def _idle_loop(interval: float) -> None:
+    delay = max(interval, 5.0)
+    while True:
+        await asyncio.sleep(delay)
 
 
 async def process_loop() -> None:
@@ -166,9 +181,10 @@ async def handle_message(
             logger.exception("Failed to ensure folder %s before routing message %s", target_folder, uid)
             return
         await asyncio.to_thread(move_message, uid, target_folder, src_folder)
-        processed_tag = (S.IMAP_PROCESSED_TAG or "").strip()
-        if processed_tag:
-            await asyncio.to_thread(add_message_tag, uid, target_folder, processed_tag)
+        _, processed_tag, _ = resolve_mailbox_tags()
+        processed_value = (processed_tag or "").strip()
+        if processed_value:
+            await asyncio.to_thread(add_message_tag, uid, target_folder, processed_value)
         for tag in match.rule.tags:
             await asyncio.to_thread(add_message_tag, uid, target_folder, tag)
         record_filter_hit(
@@ -239,10 +255,12 @@ async def handle_message(
         move_status="pending",
     )
     save_suggestion(suggestion)
-    add_message_tag(uid, src_folder, S.IMAP_PROCESSED_TAG)
+    _, processed_tag, _ = resolve_mailbox_tags()
+    if processed_tag:
+        add_message_tag(uid, src_folder, processed_tag)
     _apply_ai_tags(uid, src_folder, tags)
 
-    mode = get_mode() or S.MOVE_MODE
+    mode = resolve_move_mode()
     should_auto_move = mode == "AUTO" and (
         (match_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
     )
@@ -262,6 +280,13 @@ async def handle_message(
 if __name__ == "__main__":
     logging.basicConfig(level=getattr(logging, S.LOG_LEVEL.upper(), logging.INFO))
     try:
-        asyncio.run(process_loop())
+        if _should_autostart():
+            asyncio.run(process_loop())
+        else:
+            logger.info(
+                "Mailbox worker im Idle-Modus – setze IMAP_WORKER_AUTOSTART=1, um die Daueranalyse automatisch zu starten."
+            )
+            interval = float(getattr(S, "POLL_INTERVAL_SECONDS", 60))
+            asyncio.run(_idle_loop(interval))
     except KeyboardInterrupt:  # pragma: no cover - manual stop
         pass

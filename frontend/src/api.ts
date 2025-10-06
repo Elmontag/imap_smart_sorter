@@ -134,6 +134,11 @@ export interface CatalogDefinition {
   tag_slots: TagSlotConfig[]
 }
 
+export interface CatalogSyncResponse extends CatalogDefinition {
+  imported_folders: string[]
+  created_folders: string[]
+}
+
 export type KeywordFilterField = 'subject' | 'sender' | 'body'
 
 export interface KeywordFilterMatchConfig {
@@ -191,6 +196,8 @@ export interface KeywordFilterActivity {
 export interface AppConfig {
   dev_mode: boolean
   pending_list_limit: number
+  mode: MoveMode
+  classifier_model: string
   protected_tag: string | null
   processed_tag: string | null
   ai_tag_prefix: string | null
@@ -198,6 +205,14 @@ export interface AppConfig {
   folder_templates: FolderTemplateConfig[]
   tag_slots: TagSlotConfig[]
   context_tags: ContextTagConfig[]
+}
+
+export interface AppConfigUpdateRequest {
+  mode?: MoveMode
+  classifier_model?: string
+  protected_tag?: string | null
+  processed_tag?: string | null
+  ai_tag_prefix?: string | null
 }
 
 interface ModeResponse { mode: MoveMode }
@@ -354,6 +369,13 @@ export async function getAppConfig(): Promise<AppConfig> {
   return request<AppConfig>('/api/config')
 }
 
+export async function updateAppConfig(payload: AppConfigUpdateRequest): Promise<AppConfig> {
+  return request<AppConfig>('/api/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function getCatalogDefinition(): Promise<CatalogDefinition> {
   return request<CatalogDefinition>('/api/catalog')
 }
@@ -363,6 +385,14 @@ export async function updateCatalogDefinition(payload: CatalogDefinition): Promi
     method: 'PUT',
     body: JSON.stringify(payload),
   })
+}
+
+export async function importCatalogFromMailbox(): Promise<CatalogSyncResponse> {
+  return request<CatalogSyncResponse>('/api/catalog/import-mailbox', { method: 'POST' })
+}
+
+export async function exportCatalogToMailbox(): Promise<CatalogSyncResponse> {
+  return request<CatalogSyncResponse>('/api/catalog/export-mailbox', { method: 'POST' })
 }
 
 export async function getKeywordFilters(): Promise<KeywordFilterConfig> {

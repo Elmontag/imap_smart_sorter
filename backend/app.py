@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from uvicorn.protocols.utils import ClientDisconnected
 
 from configuration import (
+    get_catalog_data,
     get_context_tag_guidelines,
     get_folder_templates,
     get_tag_slots,
@@ -24,7 +25,6 @@ from configuration import (
 from database import (
     filter_activity_summary,
     find_suggestion_by_uid,
-    get_mode,
     get_monitored_folders,
     init_db,
     list_suggestions,
@@ -32,6 +32,8 @@ from database import (
     mark_moved,
     record_decision,
     record_dry_run,
+    set_classifier_model,
+    set_mailbox_tags,
     set_mode,
     set_monitored_folders,
     suggestion_status_counts,
@@ -47,6 +49,7 @@ from ollama_service import ensure_ollama_ready, get_status, status_as_dict
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
 from settings import S
+from runtime_settings import resolve_classifier_model, resolve_mailbox_tags, resolve_move_mode
 
 
 class MoveMode(str, Enum):
@@ -342,6 +345,8 @@ class OllamaStatusResponse(BaseModel):
 class ConfigResponse(BaseModel):
     dev_mode: bool
     pending_list_limit: int
+    mode: MoveMode
+    classifier_model: str
     protected_tag: str | None = None
     processed_tag: str | None = None
     ai_tag_prefix: str | None = None
@@ -349,6 +354,14 @@ class ConfigResponse(BaseModel):
     folder_templates: List["FolderTemplateConfig"] = Field(default_factory=list)
     tag_slots: List["TagSlotConfig"] = Field(default_factory=list)
     context_tags: List["ContextTagConfig"] = Field(default_factory=list)
+
+
+class ConfigUpdateRequest(BaseModel):
+    mode: Optional[MoveMode] = None
+    classifier_model: Optional[str] = Field(default=None, min_length=1)
+    protected_tag: Optional[str] = None
+    processed_tag: Optional[str] = None
+    ai_tag_prefix: Optional[str] = None
 
 
 class FolderChildConfig(BaseModel):
@@ -395,9 +408,15 @@ class CatalogUpdateRequest(CatalogResponse):
     pass
 
 
+class CatalogSyncResponse(CatalogResponse):
+    imported_folders: List[str] = Field(default_factory=list)
+    created_folders: List[str] = Field(default_factory=list)
+
+
 FolderChildConfig.model_rebuild()
 FolderTemplateConfig.model_rebuild()
 CatalogResponse.model_rebuild()
+CatalogSyncResponse.model_rebuild()
 
 
 def _child_to_config(child: Any) -> FolderChildConfig:
@@ -470,6 +489,52 @@ def _serialise_tag_slot(slot: TagSlotConfig) -> Dict[str, Any]:
         "options": options,
         "aliases": aliases,
     }
+
+
+def _paths_to_template_payloads(paths: Sequence[str]) -> List[Dict[str, Any]]:
+    tree: Dict[str, Dict[str, Any]] = {}
+    for raw in paths:
+        if not isinstance(raw, str):
+            continue
+        normalized = raw.strip().strip("/")
+        if not normalized:
+            continue
+        segments = [segment.strip() for segment in normalized.split("/") if segment.strip()]
+        if not segments:
+            continue
+        node = tree
+        for segment in segments:
+            node = node.setdefault(segment, {})
+
+    def _build(name: str, children: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "name": name,
+            "description": "",
+            "children": [_build(child_name, child_children) for child_name, child_children in sorted(children.items())],
+            "tag_guidelines": [],
+        }
+
+    return [_build(name, children) for name, children in sorted(tree.items())]
+
+
+def _collect_template_paths(templates: Sequence[FolderTemplateConfig]) -> List[str]:
+    seen: Dict[str, None] = {}
+    paths: List[str] = []
+
+    def _walk(node: FolderChildConfig | FolderTemplateConfig, prefix: str) -> None:
+        name = node.name.strip()
+        if not name:
+            return
+        current = f"{prefix}/{name}" if prefix else name
+        if current not in seen:
+            seen[current] = None
+            paths.append(current)
+        for child in getattr(node, "children", []) or []:
+            _walk(child, current)
+
+    for template in templates:
+        _walk(template, "")
+    return paths
 
 
 def _catalog_response() -> CatalogResponse:
@@ -572,9 +637,9 @@ def healthcheck() -> Dict[str, str]:
 
 
 def _resolve_mode() -> MoveMode:
-    stored = get_mode()
+    stored = resolve_move_mode()
     try:
-        return MoveMode(stored or S.MOVE_MODE)
+        return MoveMode(stored)
     except ValueError as exc:  # pragma: no cover - defensive guard
         raise HTTPException(500, f"invalid persisted mode: {stored}") from exc
 
@@ -624,10 +689,10 @@ async def api_create_folder(payload: FolderCreateRequest) -> FolderCreateRespons
     return FolderCreateResponse(created=created, existed=False)
 
 
-@app.get("/api/config", response_model=ConfigResponse)
-async def api_config() -> ConfigResponse:
+async def _config_response() -> ConfigResponse:
     status = await get_status(force_refresh=False)
     catalog = _catalog_response()
+    protected_tag, processed_tag, ai_tag_prefix = resolve_mailbox_tags()
     context_tags = [
         ContextTagConfig(name=guideline.name, description=guideline.description or None, folder=guideline.folder)
         for guideline in get_context_tag_guidelines()
@@ -635,14 +700,42 @@ async def api_config() -> ConfigResponse:
     return ConfigResponse(
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
-        protected_tag=S.IMAP_PROTECTED_TAG or None,
-        processed_tag=S.IMAP_PROCESSED_TAG or None,
-        ai_tag_prefix=S.IMAP_AI_TAG_PREFIX or None,
+        mode=_resolve_mode(),
+        classifier_model=resolve_classifier_model(),
+        protected_tag=protected_tag,
+        processed_tag=processed_tag,
+        ai_tag_prefix=ai_tag_prefix,
         ollama=OllamaStatusResponse.model_validate(status_as_dict(status)),
         folder_templates=catalog.folder_templates,
         tag_slots=catalog.tag_slots,
         context_tags=context_tags,
     )
+
+
+@app.get("/api/config", response_model=ConfigResponse)
+async def api_config() -> ConfigResponse:
+    return await _config_response()
+
+
+@app.put("/api/config", response_model=ConfigResponse)
+async def api_update_config(payload: ConfigUpdateRequest) -> ConfigResponse:
+    updates = payload.model_dump(exclude_unset=True)
+    if "mode" in updates:
+        if payload.mode is None:
+            raise HTTPException(400, "mode must not be null")
+        set_mode(payload.mode.value)
+    if "classifier_model" in updates:
+        model = (payload.classifier_model or "").strip()
+        if not model:
+            raise HTTPException(400, "classifier_model must not be empty")
+        set_classifier_model(model)
+    if {"protected_tag", "processed_tag", "ai_tag_prefix"} & updates.keys():
+        set_mailbox_tags(
+            updates.get("protected_tag"),
+            updates.get("processed_tag"),
+            updates.get("ai_tag_prefix"),
+        )
+    return await _config_response()
 
 
 @app.get("/api/catalog", response_model=CatalogResponse)
@@ -656,6 +749,50 @@ def api_update_catalog_definition(payload: CatalogUpdateRequest) -> CatalogRespo
     slots = [_serialise_tag_slot(slot) for slot in payload.tag_slots]
     update_catalog(templates, slots)
     return _catalog_response()
+
+
+@app.post("/api/catalog/import-mailbox", response_model=CatalogSyncResponse)
+def api_catalog_import_mailbox() -> CatalogSyncResponse:
+    folders = [str(folder).strip() for folder in list_folders() if str(folder).strip()]
+    if not folders:
+        raise HTTPException(404, "Es wurden keine IMAP-Ordner gefunden.")
+    templates_payload = _paths_to_template_payloads(folders)
+    current = get_catalog_data()
+    tag_slots = current.get("tag_slots", []) if isinstance(current, dict) else []
+    if not isinstance(tag_slots, list):
+        tag_slots = []
+    update_catalog(templates_payload, tag_slots)
+    catalog = _catalog_response()
+    imported = list(dict.fromkeys(folders))
+    return CatalogSyncResponse(
+        folder_templates=catalog.folder_templates,
+        tag_slots=catalog.tag_slots,
+        imported_folders=imported,
+        created_folders=[],
+    )
+
+
+@app.post("/api/catalog/export-mailbox", response_model=CatalogSyncResponse)
+def api_catalog_export_mailbox() -> CatalogSyncResponse:
+    catalog = _catalog_response()
+    paths = _collect_template_paths(catalog.folder_templates)
+    created: List[str] = []
+    for path in paths:
+        try:
+            created_path = ensure_folder_path(path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - network interaction
+            logger.error("Failed to mirror catalog folder %s: %s", path, exc)
+            raise HTTPException(500, f"could not create folder: {exc}") from exc
+        created.append(created_path)
+    unique_created = list(dict.fromkeys(created))
+    return CatalogSyncResponse(
+        folder_templates=catalog.folder_templates,
+        tag_slots=catalog.tag_slots,
+        imported_folders=[],
+        created_folders=unique_created,
+    )
 
 
 @app.get("/api/filters", response_model=KeywordFilterConfigResponse)

@@ -198,6 +198,51 @@ def set_mode(mode: str) -> None:
     _set_config_value("MOVE_MODE", mode)
 
 
+def get_mode_override() -> Optional[str]:
+    value = _get_config_value("MOVE_MODE")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def set_classifier_model(model: str) -> None:
+    normalized = str(model or "").strip()
+    if not normalized:
+        raise ValueError("classifier model must not be empty")
+    _set_config_value("CLASSIFIER_MODEL", normalized)
+
+
+def get_classifier_model() -> Optional[str]:
+    value = _get_config_value("CLASSIFIER_MODEL")
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def set_mailbox_tags(protected: str | None, processed: str | None, ai_prefix: str | None) -> None:
+    payload = json.dumps(
+        {
+            "protected": (protected or "").strip(),
+            "processed": (processed or "").strip(),
+            "ai_prefix": (ai_prefix or "").strip(),
+        }
+    )
+    _set_config_value("MAILBOX_TAGS", payload)
+
+
+def get_mailbox_tags() -> tuple[str | None, str | None, str | None]:
+    raw = _get_config_value("MAILBOX_TAGS")
+    if not raw:
+        return (None, None, None)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return (None, None, None)
+    protected = str(data.get("protected", "")).strip() or None
+    processed = str(data.get("processed", "")).strip() or None
+    ai_prefix = str(data.get("ai_prefix", "")).strip() or None
+    return (protected, processed, ai_prefix)
+
+
 def get_mode() -> Optional[str]:
     return _get_config_value("MOVE_MODE")
 

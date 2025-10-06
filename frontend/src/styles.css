@@ -99,6 +99,19 @@ input {
   align-items: flex-end;
 }
 
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #1d4ed8;
+  font-weight: 600;
+  font-size: 13px;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
 .ollama-status-card {
   margin-top: 16px;
   padding: 16px 18px;
@@ -1328,6 +1341,17 @@ a.nav-link.active {
   gap: 24px;
 }
 
+.catalog-shell.embedded-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 0;
+}
+
+.catalog-shell.embedded-shell .app-header.embedded {
+  gap: 16px;
+}
+
 .catalog-body {
   display: flex;
   flex-direction: column;
@@ -1800,6 +1824,158 @@ button.link.danger:hover {
   flex-wrap: wrap;
   gap: 12px;
   justify-content: flex-end;
+}
+
+.automation-editor {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.rule-list {
+  flex: 0 0 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rule-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-list-item {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(248, 250, 252, 0.85);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  cursor: pointer;
+  color: inherit;
+}
+
+.rule-list-item:hover,
+.rule-list-item:focus-visible {
+  border-color: #1d4ed8;
+  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.18);
+}
+
+.rule-list-item.active {
+  border-color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.rule-name {
+  font-weight: 600;
+}
+
+.rule-folder {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.rule-status {
+  font-size: 11px;
+  color: #be185d;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.rule-templates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-templates h3 {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #475569;
+}
+
+.rule-templates ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.template-button {
+  width: 100%;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: #334155;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  cursor: pointer;
+}
+
+.template-button:hover,
+.template-button:focus-visible {
+  border-color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.12);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.16);
+}
+
+.template-button strong {
+  font-size: 13px;
+}
+
+.template-button span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.rule-detail {
+  flex: 1 1 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rule-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.config-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: flex-start;
+}
+
+.config-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.config-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 
 .filter-rule-list {
