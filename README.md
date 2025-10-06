@@ -6,8 +6,8 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
   Die Ordnerauswahl präsentiert sich als einklappbare Baumstruktur, neu gefundene Ordner lassen sich direkt aus den Vorschlagskarten anlegen.
-  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons und behältst Statuskarten für Ollama und laufende Analysen im Blick.
-  Tag-Vorschläge erscheinen kontextualisiert direkt innerhalb der jeweiligen Mailkarte, eine separate Tag-Übersicht entfällt.
+  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick.
+  Eine Einstellungsseite (`#/settings`) bündelt Automatisierung, KI-Parameter und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln.
   Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
 Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
@@ -117,6 +117,13 @@ MIN_MATCH_SCORE=60
 - Laufende Dauer-Analysen blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Analyse starten“ und „Analyse stoppen“ für die kontinuierliche Ausführung verfügbar.
 - Die Ordnerauswahl im Dashboard stellt die überwachten IMAP-Ordner als aufklappbaren Baum dar. Der Filter hebt Treffer farblich hervor und öffnet automatisch die relevanten Äste, sodass komplexe Hierarchien schneller angepasst werden können.
 
+### Keyword-Filter & Direktzuordnung
+
+- `backend/keyword_filters.json` definiert Regeln, die E-Mails noch vor der KI-Analyse verschieben. Jede Regel besitzt `name`, `enabled`, `target_folder`, optionale `tags`, eine `match`-Sektion (`mode` = `all` oder `any`, `fields` = `subject`/`sender`/`body`, `terms`) sowie eine optionale `date`-Spanne (`after`/`before` im Format `YYYY-MM-DD`).
+- Trifft eine Regel zu, legt der Worker fehlende Ordner automatisch an, verschiebt die Nachricht sofort, setzt definierte Tags und protokolliert das Ergebnis als `FilterHit`.
+- Über `GET /api/filters` und `PUT /api/filters` bearbeitest du die Regeln programmatisch. Das Frontend bündelt die Pflege im Tab „Automatisierung“ der Einstellungsseite (`#/settings`) und visualisiert Treffer in einer Automationskachel auf dem Dashboard.
+- `GET /api/filters/activity` liefert aggregierte Kennzahlen (Gesamtanzahl, letzte 24 h, Top-Regeln, aktuelle Treffer) und bildet die Grundlage für das Automatisierungs-Dashboard.
+
 ## Lokale Entwicklung
 
 ### Backend & Worker
@@ -143,18 +150,20 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 ## Architekturüberblick
 
 ```
-┌──────────┐      ┌───────────────┐      ┌────────────┐
-│  IMAP    │ ───▶ │  Worker      │ ───▶ │ Datenbank  │
-│  Server  │      │  (async)      │      │ (SQLModel) │
-└──────────┘      └──────┬────────┘      └─────┬──────┘
-                          │                   │
-                          ▼                   ▼
-                     LLM Embeddings     FastAPI Backend
-                          │                   │
-                          └──────────────┬────┘
-                                         ▼
-                                   React Frontend
+┌──────────┐      ┌────────────┐      ┌───────────────┐      ┌────────────┐
+│  IMAP    │ ───▶ │ Stichwort- │ ───▶ │  Worker      │ ───▶ │ Datenbank  │
+│  Server  │      │ filter      │      │  (LLM)       │      │ (SQLModel) │
+└──────────┘      └──────┬─────┘      └──────┬────────┘      └─────┬──────┘
+                         │                   │                   │
+                         ▼                   ▼                   ▼
+                    Sofort-Moves        LLM Embeddings     FastAPI Backend
+                         │                   │
+                         └───────────────────┴────┐
+                                                 ▼
+                                           React Frontend
 ```
+
+Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter Regeln direkt verschoben wird – erst danach greift die KI-Klassifikation.
 
 - **Mailbox**: `backend/mailbox.py` kapselt IMAP-Verbindungen, liefert aktuelle Nachrichten und führt Move-Operationen aus (Fallback Copy+Delete).
 - **Worker**: `backend/imap_worker.py` ruft `fetch_recent_messages`, erstellt pro Mail ein `Suggestion`-Objekt und aktualisiert Profile bei automatischen Moves.
@@ -174,6 +183,9 @@ Die Vite-Entwicklungsumgebung proxied standardmäßig auf `localhost:5173`. Pass
 | `GET`   | `/api/suggestions`  | Liefert Vorschläge inkl. Ranking; mit `?include=all` auch bereits entschiedene |
 | `GET`   | `/api/pending`      | Übersicht offener, noch nicht verarbeiteter Nachrichten |
 | `GET`   | `/api/tags`         | Aggregierte KI-Tags inkl. Beispiele für die weitere Verarbeitung |
+| `GET`   | `/api/filters`      | Liefert aktuelle Keyword-Regeln für direkte Zuordnungen |
+| `PUT`   | `/api/filters`      | Persistiert aktualisierte Keyword-Regeln |
+| `GET`   | `/api/filters/activity` | Statistik zu Filtertreffern (Gesamt, letzte 24 h, letzte Aktionen) |
 | `GET`   | `/api/ollama`       | Aktuelle Erreichbarkeit des Ollama-Hosts und Modellstatus |
 | `GET`   | `/api/config`       | Liefert Laufzeitkonfiguration (Dev-Modus, Tag-Namen, Listenlimit) |
 | `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |

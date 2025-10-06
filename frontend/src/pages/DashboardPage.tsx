@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
 import {
   MoveMode,
   Suggestion,
@@ -17,9 +17,11 @@ import SuggestionCard from '../components/SuggestionCard'
 import PendingOverviewPanel from '../components/PendingOverviewPanel'
 import FolderSelectionPanel from '../components/FolderSelectionPanel'
 import DevtoolsPanel from '../components/DevtoolsPanel'
+import AutomationSummaryCard from '../components/AutomationSummaryCard'
 import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
+import { useFilterActivity } from '../store/useFilterActivity'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 
@@ -48,6 +50,12 @@ export default function DashboardPage(): JSX.Element {
   const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
   const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
   const { data: appConfig, error: configError } = useAppConfig()
+  const {
+    data: filterActivity,
+    loading: filterActivityLoading,
+    error: filterActivityError,
+    refresh: refreshFilterActivity,
+  } = useFilterActivity()
   const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -273,25 +281,35 @@ export default function DashboardPage(): JSX.Element {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div>
-          <h1>IMAP Smart Sorter</h1>
-          <p className="app-subline">Intelligente Unterstützung für sauberes Postfach-Management.</p>
+        <div className="header-top">
+          <div>
+            <h1>IMAP Smart Sorter</h1>
+            <p className="app-subline">Intelligente Unterstützung für sauberes Postfach-Management.</p>
+          </div>
+          <div className="header-actions">
+            <label className="mode-select">
+              <span>Modus</span>
+              <select value={mode} onChange={event => handleModeChange(event.target.value as MoveMode)}>
+                {modeOptions.map(option => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
-        <div className="header-actions">
-          <Link to="/catalog" className="ghost nav-link">
-            Katalog bearbeiten
-          </Link>
-          <label className="mode-select">
-            <span>Modus</span>
-            <select value={mode} onChange={event => handleModeChange(event.target.value as MoveMode)}>
-              {modeOptions.map(option => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
+        <nav className="primary-nav">
+          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Dashboard
+          </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Einstellungen
+          </NavLink>
+          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Katalog
+          </NavLink>
+        </nav>
       </header>
 
       {status && (
@@ -402,6 +420,13 @@ export default function DashboardPage(): JSX.Element {
             )}
             {scanSummary.error && <div className="scan-status-error">Letzter Fehler: {scanSummary.error}</div>}
           </section>
+          <AutomationSummaryCard
+            activity={filterActivity}
+            loading={filterActivityLoading}
+            error={filterActivityError}
+            onReload={refreshFilterActivity}
+          />
+
           <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
 
           <section className="suggestions">

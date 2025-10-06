@@ -6,13 +6,13 @@ import logging
 import os
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set
 
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from models import AppConfig, FolderProfile, Processed, Suggestion
+from models import AppConfig, FilterHit, FolderProfile, Processed, Suggestion
 from settings import S
 
 
@@ -280,3 +280,95 @@ def known_suggestion_uids() -> Set[str]:
     with get_session() as ses:
         rows = ses.exec(select(Suggestion)).all()
         return {str(row.message_uid) for row in rows if row.message_uid}
+
+
+def record_filter_hit(
+    message_uid: str,
+    rule_name: str,
+    src_folder: str | None,
+    target_folder: str,
+    applied_tags: Sequence[str] | None,
+    matched_terms: Sequence[str] | None,
+    message_date: datetime | None,
+) -> None:
+    with get_session() as ses:
+        entry = FilterHit(
+            message_uid=str(message_uid),
+            rule_name=rule_name,
+            src_folder=src_folder,
+            target_folder=target_folder,
+            applied_tags=[str(tag) for tag in applied_tags or [] if str(tag).strip()],
+            matched_terms=[str(term) for term in matched_terms or [] if str(term).strip()],
+            message_date=message_date,
+        )
+        ses.add(entry)
+        ses.commit()
+
+
+def filter_activity_summary(
+    window_days: int = 7,
+    recent_limit: int = 10,
+) -> Dict[str, Any]:
+    now = datetime.utcnow()
+    window_cutoff = now - timedelta(days=max(window_days, 0)) if window_days > 0 else None
+    day_cutoff = now - timedelta(days=1)
+
+    with get_session() as ses:
+        total_result = ses.exec(select(func.count()).select_from(FilterHit)).one()
+        total_hits = int(total_result[0] if isinstance(total_result, tuple) else total_result or 0)
+
+        last_day_result = ses.exec(
+            select(func.count()).where(FilterHit.matched_at >= day_cutoff)
+        ).one()
+        hits_last_24h = int(last_day_result[0] if isinstance(last_day_result, tuple) else last_day_result or 0)
+
+        base_stmt = select(
+            FilterHit.rule_name,
+            FilterHit.target_folder,
+            func.count().label("count"),
+            func.max(FilterHit.matched_at).label("last_match"),
+        )
+        if window_cutoff:
+            base_stmt = base_stmt.where(FilterHit.matched_at >= window_cutoff)
+        rule_rows = ses.exec(
+            base_stmt.group_by(FilterHit.rule_name, FilterHit.target_folder).order_by(func.count().desc())
+        ).all()
+
+        recent_stmt = select(FilterHit).order_by(FilterHit.matched_at.desc())
+        if recent_limit > 0:
+            recent_stmt = recent_stmt.limit(recent_limit)
+        recent_rows = ses.exec(recent_stmt).all()
+
+    rules: List[Dict[str, Any]] = []
+    for rule_name, target_folder, count, last_match in rule_rows:
+        rules.append(
+            {
+                "name": rule_name,
+                "target_folder": target_folder,
+                "count": int(count or 0),
+                "last_match": (last_match.isoformat() if isinstance(last_match, datetime) else None),
+            }
+        )
+
+    recent: List[Dict[str, Any]] = []
+    for row in recent_rows:
+        recent.append(
+            {
+                "message_uid": row.message_uid,
+                "rule_name": row.rule_name,
+                "src_folder": row.src_folder,
+                "target_folder": row.target_folder,
+                "applied_tags": row.applied_tags or [],
+                "matched_terms": row.matched_terms or [],
+                "matched_at": row.matched_at.isoformat(),
+                "message_date": row.message_date.isoformat() if row.message_date else None,
+            }
+        )
+
+    return {
+        "total_hits": total_hits,
+        "hits_last_24h": hits_last_24h,
+        "rules": rules,
+        "recent": recent,
+        "window_days": max(window_days, 0),
+    }
