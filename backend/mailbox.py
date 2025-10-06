@@ -11,6 +11,7 @@ from typing import Dict, Iterable, Iterator, List, Sequence
 from imapclient import IMAPClient
 
 from settings import S
+from runtime_settings import resolve_mailbox_tags
 
 
 logger = logging.getLogger(__name__)
@@ -101,8 +102,9 @@ def fetch_recent_messages(folders: Iterable[str]) -> Dict[str, Dict[int, Message
         return {}
 
     payloads: Dict[str, Dict[int, MessageContent]] = {}
-    protected_tag = S.IMAP_PROTECTED_TAG.strip()
-    processed_tag = S.IMAP_PROCESSED_TAG.strip()
+    protected_tag, processed_tag, _ = resolve_mailbox_tags()
+    protected_tag = (protected_tag or "").strip()
+    processed_tag = (processed_tag or "").strip()
     try:
         with _connect() as server:
             for folder in folders:

@@ -27,6 +27,7 @@ from configuration import (
 )
 from ollama_service import get_model_context_window
 from settings import S
+from runtime_settings import resolve_classifier_model
 
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ async def _resolve_context_window() -> int:
     user_override = fallback if _is_user_override("CLASSIFIER_NUM_CTX") else None
 
     if getattr(S, "CLASSIFIER_NUM_CTX_MATCH_MODEL", False):
-        cache_key = S.CLASSIFIER_MODEL.strip()
+        cache_key = resolve_classifier_model().strip()
         if cache_key:
             if cache_key in _CLASSIFIER_CONTEXT_CACHE:
                 resolved = _CLASSIFIER_CONTEXT_CACHE[cache_key]
@@ -650,7 +651,7 @@ async def _chat(
         num_ctx = _configured_num_ctx()
 
     payload = {
-        "model": S.CLASSIFIER_MODEL,
+        "model": resolve_classifier_model(),
         "messages": messages,
         "format": "json",
         "stream": True,
@@ -1224,7 +1225,8 @@ async def classify_with_model(
     Dict[str, Any] | None,
     List[str],
 ]:
-    if not S.CLASSIFIER_MODEL:
+    model_name = resolve_classifier_model().strip()
+    if not model_name:
         return _fallback_ranked(ranked), None, None, []
 
     num_ctx = await _resolve_context_window()
