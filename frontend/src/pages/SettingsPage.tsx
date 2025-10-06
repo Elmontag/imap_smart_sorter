@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   KeywordFilterConfig,
@@ -27,7 +27,7 @@ const defaultRule = (): KeywordFilterRuleConfig => ({
   target_folder: '',
   tags: [],
   match: { mode: 'all', fields: [...fieldOrder], terms: [] },
-  date: { after: null, before: null },
+  date: { after: null, before: null, include_future: false },
 })
 
 const normalizeList = (values: string[]): string[] => {
@@ -219,6 +219,7 @@ export default function SettingsPage(): JSX.Element {
   const [filtersSaving, setFiltersSaving] = useState(false)
   const [filterError, setFilterError] = useState<string | null>(null)
   const [status, setStatus] = useState<StatusMessage | null>(null)
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false)
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     mode: 'DRY_RUN',
     classifierModel: '',
@@ -228,6 +229,7 @@ export default function SettingsPage(): JSX.Element {
   })
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
+  const templateMenuRef = useRef<HTMLDivElement | null>(null)
 
   const {
     data: appConfig,
@@ -246,7 +248,17 @@ export default function SettingsPage(): JSX.Element {
     setFiltersLoading(true)
     try {
       const config = await getKeywordFilters()
-      const drafts = config.rules.map(rule => ({ ...rule, id: createId() }))
+      const drafts = config.rules.map(rule => ({
+        ...rule,
+        date: rule.date
+          ? {
+              after: rule.date.after ?? null,
+              before: rule.date.before ?? null,
+              include_future: Boolean(rule.date.include_future),
+            }
+          : { after: null, before: null, include_future: false },
+        id: createId(),
+      }))
       setRuleDrafts(drafts)
       setSelectedRuleId(drafts.length > 0 ? drafts[0].id : null)
       setFilterError(null)
@@ -260,6 +272,35 @@ export default function SettingsPage(): JSX.Element {
   useEffect(() => {
     void loadFilters()
   }, [loadFilters])
+
+  useEffect(() => {
+    setTemplateMenuOpen(false)
+  }, [activeTab])
+
+  useEffect(() => {
+    if (!templateMenuOpen) {
+      return
+    }
+    const handleClick = (event: MouseEvent) => {
+      if (!templateMenuRef.current) {
+        return
+      }
+      if (!templateMenuRef.current.contains(event.target as Node)) {
+        setTemplateMenuOpen(false)
+      }
+    }
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setTemplateMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [templateMenuOpen])
 
   useEffect(() => {
     if (!appConfig) {
@@ -329,6 +370,7 @@ export default function SettingsPage(): JSX.Element {
     const draft: RuleDraft = { ...defaultRule(), id: createId() }
     setRuleDrafts(current => [...current, draft])
     setSelectedRuleId(draft.id)
+    setTemplateMenuOpen(false)
   }, [])
 
   const handleAddTemplate = useCallback((template: RuleTemplateDefinition) => {
@@ -336,6 +378,7 @@ export default function SettingsPage(): JSX.Element {
     setRuleDrafts(current => [...current, draft])
     setSelectedRuleId(draft.id)
     setStatus({ kind: 'info', message: `Template „${template.label}“ hinzugefügt. Passe Name und Zielordner an.` })
+    setTemplateMenuOpen(false)
   }, [])
 
   const handleFilterSave = useCallback(async () => {
@@ -360,8 +403,12 @@ export default function SettingsPage(): JSX.Element {
             terms: normalizeList(rule.match.terms),
           },
           date:
-            rule.date && (rule.date.after || rule.date.before)
-              ? { after: rule.date.after || null, before: rule.date.before || null }
+            rule.date && (rule.date.after || rule.date.before || rule.date.include_future)
+              ? {
+                  after: rule.date.after || null,
+                  before: rule.date.before || null,
+                  include_future: Boolean(rule.date.include_future),
+                }
               : undefined,
         }
       }),
@@ -453,9 +500,6 @@ export default function SettingsPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
-          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Katalog
-          </NavLink>
         </nav>
       </header>
 
@@ -516,9 +560,46 @@ export default function SettingsPage(): JSX.Element {
                 <button type="button" className="ghost" onClick={() => void loadFilters()} disabled={filtersLoading}>
                   {filtersLoading ? 'Lade…' : 'Neu laden'}
                 </button>
-                <button type="button" className="ghost" onClick={handleAddRule} disabled={filtersSaving}>
-                  Leere Regel
-                </button>
+                <div className="template-menu-wrapper" ref={templateMenuRef}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setTemplateMenuOpen(open => !open)}
+                    disabled={filtersSaving}
+                    aria-expanded={templateMenuOpen}
+                  >
+                    Neue Regel
+                  </button>
+                  {templateMenuOpen && (
+                    <div className="template-menu" role="menu">
+                      <button
+                        type="button"
+                        className="template-menu-item"
+                        onClick={handleAddRule}
+                        disabled={filtersSaving}
+                        role="menuitem"
+                      >
+                        Ohne Vorlage starten
+                      </button>
+                      <div className="template-menu-divider" role="presentation" />
+                      <div className="template-menu-list">
+                        {ruleTemplates.map(template => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            className="template-menu-item"
+                            onClick={() => handleAddTemplate(template)}
+                            disabled={filtersSaving}
+                            role="menuitem"
+                          >
+                            <strong>{template.label}</strong>
+                            <span>{template.description}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <button type="button" className="primary" onClick={handleFilterSave} disabled={filtersSaving}>
                   {filtersSaving ? 'Speichere…' : 'Filter speichern'}
                 </button>
@@ -531,9 +612,7 @@ export default function SettingsPage(): JSX.Element {
                   </div>
                   {filtersLoading && <div className="placeholder">Lade Filterdefinitionen…</div>}
                   {!filtersLoading && ruleDrafts.length === 0 && (
-                    <div className="placeholder">
-                      Noch keine Regeln vorhanden. Lege die erste Regel über „Leere Regel“ oder eine Vorlage an.
-                    </div>
+                    <div className="placeholder">Noch keine Regeln vorhanden. Nutze „Neue Regel“, um zu starten.</div>
                   )}
                   {!filtersLoading && ruleDrafts.length > 0 && (
                     <ul>
@@ -552,24 +631,6 @@ export default function SettingsPage(): JSX.Element {
                       ))}
                     </ul>
                   )}
-                  <div className="rule-templates">
-                    <h3>Vorlagen</h3>
-                    <ul>
-                      {ruleTemplates.map(template => (
-                        <li key={template.id}>
-                          <button
-                            type="button"
-                            className="template-button"
-                            onClick={() => handleAddTemplate(template)}
-                            disabled={filtersSaving}
-                          >
-                            <strong>{template.label}</strong>
-                            <span>{template.description}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
                 </aside>
 
                 <section className="rule-detail">
@@ -743,6 +804,7 @@ export default function SettingsPage(): JSX.Element {
                                     date: {
                                       after: event.target.value || null,
                                       before: current.date?.before ?? null,
+                                      include_future: Boolean(current.date?.include_future),
                                     },
                                   }))
                                 }
@@ -759,10 +821,28 @@ export default function SettingsPage(): JSX.Element {
                                     date: {
                                       after: current.date?.after ?? null,
                                       before: event.target.value || null,
+                                      include_future: Boolean(current.date?.include_future),
                                     },
                                   }))
                                 }
                               />
+                            </label>
+                            <label className="inline">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(selectedRule.date?.include_future)}
+                                onChange={event =>
+                                  updateRule(selectedRule.id, current => ({
+                                    ...current,
+                                    date: {
+                                      after: current.date?.after ?? null,
+                                      before: current.date?.before ?? null,
+                                      include_future: event.target.checked,
+                                    },
+                                  }))
+                                }
+                              />
+                              Termine im Mailtext (nach Empfangsdatum) berücksichtigen
                             </label>
                           </fieldset>
                         </div>
