@@ -4,10 +4,11 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 
 - **Backend** – FastAPI-Anwendung mit SQLite/SQLModel-Datenbank für Vorschläge, Status und API-Endpunkte.
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
-- **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Steuerung des Betriebsmodus und manuellen Aktionen.
+- **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Anzeige des Betriebsmodus und manuellen Aktionen.
   Die Ordnerauswahl präsentiert sich als einklappbare Baumstruktur, neu gefundene Ordner lassen sich direkt aus den Vorschlagskarten anlegen.
   Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick.
   Eine Einstellungsseite (`#/settings`) bündelt Automatisierung, KI-Parameter und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln.
+  Der Automatisierungs-Tab bietet eine zweigeteilte Ansicht mit Regel-Sidebar, Detailformular und Vorlagen für Newsletter-, Bestell-, Event- und Kalendereinladungs-Filter.
   Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
 Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
@@ -104,11 +105,13 @@ MIN_MATCH_SCORE=60
 - Für interaktive Anpassungen stellt das Frontend eine Editor-Seite unter `#/catalog` bereit. Dort lassen sich Bereiche,
   Unterordner, Kontext-Tags sowie Tag-Slots (inklusive Aliase) grafisch pflegen und direkt speichern.
 - Das Backend stellt die Rohdaten zusätzlich über `GET /api/catalog` bereit und akzeptiert Aktualisierungen per `PUT /api/catalog`.
+- Über zusätzliche Buttons lassen sich IMAP-Ordnerstrukturen direkt in den Katalog übernehmen (`POST /api/catalog/import-mailbox`) oder der gepflegte Katalog spiegelbildlich im Postfach anlegen (`POST /api/catalog/export-mailbox`). Beide Aktionen sind in der Katalogansicht und im Einstellungs-Tab „Katalog“ verfügbar.
 
 ### Schutz- und Monitoring-Einstellungen
 
 - `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).
 - `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
+- Der Tab „Betrieb“ in den Einstellungen erlaubt das Bearbeiten von Verarbeitungsmodus, Ollama-Modell und IMAP-Tags; das Dashboard zeigt den aktuellen Modus nur noch an.
 - `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
@@ -120,6 +123,7 @@ MIN_MATCH_SCORE=60
 ### Keyword-Filter & Direktzuordnung
 
 - `backend/keyword_filters.json` definiert Regeln, die E-Mails noch vor der KI-Analyse verschieben. Jede Regel besitzt `name`, `enabled`, `target_folder`, optionale `tags`, eine `match`-Sektion (`mode` = `all` oder `any`, `fields` = `subject`/`sender`/`body`, `terms`) sowie eine optionale `date`-Spanne (`after`/`before` im Format `YYYY-MM-DD`).
+- Der Editor im Tab „Automatisierung“ stellt dafür Vorlagen für Technik-, Mode- und Lebensmittel-Newsletter, Bestellungen und Rechnungen, Konzert- & Eventtickets sowie Kalendereinladungen bereit. Die Vorlagen befüllen passende Tags und Keywords, Zielordner und Beschreibungen lassen sich anschließend anpassen.
 - Trifft eine Regel zu, legt der Worker fehlende Ordner automatisch an, verschiebt die Nachricht sofort, setzt definierte Tags und protokolliert das Ergebnis als `FilterHit`.
 - Über `GET /api/filters` und `PUT /api/filters` bearbeitest du die Regeln programmatisch. Das Frontend bündelt die Pflege im Tab „Automatisierung“ der Einstellungsseite (`#/settings`) und visualisiert Treffer in einer Automationskachel auf dem Dashboard.
 - `GET /api/filters/activity` liefert aggregierte Kennzahlen (Gesamtanzahl, letzte 24 h, Top-Regeln, aktuelle Treffer) und bildet die Grundlage für das Automatisierungs-Dashboard.
@@ -187,7 +191,8 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 | `PUT`   | `/api/filters`      | Persistiert aktualisierte Keyword-Regeln |
 | `GET`   | `/api/filters/activity` | Statistik zu Filtertreffern (Gesamt, letzte 24 h, letzte Aktionen) |
 | `GET`   | `/api/ollama`       | Aktuelle Erreichbarkeit des Ollama-Hosts und Modellstatus |
-| `GET`   | `/api/config`       | Liefert Laufzeitkonfiguration (Dev-Modus, Tag-Namen, Listenlimit) |
+| `GET`   | `/api/config`       | Liefert Laufzeitkonfiguration (Modus, Modell, Tag-Namen, Listenlimit) |
+| `PUT`   | `/api/config`       | Aktualisiert Modus, Sprachmodell und IMAP-Tags (Teil-Update möglich) |
 | `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |
 | `POST`  | `/api/move`         | Verschiebt oder simuliert eine einzelne Nachricht |
 | `POST`  | `/api/move/bulk`    | Führt mehrere Move-Requests nacheinander aus |
@@ -198,6 +203,8 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 | `POST`  | `/api/scan/start`   | Startet den kontinuierlichen Scan für die übergebenen Ordner (oder die gespeicherte Auswahl) |
 | `POST`  | `/api/scan/stop`    | Stoppt den laufenden Scan-Controller |
 | `GET`   | `/api/catalog`      | Gibt den aktuellen Ordner- und Tag-Katalog (inkl. Hierarchie) zurück |
+| `POST`  | `/api/catalog/import-mailbox` | Übernimmt die IMAP-Ordnerstruktur als neue Katalogdefinition |
+| `POST`  | `/api/catalog/export-mailbox` | Erstellt alle Katalogordner im Postfach (inkl. Zwischenpfade) |
 | `PUT`   | `/api/catalog`      | Persistiert einen aktualisierten Katalog (Ordner & Tag-Slots) |
 
 Alle Endpunkte liefern JSON und verwenden HTTP-Statuscodes für Fehlerzustände.

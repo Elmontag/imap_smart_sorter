@@ -18,7 +18,6 @@ from classifier import (
 )
 from configuration import max_tag_total
 from database import (
-    get_mode,
     get_monitored_folders,
     is_processed,
     list_folder_profiles,
@@ -40,6 +39,7 @@ from mailbox import (
 from models import Suggestion
 from ollama_service import ensure_ollama_ready
 from settings import S
+from runtime_settings import resolve_mailbox_tags, resolve_move_mode
 from keyword_filters import evaluate_filters
 from utils import extract_text, message_received_at, subject_from, thread_headers
 
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 _TAG_SANITIZE_RE = re.compile(r"[^0-9A-Za-z._+/:-]+")
 
 
-def _format_ai_tag(label: str) -> str | None:
+def _format_ai_tag(label: str, prefix: str | None) -> str | None:
     cleaned = label.strip()
     if not cleaned:
         return None
@@ -59,7 +59,6 @@ def _format_ai_tag(label: str) -> str | None:
     normalized = normalized.strip("-/")[:48]
     if not normalized:
         return None
-    prefix = S.IMAP_AI_TAG_PREFIX.strip()
     if prefix:
         base = prefix.strip("/")
         if not base:
@@ -71,13 +70,14 @@ def _format_ai_tag(label: str) -> str | None:
 def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
     if not raw_tags:
         return
-    processed_marker = (S.IMAP_PROCESSED_TAG or "").strip()
+    _, processed_marker, prefix = resolve_mailbox_tags()
+    processed_marker = (processed_marker or "").strip()
     unique: list[str] = []
     limit = max_tag_total()
     for tag in raw_tags:
         if not isinstance(tag, str):
             continue
-        formatted = _format_ai_tag(tag)
+        formatted = _format_ai_tag(tag, prefix)
         if not formatted:
             continue
         if processed_marker and formatted == processed_marker:
@@ -166,9 +166,10 @@ async def handle_message(
             logger.exception("Failed to ensure folder %s before routing message %s", target_folder, uid)
             return
         await asyncio.to_thread(move_message, uid, target_folder, src_folder)
-        processed_tag = (S.IMAP_PROCESSED_TAG or "").strip()
-        if processed_tag:
-            await asyncio.to_thread(add_message_tag, uid, target_folder, processed_tag)
+        _, processed_tag, _ = resolve_mailbox_tags()
+        processed_value = (processed_tag or "").strip()
+        if processed_value:
+            await asyncio.to_thread(add_message_tag, uid, target_folder, processed_value)
         for tag in match.rule.tags:
             await asyncio.to_thread(add_message_tag, uid, target_folder, tag)
         record_filter_hit(
@@ -239,10 +240,12 @@ async def handle_message(
         move_status="pending",
     )
     save_suggestion(suggestion)
-    add_message_tag(uid, src_folder, S.IMAP_PROCESSED_TAG)
+    _, processed_tag, _ = resolve_mailbox_tags()
+    if processed_tag:
+        add_message_tag(uid, src_folder, processed_tag)
     _apply_ai_tags(uid, src_folder, tags)
 
-    mode = get_mode() or S.MOVE_MODE
+    mode = resolve_move_mode()
     should_auto_move = mode == "AUTO" and (
         (match_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
     )

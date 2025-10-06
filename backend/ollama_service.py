@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 import httpx
 
 from settings import S
+from runtime_settings import resolve_classifier_model
 
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,7 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
 
 def _models_to_check() -> List[Tuple[str, str]]:
     mapping: List[Tuple[str, str]] = []
-    classifier = S.CLASSIFIER_MODEL.strip()
+    classifier = resolve_classifier_model().strip()
     if classifier:
         mapping.append((classifier, "classifier"))
     embed = S.EMBED_MODEL.strip()

@@ -1,14 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  MoveMode,
   Suggestion,
   ScanStatus,
   getFolders,
-  getMode,
   getScanStatus,
   rescan,
-  setMode,
   startScan,
   stopScan,
   updateFolderSelection,
@@ -22,8 +19,6 @@ import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
-
-const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 
 type StatusKind = 'info' | 'success' | 'error'
 
@@ -56,7 +51,6 @@ export default function DashboardPage(): JSX.Element {
     error: filterActivityError,
     refresh: refreshFilterActivity,
   } = useFilterActivity()
-  const [mode, setModeState] = useState<MoveMode>('DRY_RUN')
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
   const [folderDraft, setFolderDraft] = useState<string[]>([])
@@ -67,15 +61,6 @@ export default function DashboardPage(): JSX.Element {
   const [scanBusy, setScanBusy] = useState(false)
   const [rescanBusy, setRescanBusy] = useState(false)
   const lastFinishedRef = useRef<string | null>(null)
-
-  const loadMode = useCallback(async () => {
-    try {
-      const response = await getMode()
-      setModeState(response.mode)
-    } catch (err) {
-      setStatus({ kind: 'error', message: `Modus konnte nicht geladen werden: ${toMessage(err)}` })
-    }
-  }, [])
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
@@ -101,10 +86,9 @@ export default function DashboardPage(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    void loadMode()
     void loadFolders()
     void loadScanStatus()
-  }, [loadMode, loadFolders, loadScanStatus])
+  }, [loadFolders, loadScanStatus])
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -114,16 +98,6 @@ export default function DashboardPage(): JSX.Element {
       window.clearInterval(interval)
     }
   }, [loadScanStatus])
-
-  const handleModeChange = async (value: MoveMode) => {
-    try {
-      const response = await setMode(value)
-      setModeState(response.mode)
-      setStatus({ kind: 'success', message: `Modus auf ${response.mode} gesetzt.` })
-    } catch (err) {
-      setStatus({ kind: 'error', message: `Moduswechsel fehlgeschlagen: ${toMessage(err)}` })
-    }
-  }
 
   useEffect(() => {
     const finishedAt = scanStatus?.last_finished_at ?? null
@@ -287,16 +261,7 @@ export default function DashboardPage(): JSX.Element {
             <p className="app-subline">Intelligente Unterstützung für sauberes Postfach-Management.</p>
           </div>
           <div className="header-actions">
-            <label className="mode-select">
-              <span>Modus</span>
-              <select value={mode} onChange={event => handleModeChange(event.target.value as MoveMode)}>
-                {modeOptions.map(option => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {appConfig?.mode && <span className="mode-badge">Modus: {appConfig.mode}</span>}
           </div>
         </div>
         <nav className="primary-nav">
