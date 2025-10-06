@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, NavLink } from 'react-router-dom'
 import {
   CatalogDefinition,
   FolderChildConfig,
@@ -908,21 +908,34 @@ export default function CatalogEditorPage(): JSX.Element {
   return (
     <div className="app-shell catalog-shell">
       <header className="app-header">
-        <div>
-          <h1>Katalog verwalten</h1>
-          <p className="app-subline">Passe Ordnerhierarchie und Tag-Slots direkt an.</p>
+        <div className="header-top">
+          <div>
+            <h1>Katalog verwalten</h1>
+            <p className="app-subline">Passe Ordnerhierarchie und Tag-Slots direkt an.</p>
+          </div>
+          <div className="header-actions">
+            <Link to="/" className="ghost nav-link">
+              Zurück zur Übersicht
+            </Link>
+            <button type="button" className="ghost" onClick={handleReset} disabled={!isDirty || saving || loading}>
+              Änderungen verwerfen
+            </button>
+            <button type="button" className="primary" onClick={handleSave} disabled={!draft || saving || !isDirty}>
+              {saving ? 'Speichere…' : 'Änderungen speichern'}
+            </button>
+          </div>
         </div>
-        <div className="header-actions">
-          <Link to="/" className="ghost nav-link">
-            Zurück zur Übersicht
-          </Link>
-          <button type="button" className="ghost" onClick={handleReset} disabled={!isDirty || saving || loading}>
-            Änderungen verwerfen
-          </button>
-          <button type="button" className="primary" onClick={handleSave} disabled={!draft || saving || !isDirty}>
-            {saving ? 'Speichere…' : 'Änderungen speichern'}
-          </button>
-        </div>
+        <nav className="primary-nav">
+          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Dashboard
+          </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Einstellungen
+          </NavLink>
+          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Katalog
+          </NavLink>
+        </nav>
       </header>
 
       {status && (

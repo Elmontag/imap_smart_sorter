@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from datetime import datetime
+from datetime import datetime, date
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi import WebSocketDisconnect
@@ -22,6 +22,7 @@ from configuration import (
     update_catalog,
 )
 from database import (
+    filter_activity_summary,
     find_suggestion_by_uid,
     get_mode,
     get_monitored_folders,
@@ -43,6 +44,8 @@ from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
 from tags import TagSuggestion, load_tag_suggestions
 from ollama_service import ensure_ollama_ready, get_status, status_as_dict
+from keyword_filters import get_filter_config as load_keyword_filter_config
+from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
 from settings import S
 
 
@@ -72,6 +75,182 @@ class DecisionRequest(MoveRequest):
 
 class BulkMoveRequest(BaseModel):
     items: List[MoveRequest] = Field(default_factory=list)
+
+
+class KeywordFilterMatchModel(BaseModel):
+    mode: Literal["all", "any"] = Field("all", pattern=r"^(all|any)$")
+    fields: List[Literal["subject", "sender", "body"]] = Field(
+        default_factory=lambda: ["subject", "sender", "body"]
+    )
+    terms: List[str] = Field(default_factory=list)
+
+
+class KeywordFilterDateModel(BaseModel):
+    after: Optional[date] = None
+    before: Optional[date] = None
+
+
+class KeywordFilterRuleModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    enabled: bool = True
+    target_folder: str = Field(..., min_length=1)
+    tags: List[str] = Field(default_factory=list)
+    match: KeywordFilterMatchModel = Field(default_factory=KeywordFilterMatchModel)
+    date: Optional[KeywordFilterDateModel] = None
+
+
+class KeywordFilterConfigResponse(BaseModel):
+    rules: List[KeywordFilterRuleModel]
+
+
+class KeywordFilterActivityRule(BaseModel):
+    name: str
+    target_folder: str
+    count: int
+    last_match: Optional[datetime] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class KeywordFilterRecentEntry(BaseModel):
+    message_uid: str
+    rule_name: str
+    src_folder: Optional[str] = None
+    target_folder: str
+    applied_tags: List[str] = Field(default_factory=list)
+    matched_terms: List[str] = Field(default_factory=list)
+    matched_at: datetime
+    message_date: Optional[datetime] = None
+
+
+class KeywordFilterActivityResponse(BaseModel):
+    total_hits: int
+    hits_last_24h: int
+    window_days: int
+    rules: List[KeywordFilterActivityRule]
+    recent: List[KeywordFilterRecentEntry]
+
+
+def _clean_terms(values: Sequence[str]) -> List[str]:
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for value in values:
+        cleaned = str(value).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        ordered.append(cleaned)
+    return ordered
+
+
+def _parse_datetime(value: str | None) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _keyword_config_response() -> KeywordFilterConfigResponse:
+    raw = load_keyword_filter_config()
+    entries = raw.get("rules", [])
+    rules: List[KeywordFilterRuleModel] = []
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            target_folder = str(entry.get("target_folder") or "").strip()
+            if not name or not target_folder:
+                continue
+            description_raw = entry.get("description")
+            description = str(description_raw).strip() if description_raw else None
+            try:
+                match_model = KeywordFilterMatchModel.model_validate(entry.get("match") or {})
+            except Exception:
+                match_model = KeywordFilterMatchModel()
+            match_model.terms = _clean_terms(match_model.terms)
+            date_model: Optional[KeywordFilterDateModel] = None
+            if isinstance(entry.get("date"), dict):
+                try:
+                    date_model = KeywordFilterDateModel.model_validate(entry.get("date"))
+                except Exception:
+                    date_model = None
+            rule = KeywordFilterRuleModel(
+                name=name,
+                description=description,
+                enabled=bool(entry.get("enabled", True)),
+                target_folder=target_folder,
+                tags=_clean_terms(entry.get("tags") or []),
+                match=match_model,
+                date=date_model,
+            )
+            rules.append(rule)
+    return KeywordFilterConfigResponse(rules=rules)
+
+
+def _serialise_filter_rule(rule: KeywordFilterRuleModel) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "name": rule.name.strip(),
+        "description": (rule.description.strip() if isinstance(rule.description, str) and rule.description.strip() else None),
+        "enabled": bool(rule.enabled),
+        "target_folder": rule.target_folder.strip(),
+        "tags": _clean_terms(rule.tags),
+        "match": {
+            "mode": rule.match.mode,
+            "fields": rule.match.fields or ["subject", "sender", "body"],
+            "terms": _clean_terms(rule.match.terms),
+        },
+    }
+    if rule.date and (rule.date.after or rule.date.before):
+        date_payload: Dict[str, str] = {}
+        if rule.date.after:
+            date_payload["after"] = rule.date.after.isoformat()
+        if rule.date.before:
+            date_payload["before"] = rule.date.before.isoformat()
+        payload["date"] = date_payload
+    return payload
+
+
+def _keyword_activity_response() -> KeywordFilterActivityResponse:
+    summary = filter_activity_summary()
+    rule_tags = {rule.name: list(rule.tags) for rule in get_filter_rules()}
+
+    rules = [
+        KeywordFilterActivityRule(
+            name=str(entry.get("name")),
+            target_folder=str(entry.get("target_folder")),
+            count=int(entry.get("count", 0)),
+            last_match=_parse_datetime(entry.get("last_match")),
+            tags=rule_tags.get(str(entry.get("name")), []),
+        )
+        for entry in summary.get("rules", [])
+        if isinstance(entry, dict)
+    ]
+
+    recent = [
+        KeywordFilterRecentEntry(
+            message_uid=str(entry.get("message_uid")),
+            rule_name=str(entry.get("rule_name")),
+            src_folder=entry.get("src_folder"),
+            target_folder=str(entry.get("target_folder")),
+            applied_tags=[str(tag) for tag in entry.get("applied_tags", []) if str(tag).strip()],
+            matched_terms=[str(term) for term in entry.get("matched_terms", []) if str(term).strip()],
+            matched_at=_parse_datetime(entry.get("matched_at")) or datetime.utcnow(),
+            message_date=_parse_datetime(entry.get("message_date")),
+        )
+        for entry in summary.get("recent", [])
+        if isinstance(entry, dict)
+    ]
+
+    return KeywordFilterActivityResponse(
+        total_hits=int(summary.get("total_hits", 0)),
+        hits_last_24h=int(summary.get("hits_last_24h", 0)),
+        window_days=int(summary.get("window_days", 0)),
+        rules=rules,
+        recent=recent,
+    )
 
 
 class SuggestionsResponse(BaseModel):
@@ -477,6 +656,23 @@ def api_update_catalog_definition(payload: CatalogUpdateRequest) -> CatalogRespo
     slots = [_serialise_tag_slot(slot) for slot in payload.tag_slots]
     update_catalog(templates, slots)
     return _catalog_response()
+
+
+@app.get("/api/filters", response_model=KeywordFilterConfigResponse)
+def api_keyword_filters() -> KeywordFilterConfigResponse:
+    return _keyword_config_response()
+
+
+@app.put("/api/filters", response_model=KeywordFilterConfigResponse)
+def api_update_keyword_filters(payload: KeywordFilterConfigResponse) -> KeywordFilterConfigResponse:
+    rules = [_serialise_filter_rule(rule) for rule in payload.rules]
+    store_keyword_filters(rules)
+    return _keyword_config_response()
+
+
+@app.get("/api/filters/activity", response_model=KeywordFilterActivityResponse)
+def api_keyword_filter_activity() -> KeywordFilterActivityResponse:
+    return _keyword_activity_response()
 
 
 @app.get("/api/suggestions", response_model=SuggestionsResponse)
