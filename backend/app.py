@@ -91,6 +91,7 @@ class KeywordFilterMatchModel(BaseModel):
 class KeywordFilterDateModel(BaseModel):
     after: Optional[date] = None
     before: Optional[date] = None
+    include_future: bool = False
 
 
 class KeywordFilterRuleModel(BaseModel):
@@ -105,6 +106,10 @@ class KeywordFilterRuleModel(BaseModel):
 
 class KeywordFilterConfigResponse(BaseModel):
     rules: List[KeywordFilterRuleModel]
+
+
+class CatalogImportRequest(BaseModel):
+    exclude_defaults: List[str] = Field(default_factory=list)
 
 
 class KeywordFilterActivityRule(BaseModel):
@@ -206,12 +211,14 @@ def _serialise_filter_rule(rule: KeywordFilterRuleModel) -> Dict[str, Any]:
             "terms": _clean_terms(rule.match.terms),
         },
     }
-    if rule.date and (rule.date.after or rule.date.before):
-        date_payload: Dict[str, str] = {}
+    if rule.date and (rule.date.after or rule.date.before or rule.date.include_future):
+        date_payload: Dict[str, Any] = {}
         if rule.date.after:
             date_payload["after"] = rule.date.after.isoformat()
         if rule.date.before:
             date_payload["before"] = rule.date.before.isoformat()
+        if rule.date.include_future:
+            date_payload["include_future"] = True
         payload["date"] = date_payload
     return payload
 
@@ -751,11 +758,40 @@ def api_update_catalog_definition(payload: CatalogUpdateRequest) -> CatalogRespo
     return _catalog_response()
 
 
+def _segments_for_path(path: str) -> list[str]:
+    if "/" in path:
+        delimiter = "/"
+    elif "." in path:
+        delimiter = "."
+    else:
+        return [path]
+    return [segment for segment in path.split(delimiter) if segment.strip()]
+
+
+def _filter_default_folders(folders: list[str], exclude_defaults: Sequence[str]) -> list[str]:
+    if not exclude_defaults:
+        return folders
+    excluded = {value.strip().casefold() for value in exclude_defaults if value and str(value).strip()}
+    if not excluded:
+        return folders
+    filtered: list[str] = []
+    for folder in folders:
+        tail_candidates = _segments_for_path(folder)
+        tail = tail_candidates[-1].casefold() if tail_candidates else folder.casefold()
+        if tail in excluded:
+            continue
+        filtered.append(folder)
+    return filtered
+
+
 @app.post("/api/catalog/import-mailbox", response_model=CatalogSyncResponse)
-def api_catalog_import_mailbox() -> CatalogSyncResponse:
+def api_catalog_import_mailbox(payload: CatalogImportRequest = Body(default_factory=CatalogImportRequest)) -> CatalogSyncResponse:
     folders = [str(folder).strip() for folder in list_folders() if str(folder).strip()]
     if not folders:
         raise HTTPException(404, "Es wurden keine IMAP-Ordner gefunden.")
+    folders = _filter_default_folders(folders, payload.exclude_defaults)
+    if not folders:
+        raise HTTPException(400, "Keine Ordner zum Import nach Anwendung der Ausschlussliste gefunden.")
     templates_payload = _paths_to_template_payloads(folders)
     current = get_catalog_data()
     tag_slots = current.get("tag_slots", []) if isinstance(current, dict) else []

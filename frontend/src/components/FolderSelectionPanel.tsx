@@ -55,14 +55,15 @@ const buildFolderTree = (folders: string[]): FolderTreeNode[] => {
   cleaned.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
 
   for (const path of cleaned) {
-    const segments = path.split('/').filter(segment => segment.trim().length > 0)
+    const delimiter = path.includes('/') ? '/' : path.includes('.') ? '.' : '/'
+    const segments = path.split(delimiter).filter(segment => segment.trim().length > 0)
     if (!segments.length) {
       continue
     }
     let current = root
     let currentPath = ''
     for (const segment of segments) {
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment
+      currentPath = currentPath ? `${currentPath}${delimiter}${segment}` : segment
       const node = ensureChild(current, segment, currentPath)
       current = node.map
     }

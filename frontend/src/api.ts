@@ -150,6 +150,7 @@ export interface KeywordFilterMatchConfig {
 export interface KeywordFilterDateConfig {
   after?: string | null
   before?: string | null
+  include_future?: boolean
 }
 
 export interface KeywordFilterRuleConfig {
@@ -387,8 +388,18 @@ export async function updateCatalogDefinition(payload: CatalogDefinition): Promi
   })
 }
 
-export async function importCatalogFromMailbox(): Promise<CatalogSyncResponse> {
-  return request<CatalogSyncResponse>('/api/catalog/import-mailbox', { method: 'POST' })
+export interface CatalogImportOptions {
+  excludeDefaults?: string[]
+}
+
+export async function importCatalogFromMailbox(options?: CatalogImportOptions): Promise<CatalogSyncResponse> {
+  const payload = {
+    exclude_defaults: options?.excludeDefaults?.filter(value => value.trim().length > 0) ?? [],
+  }
+  return request<CatalogSyncResponse>('/api/catalog/import-mailbox', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function exportCatalogToMailbox(): Promise<CatalogSyncResponse> {
