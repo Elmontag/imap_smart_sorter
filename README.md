@@ -60,6 +60,9 @@ MIN_MATCH_SCORE=60
 - Beim Start prüfen Backend und Worker automatisch, ob die in `CLASSIFIER_MODEL` und `EMBED_MODEL`
   konfigurierten Modelle vorhanden sind. Fehlende Modelle werden über die Ollama-API nachgeladen und
   Probleme im Frontend angezeigt.
+- Der Worker verbleibt standardmäßig im Idle-Modus. Setze `IMAP_WORKER_AUTOSTART=1`, falls die
+  kontinuierliche Analyse weiterhin automatisch beim Start laufen soll – ansonsten steuerst du sowohl
+  Einmal- als auch Daueranalyse ausschließlich über das Dashboard.
 - Über `EMBED_PROMPT_HINT` kannst du zusätzliche Instruktionen (z. B. Projektnamen, Prioritäten)
   setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
