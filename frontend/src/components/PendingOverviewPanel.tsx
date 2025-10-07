@@ -43,10 +43,8 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
     <section className="pending-overview">
       <div className="pending-header">
         <div>
-          <h2>Offene Mails ohne KI-Vorschlag</h2>
-          <p className="pending-subline">
-            Übersicht über Nachrichten, die noch nicht verarbeitet wurden.
-          </p>
+          <h2>Unbearbeite Mails</h2>
+          <p className="pending-subline">Übersicht über alle noch nicht verarbeiteten Nachrichten.</p>
         </div>
         <div className="pending-metrics">
           <div className="pending-metric">
@@ -70,14 +68,14 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
         <div className="pending-placeholder">
           {limitDisabled
             ? 'Detailansicht deaktiviert (PENDING_LIST_LIMIT=0). Zähler bleiben aktiv.'
-            : 'Keine offenen Nachrichten gefunden.'}
+            : 'Keine unbearbeiteten Nachrichten gefunden.'}
         </div>
       )}
 
       {!loading && pendingCount > 0 && entries.length === 0 && (
         <div className="pending-placeholder">
           {limitDisabled
-            ? 'Die Liste der offenen Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
+            ? 'Die Liste der unbearbeiteten Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
             : 'Keine Details verfügbar.'}
         </div>
       )}
