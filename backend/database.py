@@ -309,19 +309,19 @@ def update_calendar_event_status(
 
 def calendar_event_metrics() -> Dict[str, int]:
     with get_session() as ses:
-        total = ses.exec(select(func.count(CalendarEventEntry.id))).one()
+        total = ses.exec(select(func.count(CalendarEventEntry.id))).scalar_one()
         pending = ses.exec(
             select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "pending")
-        ).one()
+        ).scalar_one()
         imported = ses.exec(
             select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "imported")
-        ).one()
+        ).scalar_one()
         failed = ses.exec(
             select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "failed")
-        ).one()
+        ).scalar_one()
         scanned_messages = ses.exec(
             select(func.count(func.distinct(CalendarEventEntry.message_uid)))
-        ).one()
+        ).scalar_one()
     return {
         "total": int(total or 0),
         "pending": int(pending or 0),
