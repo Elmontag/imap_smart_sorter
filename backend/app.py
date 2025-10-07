@@ -51,11 +51,19 @@ from scan_control import ScanStatus, controller as scan_controller
 from models import Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
 from tags import TagSuggestion, load_tag_suggestions
-from ollama_service import ensure_ollama_ready, get_status, status_as_dict
+from ollama_service import (
+    OllamaModelStatus,
+    OllamaStatus,
+    ensure_ollama_ready,
+    get_status,
+    start_model_pull,
+    status_as_dict,
+)
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
 from settings import S
 from runtime_settings import (
+    analysis_module_uses_llm,
     resolve_analysis_module,
     resolve_classifier_model,
     resolve_mailbox_tags,
@@ -379,6 +387,12 @@ class OllamaModelStatusResponse(BaseModel):
     digest: str | None = None
     size: int | None = None
     message: str | None = None
+    pulling: bool = False
+    progress: float | None = None
+    download_total: int | None = None
+    download_completed: int | None = None
+    status: str | None = None
+    error: str | None = None
 
 
 class OllamaStatusResponse(BaseModel):
@@ -387,6 +401,55 @@ class OllamaStatusResponse(BaseModel):
     message: str | None = None
     last_checked: datetime | None = None
     models: List[OllamaModelStatusResponse] = Field(default_factory=list)
+
+
+class OllamaPullRequest(BaseModel):
+    model: str = Field(..., min_length=1)
+    purpose: str | None = Field(default=None, pattern=r"^(classifier|embedding|custom)?$")
+
+
+def _required_ollama_models() -> List[tuple[str, str]]:
+    mapping: List[tuple[str, str]] = []
+    classifier = (resolve_classifier_model() or "").strip()
+    if classifier:
+        mapping.append((classifier, "classifier"))
+    embed_model = str(getattr(S, "EMBED_MODEL", "") or "").strip()
+    if embed_model:
+        mapping.append((embed_model, "embedding"))
+    return mapping
+
+
+def _normalise_model_name(name: str) -> str:
+    value = name.strip()
+    if not value:
+        return value
+    if ":" not in value:
+        value = f"{value}:latest"
+    return value
+
+
+def _fallback_ollama_status(message: str, *, include_models: bool = True) -> OllamaStatus:
+    models: List[OllamaModelStatus] = []
+    if include_models:
+        models = [
+            OllamaModelStatus(
+                name=model,
+                normalized_name=_normalise_model_name(model),
+                purpose=purpose,
+                available=False,
+                message=message,
+            )
+            for model, purpose in _required_ollama_models()
+        ]
+    return OllamaStatus(host=S.OLLAMA_HOST, reachable=False, models=models, message=message)
+
+
+async def _load_ollama_status(force_refresh: bool) -> OllamaStatus:
+    try:
+        return await get_status(force_refresh=force_refresh)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Ollama-Status konnte nicht geladen werden", exc_info=True)
+        return _fallback_ollama_status(f"Ollama-Status nicht verfügbar: {exc}")
 
 
 class ConfigResponse(BaseModel):
@@ -677,7 +740,8 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def _startup() -> None:
     init_db()
-    await ensure_ollama_ready()
+    if analysis_module_uses_llm():
+        await ensure_ollama_ready()
 
 
 @app.get("/healthz")
@@ -739,7 +803,11 @@ async def api_create_folder(payload: FolderCreateRequest) -> FolderCreateRespons
 
 
 async def _config_response() -> ConfigResponse:
-    status = await get_status(force_refresh=False)
+    module_value = resolve_analysis_module()
+    if analysis_module_uses_llm(module_value):
+        status = await _load_ollama_status(force_refresh=False)
+    else:
+        status = _fallback_ollama_status("LLM deaktiviert (Statisches Modul)", include_models=False)
     catalog = _catalog_response()
     protected_tag, processed_tag, ai_tag_prefix = resolve_mailbox_tags()
     context_tags = [
@@ -750,7 +818,7 @@ async def _config_response() -> ConfigResponse:
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
         mode=_resolve_mode(),
-        analysis_module=AnalysisModule(resolve_analysis_module()),
+        analysis_module=AnalysisModule(module_value),
         classifier_model=resolve_classifier_model(),
         protected_tag=protected_tag,
         processed_tag=processed_tag,
@@ -911,7 +979,27 @@ def api_suggestions(include: str = Query("open", pattern=r"^(open|all)$")) -> Su
 
 @app.get("/api/ollama", response_model=OllamaStatusResponse)
 async def api_ollama_status() -> OllamaStatusResponse:
-    status = await get_status(force_refresh=True)
+    module_value = resolve_analysis_module()
+    if analysis_module_uses_llm(module_value):
+        status = await _load_ollama_status(force_refresh=True)
+    else:
+        status = _fallback_ollama_status("LLM deaktiviert (Statisches Modul)", include_models=False)
+    return OllamaStatusResponse.model_validate(status_as_dict(status))
+
+
+@app.post("/api/ollama/pull", response_model=OllamaStatusResponse)
+async def api_ollama_pull(payload: OllamaPullRequest) -> OllamaStatusResponse:
+    model = payload.model.strip()
+    if not model:
+        raise HTTPException(400, "model must not be empty")
+    purpose = (payload.purpose or "custom").strip() or "custom"
+    try:
+        await start_model_pull(model, purpose)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Start des Ollama-Pulls fehlgeschlagen", exc_info=True)
+        status = _fallback_ollama_status(f"Modell-Download konnte nicht gestartet werden: {exc}")
+        return OllamaStatusResponse.model_validate(status_as_dict(status))
+    status = await _load_ollama_status(force_refresh=True)
     return OllamaStatusResponse.model_validate(status_as_dict(status))
 
 

@@ -9,9 +9,9 @@ export interface PendingOverviewState {
   refresh: () => Promise<void>
 }
 
-export function usePendingOverview(): PendingOverviewState {
+export function usePendingOverview(enabled = true): PendingOverviewState {
   const [data, setData] = useState<PendingOverview | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState<boolean>(enabled)
   const [error, setError] = useState<string | null>(null)
   const activeRef = useRef(true)
 
@@ -25,6 +25,12 @@ export function usePendingOverview(): PendingOverviewState {
   const loadSnapshot = useCallback(
     async (reason: 'initial' | 'manual' = 'manual') => {
       if (!activeRef.current) {
+        return
+      }
+      if (!enabled) {
+        setData(null)
+        setError(null)
+        setLoading(false)
         return
       }
       setLoading(true)
@@ -57,10 +63,16 @@ export function usePendingOverview(): PendingOverviewState {
         }
       }
     },
-    [],
+    [enabled],
   )
 
   useEffect(() => {
+    if (!enabled) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
     void loadSnapshot('initial')
     let socket: WebSocket | null = null
     try {
@@ -110,7 +122,7 @@ export function usePendingOverview(): PendingOverviewState {
         socket.close()
       }
     }
-  }, [loadSnapshot])
+  }, [enabled, loadSnapshot])
 
   const refresh = useCallback(async () => {
     await loadSnapshot('manual')

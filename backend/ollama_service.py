@@ -30,6 +30,12 @@ class OllamaModelStatus:
     digest: str | None = None
     size: int | None = None
     message: str | None = None
+    pulling: bool = False
+    progress: float | None = None
+    download_total: int | None = None
+    download_completed: int | None = None
+    status: str | None = None
+    error: str | None = None
 
 
 @dataclass(slots=True)
@@ -43,10 +49,104 @@ class OllamaStatus:
     last_checked: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+@dataclass(slots=True)
+class ModelPullProgress:
+    """Tracks the streaming progress of an Ollama model download."""
+
+    model: str
+    normalized_name: str
+    purpose: str
+    status: str = "initialisiert"
+    message: str | None = None
+    total: int | None = None
+    completed: int = 0
+    percent: float | None = None
+    active: bool = True
+    error: str | None = None
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    finished_at: datetime | None = None
+
+    def mark_error(self, message: str) -> None:
+        self.active = False
+        self.error = message
+        self.message = message
+        self.finished_at = datetime.now(timezone.utc)
+
+    def mark_complete(self) -> None:
+        self.active = False
+        if self.total and self.completed < self.total:
+            self.completed = self.total
+        self.percent = 1.0
+        self.status = "fertig"
+        self.message = "Modell geladen"
+        self.finished_at = datetime.now(timezone.utc)
+
+
 _STATUS_CACHE: OllamaStatus | None = None
 _STATUS_LOCK = asyncio.Lock()
 _MODEL_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
 _MODEL_INFO_LOCK = asyncio.Lock()
+_PULL_PROGRESS: Dict[str, ModelPullProgress] = {}
+_PROGRESS_LOCK = asyncio.Lock()
+
+
+async def _progress_snapshot() -> Dict[str, ModelPullProgress]:
+    async with _PROGRESS_LOCK:
+        return dict(_PULL_PROGRESS)
+
+
+async def _store_progress(progress: ModelPullProgress) -> None:
+    async with _PROGRESS_LOCK:
+        _PULL_PROGRESS[progress.normalized_name] = progress
+
+
+async def _get_progress(normalized: str) -> ModelPullProgress | None:
+    async with _PROGRESS_LOCK:
+        return _PULL_PROGRESS.get(normalized)
+
+
+def _failure_status(message: str) -> OllamaStatus:
+    models = [
+        OllamaModelStatus(
+            name=model,
+            normalized_name=_normalise_model_name(model),
+            purpose=purpose,
+            available=False,
+            message=message,
+        )
+        for model, purpose in _models_to_check()
+    ]
+    return OllamaStatus(host=S.OLLAMA_HOST, reachable=False, models=models, message=message)
+
+
+def _normalise_percent(value: float) -> float:
+    if value < 0:
+        return 0.0
+    if value > 1:
+        if value > 100:
+            return 1.0
+        return value / 100.0
+    return value
+
+
+def _apply_payload(progress: ModelPullProgress, payload: Dict[str, Any]) -> None:
+    status_text = str(payload.get("status") or "").strip()
+    if status_text:
+        progress.status = status_text
+    total = payload.get("total")
+    if isinstance(total, (int, float)) and total >= 0:
+        progress.total = int(total)
+    completed = payload.get("completed")
+    if isinstance(completed, (int, float)) and completed >= 0:
+        progress.completed = int(completed)
+    percent = payload.get("percent")
+    if isinstance(percent, (int, float)):
+        progress.percent = _normalise_percent(float(percent))
+    elif progress.total and progress.total > 0:
+        progress.percent = min(1.0, max(0.0, progress.completed / progress.total))
+    digest = payload.get("digest")
+    if isinstance(digest, str) and digest:
+        progress.message = digest
 
 
 def _normalise_model_name(name: str) -> str:
@@ -157,14 +257,35 @@ async def _fetch_tags(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
     return []
 
 
-async def _pull_model(client: httpx.AsyncClient, model: str) -> Tuple[bool, str | None]:
+async def _pull_model(
+    client: httpx.AsyncClient,
+    model: str,
+    *,
+    purpose: str,
+    progress: ModelPullProgress | None = None,
+) -> Tuple[bool, str | None]:
     """Attempt to pull the given model and return success flag plus optional message."""
+
+    normalized = _normalise_model_name(model)
+    tracked = progress
+    if tracked is None:
+        tracked = ModelPullProgress(model=model, normalized_name=normalized, purpose=purpose)
+        await _store_progress(tracked)
+    else:
+        tracked.model = model
+        tracked.normalized_name = normalized
+        tracked.purpose = purpose
+        tracked.active = True
+        tracked.error = None
+        tracked.message = None
+        tracked.status = "initialisiert"
+        tracked.finished_at = None
 
     try:
         async with client.stream(
             "POST",
             f"{S.OLLAMA_HOST}/api/pull",
-            json={"model": model},
+            json={"model": normalized},
             timeout=httpx.Timeout(300.0, connect=30.0),
         ) as response:
             response.raise_for_status()
@@ -175,12 +296,19 @@ async def _pull_model(client: httpx.AsyncClient, model: str) -> Tuple[bool, str 
                     payload = json.loads(chunk)
                 except json.JSONDecodeError:
                     continue
+                _apply_payload(tracked, payload)
                 if payload.get("status") == "success":
+                    tracked.mark_complete()
                     return True, None
                 if payload.get("error"):
-                    return False, str(payload["error"])
+                    message = str(payload["error"])
+                    tracked.mark_error(message)
+                    return False, message
     except httpx.HTTPError as exc:
-        return False, str(exc)
+        message = str(exc)
+        tracked.mark_error(message)
+        return False, message
+    tracked.mark_error("Unbekanntes Ergebnis beim Laden des Modells")
     return False, "Unbekanntes Ergebnis beim Laden des Modells"
 
 
@@ -192,6 +320,34 @@ def _summarise(statuses: List[OllamaModelStatus]) -> str | None:
         names = ", ".join(f"{item.purpose}: {item.name}" for item in missing)
         return f"Fehlende Ollama-Modelle: {names}"
     return "Alle Ollama-Modelle sind einsatzbereit"
+
+
+async def _background_pull(progress: ModelPullProgress) -> None:
+    timeout = httpx.Timeout(300.0, connect=30.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            await _pull_model(client, progress.model, purpose=progress.purpose, progress=progress)
+    except Exception as exc:  # pragma: no cover - network interaction
+        progress.mark_error(str(exc))
+    finally:
+        try:
+            await refresh_status(pull_missing=False)
+        except Exception:  # pragma: no cover - best effort refresh
+            logger.debug("Konnte Ollama-Status nach Pull nicht aktualisieren", exc_info=True)
+
+
+async def start_model_pull(model: str, purpose: str = "custom") -> ModelPullProgress:
+    """Start pulling the given model in the background and return the progress entry."""
+
+    normalized = _normalise_model_name(model)
+    async with _PROGRESS_LOCK:
+        existing = _PULL_PROGRESS.get(normalized)
+        if existing and existing.active:
+            return existing
+        progress = ModelPullProgress(model=model, normalized_name=normalized, purpose=purpose)
+        _PULL_PROGRESS[normalized] = progress
+    asyncio.create_task(_background_pull(progress))
+    return progress
 
 
 async def _probe_status(pull_missing: bool) -> OllamaStatus:
@@ -219,8 +375,17 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
                 message=message,
             )
 
+        progress_map = await _progress_snapshot()
         statuses: List[OllamaModelStatus] = []
-        for model, purpose in _models_to_check():
+        models_to_check = list(_models_to_check())
+        seen = {(_normalise_model_name(model), purpose) for model, purpose in models_to_check}
+        for entry in progress_map.values():
+            key = (entry.normalized_name, entry.purpose)
+            if key not in seen:
+                models_to_check.append((entry.model, entry.purpose))
+                seen.add(key)
+
+        for model, purpose in models_to_check:
             normalized = _normalise_model_name(model)
             entry = _match_model_entry({model, normalized}, tags)
             status = OllamaModelStatus(
@@ -228,8 +393,13 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
                 normalized_name=normalized,
                 purpose=purpose,
             )
+            progress = progress_map.get(normalized)
             if entry is None and pull_missing:
-                pulled, info = await _pull_model(client, model)
+                if progress is None or not progress.active:
+                    progress = ModelPullProgress(model=model, normalized_name=normalized, purpose=purpose)
+                    await _store_progress(progress)
+                    progress_map[normalized] = progress
+                pulled, info = await _pull_model(client, model, purpose=purpose, progress=progress)
                 status.pulled = pulled
                 status.message = info
                 if pulled:
@@ -248,6 +418,20 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
             else:
                 if not status.message:
                     status.message = "Modell nicht auf dem Host vorhanden"
+            if progress is not None:
+                status.pulling = progress.active
+                status.progress = progress.percent
+                status.download_total = progress.total
+                status.download_completed = progress.completed
+                if progress.status:
+                    status.status = progress.status
+                if progress.message and not status.message:
+                    status.message = progress.message
+                if progress.error:
+                    status.error = progress.error
+                    status.available = False
+                if not progress.active and not progress.error and status.available:
+                    status.pulled = True
             statuses.append(status)
         summary = _summarise(statuses)
         return OllamaStatus(
@@ -271,7 +455,11 @@ def _models_to_check() -> List[Tuple[str, str]]:
 
 async def refresh_status(pull_missing: bool = False) -> OllamaStatus:
     async with _STATUS_LOCK:
-        status = await _probe_status(pull_missing)
+        try:
+            status = await _probe_status(pull_missing)
+        except Exception as exc:  # pragma: no cover - defensive network guard
+            logger.exception("Ollama-Statusprüfung fehlgeschlagen", exc_info=True)
+            status = _failure_status(f"Ollama-Status konnte nicht ermittelt werden: {exc}")
         global _STATUS_CACHE
         _STATUS_CACHE = status
         return status
@@ -280,7 +468,11 @@ async def refresh_status(pull_missing: bool = False) -> OllamaStatus:
 async def ensure_ollama_ready() -> OllamaStatus:
     """Ensure the Ollama host is reachable and required models exist."""
 
-    status = await refresh_status(pull_missing=True)
+    try:
+        status = await refresh_status(pull_missing=True)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Initialer Ollama-Check fehlgeschlagen", exc_info=True)
+        status = _failure_status(f"Ollama-Status konnte nicht geladen werden: {exc}")
     if not status.reachable:
         logger.warning("Ollama-Host %s nicht erreichbar", status.host)
     else:

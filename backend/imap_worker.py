@@ -40,7 +40,13 @@ from mailbox import (
 from models import Suggestion
 from ollama_service import ensure_ollama_ready
 from settings import S
-from runtime_settings import resolve_mailbox_tags, resolve_move_mode
+from runtime_settings import (
+    analysis_module_uses_filters,
+    analysis_module_uses_llm,
+    resolve_analysis_module,
+    resolve_mailbox_tags,
+    resolve_move_mode,
+)
 from keyword_filters import evaluate_filters
 from utils import extract_text, message_received_at, subject_from, thread_headers
 
@@ -112,9 +118,16 @@ async def _idle_loop(interval: float) -> None:
 async def process_loop() -> None:
     """Continuously poll the mailbox and persist new suggestions."""
 
-    await ensure_ollama_ready()
+    llm_ready_checked = False
     while True:
         try:
+            module = resolve_analysis_module()
+            if analysis_module_uses_llm(module):
+                if not llm_ready_checked:
+                    await ensure_ollama_ready()
+                    llm_ready_checked = True
+            else:
+                llm_ready_checked = False
             count = await one_shot_scan()
             if count:
                 logger.info("Processed %s new messages", count)
@@ -161,11 +174,16 @@ async def handle_message(
     text = extract_text(msg)
     received_at = message_received_at(msg)
 
-    try:
-        match = evaluate_filters(subject or "", from_addr or "", text, received_at)
-    except Exception:  # pragma: no cover - defensive logging
-        logger.exception("Keyword filter evaluation failed for message %s", uid)
-        match = None
+    module = resolve_analysis_module()
+    use_filters = analysis_module_uses_filters(module)
+    use_llm = analysis_module_uses_llm(module)
+
+    match = None
+    if use_filters:
+        try:
+            match = evaluate_filters(subject or "", from_addr or "", text, received_at)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Keyword filter evaluation failed for message %s", uid)
     if match:
         target_folder = match.rule.target_folder
         logger.info(
@@ -213,6 +231,10 @@ async def handle_message(
             message_date=received_at,
         )
         return
+
+    if not use_llm:
+        return
+
     prompt = build_embedding_prompt(subject or "", from_addr or "", text)
 
     folder_profiles = list_folder_profiles()

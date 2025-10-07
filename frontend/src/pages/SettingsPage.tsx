@@ -7,6 +7,7 @@ import {
   KeywordFilterRuleConfig,
   TagSlotConfig,
   MoveMode,
+  OllamaModelPurpose,
   getKeywordFilters,
   updateKeywordFilters,
   updateAppConfig,
@@ -17,10 +18,14 @@ import DevtoolsPanel from '../components/DevtoolsPanel'
 import RuleEditorForm, { EditableRuleDraft } from '../components/RuleEditorForm'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
+import { useOllamaStatus } from '../store/useOllamaStatus'
+import { useDevMode } from '../devtools'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 const fieldOrder: KeywordFilterField[] = ['subject', 'sender', 'body']
 const moduleOptions: AnalysisModule[] = ['STATIC', 'HYBRID', 'LLM_PURE']
+
+const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
@@ -189,6 +194,51 @@ const modeDescriptions = {
   AUTO: 'Filter und KI dürfen Nachrichten eigenständig verschieben.',
 } as const
 
+const formatBytes = (value?: number | null) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+const modelLabel = (purpose: OllamaModelPurpose) => {
+  if (purpose === 'classifier') return 'Klassifikator'
+  if (purpose === 'embedding') return 'Embeddings'
+  return 'Modell'
+}
+
+const modelProgressLabel = (
+  progress?: number | null,
+  completed?: number | null,
+  total?: number | null,
+  status?: string | null,
+) => {
+  const percent = typeof progress === 'number' ? Math.round(progress * 100) : null
+  const completedLabel = formatBytes(completed)
+  const totalLabel = formatBytes(total)
+  const parts: string[] = []
+  if (percent !== null) {
+    parts.push(`${percent}%`)
+  }
+  if (completedLabel && totalLabel) {
+    parts.push(`${completedLabel} / ${totalLabel}`)
+  }
+  if (parts.length === 0 && completedLabel) {
+    parts.push(completedLabel)
+  }
+  if (parts.length === 0 && status) {
+    parts.push(status)
+  }
+  return parts.join(' · ')
+}
+
 export default function SettingsPage(): JSX.Element {
   const [activeTab, setActiveTab] = useState<SettingsTab>('staticRules')
   const [ruleDrafts, setRuleDrafts] = useState<RuleDraft[]>([])
@@ -221,12 +271,25 @@ export default function SettingsPage(): JSX.Element {
     error: appConfigError,
     refresh: refreshAppConfig,
   } = useAppConfig()
+  const devMode = useDevMode()
   const {
     data: filterActivity,
     loading: activityLoading,
     error: activityError,
     refresh: refreshActivity,
   } = useFilterActivity()
+  const ollamaEnabled = Boolean(appConfig?.analysis_module && appConfig.analysis_module !== 'STATIC')
+  const {
+    status: ollamaStatus,
+    loading: ollamaLoading,
+    error: ollamaError,
+    pullBusy: ollamaPullBusy,
+    refresh: refreshOllama,
+    pullModel,
+  } = useOllamaStatus(ollamaEnabled)
+  const [pullModelDraft, setPullModelDraft] = useState('')
+  const [pullPurpose, setPullPurpose] = useState<OllamaModelPurpose>('classifier')
+  const [pullFeedback, setPullFeedback] = useState<StatusMessage | null>(null)
 
   const loadFilters = useCallback(async () => {
     setFiltersLoading(true)
@@ -313,13 +376,27 @@ export default function SettingsPage(): JSX.Element {
     setRuleTemplates(current => current.map(template => (template.id === id ? mutator(template) : template)))
   }, [])
 
-  const classifierOptions = useMemo(
-    () =>
-      (appConfig?.ollama?.models || [])
-        .filter(model => model.purpose === 'classifier' && model.name)
-        .map(model => model.name),
-    [appConfig?.ollama?.models],
-  )
+  const classifierOptions = useMemo(() => {
+    const models = ollamaStatus?.models ?? []
+    const seen = new Set<string>()
+    const names: string[] = []
+    models.forEach(model => {
+      if (model.purpose !== 'classifier') {
+        return
+      }
+      const trimmed = (model.name || '').trim()
+      if (trimmed.length === 0 || seen.has(trimmed)) {
+        return
+      }
+      seen.add(trimmed)
+      names.push(trimmed)
+    })
+    const current = (configDraft.classifierModel || '').trim()
+    if (current && !seen.has(current)) {
+      names.push(current)
+    }
+    return names
+  }, [ollamaStatus?.models, configDraft.classifierModel])
 
   const tagSlotOptions = useMemo<TagSlotConfig[]>(() => {
     if (!appConfig?.tag_slots) {
@@ -539,6 +616,43 @@ export default function SettingsPage(): JSX.Element {
     [],
   )
 
+  const handleModelReload = useCallback(
+    async (model: string, purpose: OllamaModelPurpose) => {
+      const trimmed = model.trim()
+      if (!trimmed) {
+        return
+      }
+      setPullFeedback(null)
+      try {
+        await pullModel(trimmed, purpose)
+        setPullFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
+      } catch (err) {
+        setPullFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
+      }
+    },
+    [pullModel],
+  )
+
+  const handlePullSubmit = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      const trimmed = pullModelDraft.trim()
+      if (!trimmed) {
+        setPullFeedback({ kind: 'error', message: 'Bitte einen Modellnamen angeben.' })
+        return
+      }
+      setPullFeedback(null)
+      try {
+        await pullModel(trimmed, pullPurpose)
+        setPullFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
+        setPullModelDraft('')
+      } catch (err) {
+        setPullFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
+      }
+    },
+    [pullModelDraft, pullPurpose, pullModel],
+  )
+
   const handleConfigSave = useCallback(async () => {
     if (!configDraft.classifierModel.trim()) {
       setStatus({ kind: 'error', message: 'Das Sprachmodell darf nicht leer sein.' })
@@ -565,6 +679,7 @@ export default function SettingsPage(): JSX.Element {
       setStatus({ kind: 'success', message: 'Konfiguration gespeichert.' })
       setConfigError(null)
       await refreshAppConfig()
+      await refreshOllama()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Konfiguration konnte nicht gespeichert werden.'
       setStatus({ kind: 'error', message })
@@ -590,6 +705,11 @@ export default function SettingsPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
+          {devMode && (
+            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              Dev-Mode
+            </NavLink>
+          )}
         </nav>
       </header>
 
@@ -875,48 +995,149 @@ export default function SettingsPage(): JSX.Element {
             <div className="settings-section">
               <section className="analysis-card">
                 <h2>Ollama & Modelle</h2>
-                {appConfig?.ollama ? (
-                  <div className={`ollama-status-card ${appConfig.ollama.reachable ? 'ok' : 'error'}`}>
-                    <div className="ollama-status-header">
-                      <span className="label">Host</span>
-                      <span className={`indicator ${appConfig.ollama.reachable ? 'online' : 'offline'}`}>
-                        {appConfig.ollama.reachable ? 'verbunden' : 'offline'}
-                      </span>
-                    </div>
-                    <div className="ollama-status-body">
-                      <div className="host">{appConfig.ollama.host}</div>
-                      <div className="models">
-                        {appConfig.ollama.models.map(model => (
-                          <span key={model.name}>
-                            {model.purpose === 'classifier' ? 'Klassifikator' : 'Embeddings'}: {model.name}
-                            {!model.available && ' (fehlt)'}
-                          </span>
-                        ))}
+                <div className={`ollama-status-card ${ollamaStatus?.reachable ? 'ok' : 'error'}`}>
+                  <div className="ollama-status-header">
+                    <span className="label">Host</span>
+                    <span className={`indicator ${ollamaStatus?.reachable ? 'online' : 'offline'}`}>
+                      {ollamaStatus?.reachable ? 'verbunden' : 'nicht verbunden'}
+                    </span>
+                  </div>
+                  <div className="ollama-status-body">
+                    {ollamaLoading && <div className="placeholder">Lade Status…</div>}
+                    {!ollamaLoading && ollamaStatus && (
+                      <>
+                        <div className="host">{ollamaStatus.host}</div>
+                        <div className="models detailed">
+                          {ollamaStatus.models.length === 0 && <span>Keine Modelle bekannt.</span>}
+                          {ollamaStatus.models.map(model => {
+                            const progressValue = Math.max(0, Math.min(100, Math.round((model.progress ?? 0) * 100)))
+                            return (
+                              <div key={`${model.purpose}-${model.normalized_name}`} className="ollama-model-detail">
+                                <div className="ollama-model-detail-header">
+                                  <div>
+                                    <span className="model-purpose">{modelLabel(model.purpose)}</span>
+                                    <strong>{model.name}</strong>
+                                  </div>
+                                  {model.name && (
+                                    <button
+                                      type="button"
+                                      className="link"
+                                      onClick={() => handleModelReload(model.name, model.purpose as OllamaModelPurpose)}
+                                      disabled={ollamaPullBusy || model.pulling}
+                                    >
+                                      {model.pulling ? 'Lädt…' : 'Neu laden'}
+                                    </button>
+                                  )}
+                                </div>
+                                {model.pulling && (
+                                  <div
+                                    className="ollama-progress-bar"
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={progressValue}
+                                  >
+                                    <div className="ollama-progress-indicator" style={{ width: `${progressValue}%` }} />
+                                  </div>
+                                )}
+                                <div className="ollama-model-detail-meta">
+                                  {model.pulling && (
+                                    <span>{modelProgressLabel(model.progress, model.download_completed, model.download_total, model.status)}</span>
+                                  )}
+                                  {!model.pulling && model.message && <span>{model.message}</span>}
+                                  {model.error && <span className="error">{model.error}</span>}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {ollamaStatus.message && <div className="ollama-note">{ollamaStatus.message}</div>}
+                      </>
+                    )}
+                    {!ollamaLoading && !ollamaStatus && (
+                      <div className="placeholder">
+                        {ollamaEnabled
+                          ? 'Keine Ollama-Informationen verfügbar.'
+                          : 'Ollama ist für das statische Modul deaktiviert.'}
                       </div>
-                      {appConfig.ollama.message && <div className="ollama-note">{appConfig.ollama.message}</div>}
+                    )}
+                    {ollamaError && (
+                      <div className="status-banner error inline">Status konnte nicht geladen werden: {ollamaError}</div>
+                    )}
+                  </div>
+                  <div className="ollama-status-actions">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => refreshOllama()}
+                      disabled={ollamaLoading || ollamaPullBusy}
+                    >
+                      {ollamaLoading ? 'Aktualisiere…' : 'Status aktualisieren'}
+                    </button>
+                  </div>
+                </div>
+                <form className="ollama-pull-form" onSubmit={handlePullSubmit}>
+                  <h3>Modell herunterladen</h3>
+                  <div className="ollama-pull-grid">
+                    <label>
+                      <span>Modellname</span>
+                      <input
+                        type="text"
+                        value={pullModelDraft}
+                        onChange={event => setPullModelDraft(event.target.value)}
+                        placeholder="z. B. llama3"
+                        disabled={ollamaPullBusy}
+                      />
+                    </label>
+                    <label>
+                      <span>Zweck</span>
+                      <select
+                        value={pullPurpose}
+                        onChange={event => setPullPurpose(event.target.value as OllamaModelPurpose)}
+                        disabled={ollamaPullBusy}
+                      >
+                        <option value="classifier">Klassifikator</option>
+                        <option value="embedding">Embeddings</option>
+                        <option value="custom">Allgemein</option>
+                      </select>
+                    </label>
+                    <div className="ollama-pull-actions">
+                      <button type="submit" className="primary" disabled={ollamaPullBusy}>
+                        {ollamaPullBusy ? 'Starte…' : 'Pull starten'}
+                      </button>
                     </div>
                   </div>
-                ) : (
-                  <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
-                )}
+                  {pullFeedback && (
+                    <div className={`status-banner ${pullFeedback.kind} inline`}>{pullFeedback.message}</div>
+                  )}
+                </form>
               </section>
               <section className="analysis-card">
                 <h2>Analyse-Modell</h2>
                 <label className="mode-select large">
                   <span>Sprachmodell</span>
-                  <input
-                    type="text"
-                    list="classifier-models"
-                    value={configDraft.classifierModel}
-                    onChange={event => handleConfigChange('classifierModel', event.target.value)}
-                    placeholder="z. B. llama3"
-                    disabled={configSaving}
-                  />
-                  <datalist id="classifier-models">
-                    {classifierOptions.map(option => (
-                      <option key={option} value={option} />
-                    ))}
-                  </datalist>
+                  <div className="model-select-row">
+                    <select
+                      value={configDraft.classifierModel}
+                      onChange={event => handleConfigChange('classifierModel', event.target.value)}
+                      disabled={configSaving}
+                    >
+                      <option value="">Modell wählen…</option>
+                      {classifierOptions.map(option => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={configDraft.classifierModel}
+                      onChange={event => handleConfigChange('classifierModel', event.target.value)}
+                      placeholder="Eigenes Modell"
+                      disabled={configSaving}
+                    />
+                  </div>
+                  <span className="field-hint">Die Freitexteingabe überschreibt die Auswahl.</span>
                 </label>
                 <div className="config-actions secondary">
                   <button

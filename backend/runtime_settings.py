@@ -48,3 +48,17 @@ def resolve_analysis_module() -> str:
     if override:
         return override
     return S.ANALYSIS_MODULE
+
+
+def analysis_module_uses_llm(module: str | None = None) -> bool:
+    """Return True if the given (or active) module relies on Ollama/LLM calls."""
+
+    value = (module or resolve_analysis_module() or "").strip().upper()
+    return value in {"HYBRID", "LLM_PURE"}
+
+
+def analysis_module_uses_filters(module: str | None = None) -> bool:
+    """Return True if the module should evaluate keyword-based static rules."""
+
+    value = (module or resolve_analysis_module() or "").strip().upper()
+    return value in {"STATIC", "HYBRID"}

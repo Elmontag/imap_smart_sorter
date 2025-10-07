@@ -79,15 +79,23 @@ export interface TagSuggestion {
   examples: TagExample[]
 }
 
+export type OllamaModelPurpose = 'classifier' | 'embedding' | 'custom'
+
 export interface OllamaModelStatus {
   name: string
   normalized_name: string
-  purpose: 'classifier' | 'embedding'
+  purpose: OllamaModelPurpose
   available: boolean
   pulled: boolean
   digest?: string | null
   size?: number | null
   message?: string | null
+  pulling?: boolean
+  progress?: number | null
+  download_total?: number | null
+  download_completed?: number | null
+  status?: string | null
+  error?: string | null
 }
 
 export interface OllamaStatus {
@@ -96,6 +104,11 @@ export interface OllamaStatus {
   message?: string | null
   last_checked?: string | null
   models: OllamaModelStatus[]
+}
+
+export interface OllamaPullRequest {
+  model: string
+  purpose?: OllamaModelPurpose
 }
 
 export interface FolderChildConfig {
@@ -299,6 +312,9 @@ const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
 const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
 const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
 
+export const API_BASE_URL = BASE
+export const STREAM_WEBSOCKET_URL = STREAM_URL
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
   const label = `${method} ${path}`
@@ -317,10 +333,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const started = performance.now()
-  const response = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      ...init,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    recordDevEvent({
+      type: 'error',
+      label,
+      details: 'Netzwerkfehler',
+      payload: message,
+      durationMs: performance.now() - started,
+    })
+    throw new Error(`API-Anfrage fehlgeschlagen: ${message}`)
+  }
   if (!response.ok) {
     const text = await response.text()
     recordDevEvent({
@@ -380,6 +409,17 @@ export async function getTagSuggestions(): Promise<TagSuggestion[]> {
 
 export async function getAppConfig(): Promise<AppConfig> {
   return request<AppConfig>('/api/config')
+}
+
+export async function getOllamaStatus(): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama')
+}
+
+export async function pullOllamaModel(payload: OllamaPullRequest): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama/pull', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function updateAppConfig(payload: AppConfigUpdateRequest): Promise<AppConfig> {
