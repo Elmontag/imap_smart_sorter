@@ -9,12 +9,18 @@ export interface FilterActivityState {
   refresh: () => Promise<void>
 }
 
-export function useFilterActivity(): FilterActivityState {
+export function useFilterActivity(enabled = true): FilterActivityState {
   const [data, setData] = useState<KeywordFilterActivity | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState<boolean>(enabled)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    if (!enabled) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       const activity = await getKeywordFilterActivity()
@@ -25,7 +31,7 @@ export function useFilterActivity(): FilterActivityState {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
     void load()
