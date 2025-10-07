@@ -145,7 +145,7 @@ def _process_calendar_attachment(
         calendar = Calendar.from_ical(raw_ics)
     except Exception as exc:
         logger.warning("ICS-Anhang konnte nicht geparst werden: %s", exc)
-        return created, updated
+        return events_found, created, updated
     method = _clean_text(calendar.get("method"))
     tz_info = _load_user_timezone(timezone_name)
     for component in calendar.walk():

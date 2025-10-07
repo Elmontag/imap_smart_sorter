@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { NavLink } from 'react-router-dom'
 import { CalendarEvent, CalendarScanSummary, importCalendarEvent } from '../api'
 import { useCalendarOverview } from '../store/useCalendarOverview'
 import { useAppConfig } from '../store/useAppConfig'
@@ -244,7 +245,6 @@ export default function CalendarDashboard(): JSX.Element {
     }
   }
   const autoStatusLabel = autoStatusParts.filter(Boolean).join(' · ') || '–'
-  const autoVariant = autoActive ? 'success' : autoInfo?.last_error ? 'error' : 'muted'
 
   const manualStatusParts: string[] = []
   if (manualActive) {
@@ -265,6 +265,38 @@ export default function CalendarDashboard(): JSX.Element {
     }
   }
   const manualStatusLabel = manualStatusParts.filter(Boolean).join(' · ') || '–'
+
+  const hasScanHistory = Boolean(
+    autoInfo?.last_started_at ||
+      autoInfo?.last_finished_at ||
+      manualInfo?.started_at ||
+      manualInfo?.finished_at,
+  )
+
+  let calendarStatusVariant: 'running' | 'paused' | 'stopped' = 'stopped'
+  let calendarStatusTitle = 'Analyse gestoppt'
+  if (manualActive) {
+    calendarStatusVariant = 'running'
+    calendarStatusTitle = 'Einzelscan aktiv'
+  } else if (autoActive) {
+    calendarStatusVariant = 'running'
+    calendarStatusTitle = 'Dauerscan aktiv'
+  } else if (hasScanHistory) {
+    calendarStatusVariant = 'paused'
+    calendarStatusTitle = 'Analyse pausiert'
+  }
+
+  if (statusLoading) {
+    calendarStatusVariant = 'paused'
+    calendarStatusTitle = 'Status wird geladen…'
+  } else if (!autoActive && !manualActive && autoInfo?.last_error) {
+    calendarStatusTitle = 'Dauerscan benötigt Aufmerksamkeit'
+  }
+
+  const autoStatusDescription = statusLoading ? 'Status wird geladen…' : autoStatusLabel
+  const manualStatusDescription = statusLoading ? 'Status wird geladen…' : manualStatusLabel
+  const lastAutoFinishedLabel = formatTimestamp(autoInfo?.last_finished_at) ?? '–'
+  const lastManualFinishedLabel = formatTimestamp(manualInfo?.finished_at) ?? '–'
 
   const analysisFootEntries: React.ReactNode[] = []
   if (autoInfo?.last_started_at) {
@@ -521,56 +553,73 @@ export default function CalendarDashboard(): JSX.Element {
             {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
-        <div className="analysis-top">
-          <div className="analysis-canvas">
+        <div className="analysis-bar">
+          <div className="analysis-bar-main">
             <div className="analysis-status">
-              <span className={`status-indicator ${autoVariant}`} aria-hidden="true" />
+              <span className={`status-indicator ${calendarStatusVariant}`} aria-hidden="true" />
               <div className="analysis-status-text">
-                <strong>Kalender-Dauerscan</strong>
-                <span>{statusLoading ? 'Status wird geladen…' : autoStatusLabel}</span>
+                <span className="label">Kalender</span>
+                <strong>{calendarStatusTitle}</strong>
               </div>
             </div>
-            <div className="analysis-actions">
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleStartAuto}
-                disabled={autoBusy || statusLoading || autoActive}
-              >
-                Dauerscan starten
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleStopAuto}
-                disabled={autoBusy || statusLoading || (!autoActive && !autoInfo)}
-              >
-                Dauerscan stoppen
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={handleRescan}
-                disabled={manualBusy || refreshing || statusLoading}
-              >
-                Einzelscan starten
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleCancelManual}
-                disabled={cancelBusy || statusLoading || !manualActive}
-              >
-                Einzelscan abbrechen
-              </button>
-              <button type="button" className="secondary" onClick={handleRefresh} disabled={loading || refreshing}>
-                Aktualisieren
-              </button>
-            </div>
+            <dl className="analysis-bar-meta">
+              <div>
+                <dt>Dauerscan</dt>
+                <dd>{autoStatusDescription}</dd>
+              </div>
+              <div>
+                <dt>Einzelscan</dt>
+                <dd>{manualStatusDescription}</dd>
+              </div>
+              <div>
+                <dt>Letzter Dauerscan</dt>
+                <dd>{lastAutoFinishedLabel}</dd>
+              </div>
+              <div>
+                <dt>Letzter Einzelscan</dt>
+                <dd>{lastManualFinishedLabel}</dd>
+              </div>
+            </dl>
+            {analysisFootEntries.length > 0 && (
+              <div className="analysis-bar-foot">{analysisFootEntries}</div>
+            )}
           </div>
-          <div className="analysis-meta">
-            <span>Einzelscan: {statusLoading ? 'Status wird geladen…' : manualStatusLabel}</span>
-            {analysisFootEntries}
+          <div className="analysis-bar-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleStartAuto}
+              disabled={autoBusy || statusLoading || autoActive}
+            >
+              Dauerscan starten
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleStopAuto}
+              disabled={autoBusy || statusLoading || (!autoActive && !autoInfo)}
+            >
+              Dauerscan stoppen
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={handleRescan}
+              disabled={manualBusy || refreshing || statusLoading}
+            >
+              Einzelscan starten
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleCancelManual}
+              disabled={cancelBusy || statusLoading || !manualActive}
+            >
+              Einzelscan abbrechen
+            </button>
+            <button type="button" className="secondary" onClick={handleRefresh} disabled={loading || refreshing}>
+              Aktualisieren
+            </button>
           </div>
         </div>
       </header>
