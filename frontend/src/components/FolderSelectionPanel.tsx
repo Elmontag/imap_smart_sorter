@@ -305,14 +305,14 @@ export default function FolderSelectionPanel({
           {!trimmedFilter && (
             <>
               <button type="button" onClick={expandAll} disabled={loading || !available.length}>
-                Aufklappen
+                Alle auf
               </button>
               <button
                 type="button"
                 onClick={collapseAll}
                 disabled={loading || expandedNodes.size === 0}
               >
-                Zuklappen
+                Alle zu
               </button>
             </>
           )}
