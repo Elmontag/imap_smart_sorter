@@ -162,6 +162,7 @@ export interface KeywordFilterRuleConfig {
   tags: string[]
   match: KeywordFilterMatchConfig
   date?: KeywordFilterDateConfig | null
+  tag_future_dates?: boolean
 }
 
 export interface KeywordFilterConfig {

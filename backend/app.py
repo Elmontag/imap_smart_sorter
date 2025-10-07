@@ -119,6 +119,7 @@ class KeywordFilterRuleModel(BaseModel):
     tags: List[str] = Field(default_factory=list)
     match: KeywordFilterMatchModel = Field(default_factory=KeywordFilterMatchModel)
     date: Optional[KeywordFilterDateModel] = None
+    tag_future_dates: bool = False
 
 
 class KeywordFilterConfigResponse(BaseModel):
@@ -210,6 +211,7 @@ def _keyword_config_response() -> KeywordFilterConfigResponse:
                 tags=_clean_terms(entry.get("tags") or []),
                 match=match_model,
                 date=date_model,
+                tag_future_dates=bool(entry.get("tag_future_dates")),
             )
             rules.append(rule)
     return KeywordFilterConfigResponse(rules=rules)
@@ -237,6 +239,7 @@ def _serialise_filter_rule(rule: KeywordFilterRuleModel) -> Dict[str, Any]:
         if rule.date.include_future:
             date_payload["include_future"] = True
         payload["date"] = date_payload
+    payload["tag_future_dates"] = bool(rule.tag_future_dates)
     return payload
 
 

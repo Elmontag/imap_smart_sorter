@@ -51,6 +51,9 @@ export default function RuleEditorForm({
   const handleTagsChange = (value: string) =>
     onChange(current => ({ ...current, tags: parseList(value) }))
 
+  const handleFutureDateTaggingChange = (checked: boolean) =>
+    onChange(current => ({ ...current, tag_future_dates: checked }))
+
   const tagSlotGroups = useMemo<TagSlotOptionGroup[]>(() => {
     if (!tagSlots || tagSlots.length === 0) {
       return []
@@ -333,6 +336,19 @@ export default function RuleEditorForm({
             </div>
           )}
         </label>
+        <label className="inline">
+          <input
+            type="checkbox"
+            checked={Boolean(draft.tag_future_dates)}
+            onChange={event => handleFutureDateTaggingChange(event.target.checked)}
+          />
+          Zukünftige Datumsangaben als Tag ergänzen
+        </label>
+        {draft.tag_future_dates && (
+          <p className="field-hint">
+            Erstellt Tags im Format <code>datum-YYYY-MM-TT</code> für erkannte Termine nach dem Empfangsdatum.
+          </p>
+        )}
       </div>
     </div>
   )

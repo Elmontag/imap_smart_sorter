@@ -32,6 +32,7 @@ const baseRuleConfig = (): KeywordFilterRuleConfig => ({
   tags: [],
   match: { mode: 'all', fields: [...fieldOrder], terms: [] },
   date: { after: null, before: null, include_future: false },
+  tag_future_dates: false,
 })
 
 const cloneRuleConfig = (rule: KeywordFilterRuleConfig): KeywordFilterRuleConfig => ({
@@ -52,6 +53,7 @@ const cloneRuleConfig = (rule: KeywordFilterRuleConfig): KeywordFilterRuleConfig
         include_future: Boolean(rule.date.include_future),
       }
     : { after: null, before: null, include_future: false },
+  tag_future_dates: Boolean(rule.tag_future_dates),
 })
 
 const createRuleDraft = (rule?: KeywordFilterRuleConfig): EditableRuleDraft => ({
@@ -495,6 +497,7 @@ export default function SettingsPage(): JSX.Element {
                   include_future: Boolean(rule.date.include_future),
                 }
               : undefined,
+          tag_future_dates: Boolean(rule.tag_future_dates),
         }
       }),
     }
