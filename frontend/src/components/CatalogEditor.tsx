@@ -23,9 +23,12 @@ interface StatusMessage {
   message: string
 }
 
+type CatalogSectionMode = 'all' | 'folders' | 'tagSlots'
+
 interface CatalogEditorProps {
   embedded?: boolean
   showDevtools?: boolean
+  section?: CatalogSectionMode
 }
 
 interface FolderNodeDraft {
@@ -289,7 +292,14 @@ const findNodePath = (
   }
   return []
 }
-export default function CatalogEditor({ embedded = false, showDevtools = !embedded }: CatalogEditorProps): JSX.Element {
+export default function CatalogEditor({
+  embedded = false,
+  showDevtools = !embedded,
+  section = 'all',
+}: CatalogEditorProps): JSX.Element {
+  const sectionMode: CatalogSectionMode = section
+  const showFolderTools = sectionMode !== 'tagSlots'
+  const showTagTools = sectionMode !== 'folders'
   const [draft, setDraft] = useState<CatalogDraft | null>(null)
   const [original, setOriginal] = useState<CatalogDefinition | null>(null)
   const [loading, setLoading] = useState(true)
@@ -982,12 +992,26 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
+  const headerTitle =
+    sectionMode === 'tagSlots'
+      ? 'Tag-Slots verwalten'
+      : sectionMode === 'folders'
+      ? 'Ordnerkatalog pflegen'
+      : 'Katalog verwalten'
+
+  const headerSubtitle =
+    sectionMode === 'tagSlots'
+      ? 'Pflege Slot-Definitionen für KI-Tags und wähle erlaubte Optionen.'
+      : sectionMode === 'folders'
+      ? 'Steuere Bereiche, Ordnerabgleich und Kontext-Tags im Detail.'
+      : 'Passe Ordnerhierarchie und Tag-Slots direkt an.'
+
   const header = (
     <header className={`app-header${embedded ? ' embedded' : ''}`}>
       <div className="header-top">
         <div>
-          <h1>Katalog verwalten</h1>
-          <p className="app-subline">Passe Ordnerhierarchie und Tag-Slots direkt an.</p>
+          <h1>{headerTitle}</h1>
+          <p className="app-subline">{headerSubtitle}</p>
         </div>
         <div className="header-actions">
           {!embedded && (
@@ -1006,56 +1030,57 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
     </header>
   )
 
-  const syncControls = (
-    <section className="catalog-sync">
-      <div className="catalog-sync-info">
-        <h2>Ordnerabgleich</h2>
-        <p>Importiere die IMAP-Struktur oder lege fehlende Katalogordner im Postfach an.</p>
-        <p className="catalog-sync-warning">
-          Achtung: Der Import ersetzt den Katalog, beim Export werden Ordner direkt angelegt.
-        </p>
-      </div>
-      <div className="catalog-sync-controls">
-        <div className="catalog-sync-buttons">
-          <button
-            type="button"
-            className="ghost"
-            onClick={handleImportMailbox}
-            disabled={loading || saving || syncBusy !== null}
-          >
-            {syncBusy === 'import' ? 'Übernehme…' : 'Postfach → Katalog'}
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            onClick={handleExportMailbox}
-            disabled={loading || syncBusy !== null}
-          >
-            {syncBusy === 'export' ? 'Spiegele…' : 'Katalog → Postfach'}
-          </button>
+  const syncControls =
+    showFolderTools && (
+      <section className="catalog-sync">
+        <div className="catalog-sync-info">
+          <h2>Ordnerabgleich</h2>
+          <p>Importiere die IMAP-Struktur oder lege fehlende Katalogordner im Postfach an.</p>
+          <p className="catalog-sync-warning">
+            Achtung: Der Import ersetzt den Katalog, beim Export werden Ordner direkt angelegt.
+          </p>
         </div>
-        <div className="catalog-sync-defaults">
-          <span>Standardordner überspringen</span>
-          <div className="catalog-default-grid">
-            {DEFAULT_MAILBOX_FOLDERS.map(folder => {
-              const checked = excludedDefaultsSet.has(folder.toLowerCase())
-              return (
-                <label key={folder} className={syncBusy === 'import' ? 'disabled' : undefined}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleExcludedDefault(folder)}
-                    disabled={syncBusy === 'import'}
-                  />
-                  {folder}
-                </label>
-              )
-            })}
+        <div className="catalog-sync-controls">
+          <div className="catalog-sync-buttons">
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleImportMailbox}
+              disabled={loading || saving || syncBusy !== null}
+            >
+              {syncBusy === 'import' ? 'Übernehme…' : 'Postfach → Katalog'}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleExportMailbox}
+              disabled={loading || syncBusy !== null}
+            >
+              {syncBusy === 'export' ? 'Spiegele…' : 'Katalog → Postfach'}
+            </button>
+          </div>
+          <div className="catalog-sync-defaults">
+            <span>Standardordner überspringen</span>
+            <div className="catalog-default-grid">
+              {DEFAULT_MAILBOX_FOLDERS.map(folder => {
+                const checked = excludedDefaultsSet.has(folder.toLowerCase())
+                return (
+                  <label key={folder} className={syncBusy === 'import' ? 'disabled' : undefined}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleExcludedDefault(folder)}
+                      disabled={syncBusy === 'import'}
+                    />
+                    {folder}
+                  </label>
+                )
+              })}
+            </div>
           </div>
         </div>
-      </div>
-    </section>
-  )
+      </section>
+    )
 
   const notices = (
     <>
@@ -1075,7 +1100,8 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
     <>
       {syncControls}
       <div className="catalog-body">
-        <section className="catalog-section folder-section">
+        {showFolderTools && (
+          <section className="catalog-section folder-section">
           <aside className="catalog-sidebar folder-nav">
             <div className="catalog-sidebar-header">
               <h2>Ordnerkatalog</h2>
@@ -1255,9 +1281,11 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
               )}
             </div>
           </div>
-        </section>
+          </section>
+        )}
 
-        <section className="catalog-section tag-section">
+        {showTagTools && (
+          <section className="catalog-section tag-section">
           <aside className="catalog-sidebar tag-nav">
             <div className="catalog-sidebar-header">
               <h2>Tag-Slots</h2>
@@ -1390,7 +1418,8 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
               )}
             </div>
           </div>
-        </section>
+          </section>
+        )}
       </div>
     </>
   )

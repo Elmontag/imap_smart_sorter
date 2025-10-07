@@ -272,32 +272,40 @@ export default function DashboardPage(): JSX.Element {
             Einstellungen
           </NavLink>
         </nav>
-        <div className="analysis-toolbar">
-          <div className="analysis-status">
-            <span className={`status-dot ${scanSummary.active ? 'active' : 'idle'}`} aria-hidden="true" />
-            <div>
-              <span className="label">Analyse</span>
-              <strong>{scanSummary.statusLabel}</strong>
+        <div className="analysis-top">
+          <div className="analysis-canvas">
+            <div className="analysis-status">
+              <span className={`status-dot ${scanSummary.active ? 'active' : 'idle'}`} aria-hidden="true" />
+              <div>
+                <span className="label">Analyse</span>
+                <strong>{scanSummary.statusLabel}</strong>
+              </div>
             </div>
+            <dl className="analysis-meta">
+              <div>
+                <dt>Ordner</dt>
+                <dd>{scanSummary.folderLabel}</dd>
+              </div>
+              <div>
+                <dt>Intervall</dt>
+                <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
+              </div>
+              <div>
+                <dt>Letzter Abschluss</dt>
+                <dd>{scanSummary.lastFinished ?? '–'}</dd>
+              </div>
+              <div>
+                <dt>Ergebnis</dt>
+                <dd>{scanSummary.resultLabel ?? '–'}</dd>
+              </div>
+            </dl>
+            {(scanSummary.lastStarted || scanSummary.error) && (
+              <div className="analysis-foot">
+                {scanSummary.lastStarted && <span>Zuletzt gestartet: {scanSummary.lastStarted}</span>}
+                {scanSummary.error && <span className="analysis-error">Letzter Fehler: {scanSummary.error}</span>}
+              </div>
+            )}
           </div>
-          <dl className="analysis-meta">
-            <div>
-              <dt>Ordner</dt>
-              <dd>{scanSummary.folderLabel}</dd>
-            </div>
-            <div>
-              <dt>Intervall</dt>
-              <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
-            </div>
-            <div>
-              <dt>Letzter Abschluss</dt>
-              <dd>{scanSummary.lastFinished ?? '–'}</dd>
-            </div>
-            <div>
-              <dt>Ergebnis</dt>
-              <dd>{scanSummary.resultLabel ?? '–'}</dd>
-            </div>
-          </dl>
           <div className="analysis-actions">
             <button
               type="button"
@@ -325,12 +333,6 @@ export default function DashboardPage(): JSX.Element {
             </button>
           </div>
         </div>
-        {(scanSummary.lastStarted || scanSummary.error) && (
-          <div className="analysis-toolbar-meta">
-            {scanSummary.lastStarted && <span>Zuletzt gestartet: {scanSummary.lastStarted}</span>}
-            {scanSummary.error && <span className="analysis-error">Letzter Fehler: {scanSummary.error}</span>}
-          </div>
-        )}
       </header>
 
       {status && (
