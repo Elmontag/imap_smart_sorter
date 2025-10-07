@@ -19,6 +19,7 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
   const processedCount = overview?.processed_count ?? 0
   const ratioText = useMemo(() => formatPercent(overview?.pending_ratio ?? 0), [overview?.pending_ratio])
   const limitActive = overview?.limit_active ?? Boolean(overview?.list_limit && overview.list_limit > 0)
+  const limitDisabled = !limitActive && (overview?.list_limit ?? null) === 0
   const entries = overview?.pending ?? []
   const itemsPerPage = 10
   const [page, setPage] = useState(1)
@@ -66,11 +67,19 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
       {loading && <div className="pending-placeholder">Live-Status wird geladen…</div>}
 
       {!loading && !pendingCount && !error && (
-        <div className="pending-placeholder">Alle aktuellen Nachrichten wurden bereits analysiert.</div>
+        <div className="pending-placeholder">
+          {limitDisabled
+            ? 'Detailansicht deaktiviert (PENDING_LIST_LIMIT=0). Zähler bleiben aktiv.'
+            : 'Keine offenen Nachrichten gefunden.'}
+        </div>
       )}
 
       {!loading && pendingCount > 0 && entries.length === 0 && (
-        <div className="pending-placeholder">Keine Details verfügbar.</div>
+        <div className="pending-placeholder">
+          {limitDisabled
+            ? 'Die Liste der offenen Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
+            : 'Keine Details verfügbar.'}
+        </div>
       )}
 
       {!loading && pendingCount > 0 && entries.length > 0 && (

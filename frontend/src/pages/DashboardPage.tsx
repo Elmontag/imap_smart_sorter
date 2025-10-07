@@ -271,10 +271,68 @@ export default function DashboardPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
-          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Katalog
-          </NavLink>
         </nav>
+        <div className="analysis-top">
+          <div className="analysis-canvas">
+            <div className="analysis-status">
+              <span className={`status-dot ${scanSummary.active ? 'active' : 'idle'}`} aria-hidden="true" />
+              <div>
+                <span className="label">Analyse</span>
+                <strong>{scanSummary.statusLabel}</strong>
+              </div>
+            </div>
+            <dl className="analysis-meta">
+              <div>
+                <dt>Ordner</dt>
+                <dd>{scanSummary.folderLabel}</dd>
+              </div>
+              <div>
+                <dt>Intervall</dt>
+                <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
+              </div>
+              <div>
+                <dt>Letzter Abschluss</dt>
+                <dd>{scanSummary.lastFinished ?? '–'}</dd>
+              </div>
+              <div>
+                <dt>Ergebnis</dt>
+                <dd>{scanSummary.resultLabel ?? '–'}</dd>
+              </div>
+            </dl>
+            {(scanSummary.lastStarted || scanSummary.error) && (
+              <div className="analysis-foot">
+                {scanSummary.lastStarted && <span>Zuletzt gestartet: {scanSummary.lastStarted}</span>}
+                {scanSummary.error && <span className="analysis-error">Letzter Fehler: {scanSummary.error}</span>}
+              </div>
+            )}
+          </div>
+          <div className="analysis-actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleRescan}
+              disabled={rescanBusy || scanBusy || scanSummary.active}
+            >
+              {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={handleStartScan}
+              disabled={scanBusy || scanSummary.active}
+            >
+              {scanBusy && !scanSummary.active ? 'Starte Analyse…' : 'Analyse starten'}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleStopScan}
+              disabled={scanBusy || !scanSummary.active}
+            >
+              {scanBusy && scanSummary.active ? 'Stoppe Analyse…' : 'Analyse stoppen'}
+            </button>
+          </div>
+        </div>
       </header>
 
       {status && (
@@ -319,72 +377,6 @@ export default function DashboardPage(): JSX.Element {
           )}
         </aside>
         <main className="app-main">
-          <section className={`scan-status-card ${scanSummary.active ? 'active' : 'idle'}`}>
-            <div className="scan-status-header">
-              <div>
-                <h2>Analyse-Status</h2>
-                <p className="scan-status-subline">
-                  {scanSummary.active
-                    ? 'Die automatische Analyse läuft kontinuierlich. Einmalanalysen sind währenddessen deaktiviert.'
-                    : 'Starte bei Bedarf die Daueranalyse oder führe eine Einmalanalyse für eine sofortige Auswertung aus.'}
-                </p>
-              </div>
-              <div className="scan-actions">
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={handleRescan}
-                  disabled={rescanBusy || scanBusy || scanSummary.active}
-                >
-                  {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={handleStartScan}
-                  disabled={scanBusy || scanSummary.active}
-                >
-                  {scanBusy && !scanSummary.active ? 'Starte Analyse…' : 'Analyse starten'}
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={handleStopScan}
-                  disabled={scanBusy || !scanSummary.active}
-                >
-                  {scanBusy && scanSummary.active ? 'Stoppe Analyse…' : 'Analyse stoppen'}
-                </button>
-              </div>
-            </div>
-            <div className="scan-status-body">
-              <div className="scan-stat">
-                <span className="label">Status</span>
-                <strong>{scanSummary.statusLabel}</strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Ordner</span>
-                <strong>{scanSummary.folderLabel}</strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Intervall</span>
-                <strong>
-                  {scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}
-                </strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Letzter Lauf</span>
-                <strong>{scanSummary.lastFinished ?? '–'}</strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Ergebnis</span>
-                <strong>{scanSummary.resultLabel ?? '–'}</strong>
-              </div>
-            </div>
-            {scanSummary.lastStarted && (
-              <div className="scan-status-meta">Zuletzt gestartet: {scanSummary.lastStarted}</div>
-            )}
-            {scanSummary.error && <div className="scan-status-error">Letzter Fehler: {scanSummary.error}</div>}
-          </section>
           <AutomationSummaryCard
             activity={filterActivity}
             loading={filterActivityLoading}

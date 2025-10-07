@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, NavLink } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import {
   CatalogDefinition,
   FolderChildConfig,
@@ -14,6 +14,8 @@ import DevtoolsPanel from './DevtoolsPanel'
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 
+const DEFAULT_MAILBOX_FOLDERS = ['INBOX', 'Sent', 'Drafts', 'Trash', 'Spam', 'Junk', 'Archive']
+
 type StatusKind = 'info' | 'success' | 'error'
 
 interface StatusMessage {
@@ -21,9 +23,12 @@ interface StatusMessage {
   message: string
 }
 
+type CatalogSectionMode = 'all' | 'folders' | 'tagSlots'
+
 interface CatalogEditorProps {
   embedded?: boolean
   showDevtools?: boolean
+  section?: CatalogSectionMode
 }
 
 interface FolderNodeDraft {
@@ -287,7 +292,14 @@ const findNodePath = (
   }
   return []
 }
-export default function CatalogEditor({ embedded = false, showDevtools = !embedded }: CatalogEditorProps): JSX.Element {
+export default function CatalogEditor({
+  embedded = false,
+  showDevtools = !embedded,
+  section = 'all',
+}: CatalogEditorProps): JSX.Element {
+  const sectionMode: CatalogSectionMode = section
+  const showFolderTools = sectionMode !== 'tagSlots'
+  const showTagTools = sectionMode !== 'folders'
   const [draft, setDraft] = useState<CatalogDraft | null>(null)
   const [original, setOriginal] = useState<CatalogDefinition | null>(null)
   const [loading, setLoading] = useState(true)
@@ -298,6 +310,11 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
   const [selectedFolder, setSelectedFolder] = useState<SelectedFolder | null>(null)
   const [folderNavExpanded, setFolderNavExpanded] = useState<Set<string>>(new Set())
   const [selectedTagSlotId, setSelectedTagSlotId] = useState<string | null>(null)
+  const [excludedDefaults, setExcludedDefaults] = useState<string[]>(() => [...DEFAULT_MAILBOX_FOLDERS])
+  const excludedDefaultsSet = useMemo(
+    () => new Set(excludedDefaults.map(value => value.toLowerCase())),
+    [excludedDefaults],
+  )
 
   const loadCatalog = useCallback(async () => {
     setLoading(true)
@@ -911,16 +928,38 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
     }
   }, [draft])
 
+  const toggleExcludedDefault = useCallback((name: string) => {
+    setExcludedDefaults(current => {
+      const normalized = name.toLowerCase()
+      const remaining = current.filter(item => item.toLowerCase() !== normalized)
+      const alreadyExcluded = remaining.length !== current.length
+      if (alreadyExcluded) {
+        return remaining
+      }
+      const next = [...current, name]
+      next.sort((a, b) => DEFAULT_MAILBOX_FOLDERS.indexOf(a) - DEFAULT_MAILBOX_FOLDERS.indexOf(b))
+      return next
+    })
+  }, [])
+
   const handleImportMailbox = useCallback(async () => {
+    const confirmation =
+      'Der Import ersetzt den aktuellen Katalog vollständig durch die Struktur des Postfachs. Bereits gepflegte Bereiche gehen dabei verloren. Fortfahren?'
+    if (!window.confirm(confirmation)) {
+      return
+    }
     setSyncBusy('import')
     try {
-      const response = await importCatalogFromMailbox()
+      const response = await importCatalogFromMailbox({ excludeDefaults: excludedDefaults })
       const normalized = normalizeCatalog(response)
       setOriginal(normalized)
       setDraft(toDraft(normalized))
+      const skippedLabel = excludedDefaults.length
+        ? ` Standardordner ignoriert: ${excludedDefaults.join(', ')}.`
+        : ''
       setStatus({
         kind: 'success',
-        message: `Ordnerstruktur aus ${response.imported_folders.length} IMAP-Ordnern übernommen.`,
+        message: `Ordnerstruktur aus ${response.imported_folders.length} IMAP-Ordnern übernommen.${skippedLabel}`,
       })
       setLoadError(null)
     } catch (err) {
@@ -928,9 +967,14 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
     } finally {
       setSyncBusy(null)
     }
-  }, [])
+  }, [excludedDefaults])
 
   const handleExportMailbox = useCallback(async () => {
+    const confirmation =
+      'Beim Spiegeln werden fehlende Katalogordner direkt im Postfach angelegt. Dies kann bei vielen Bereichen zahlreiche IMAP-Ordner erzeugen. Fortfahren?'
+    if (!window.confirm(confirmation)) {
+      return
+    }
     setSyncBusy('export')
     try {
       const response = await exportCatalogToMailbox()
@@ -948,12 +992,26 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
+  const headerTitle =
+    sectionMode === 'tagSlots'
+      ? 'Tag-Slots verwalten'
+      : sectionMode === 'folders'
+      ? 'Ordnerkatalog pflegen'
+      : 'Katalog verwalten'
+
+  const headerSubtitle =
+    sectionMode === 'tagSlots'
+      ? 'Pflege Slot-Definitionen für KI-Tags und wähle erlaubte Optionen.'
+      : sectionMode === 'folders'
+      ? 'Steuere Bereiche, Ordnerabgleich und Kontext-Tags im Detail.'
+      : 'Passe Ordnerhierarchie und Tag-Slots direkt an.'
+
   const header = (
     <header className={`app-header${embedded ? ' embedded' : ''}`}>
       <div className="header-top">
         <div>
-          <h1>Katalog verwalten</h1>
-          <p className="app-subline">Passe Ordnerhierarchie und Tag-Slots direkt an.</p>
+          <h1>{headerTitle}</h1>
+          <p className="app-subline">{headerSubtitle}</p>
         </div>
         <div className="header-actions">
           {!embedded && (
@@ -961,22 +1019,6 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
               Zurück zur Übersicht
             </Link>
           )}
-          <button
-            type="button"
-            className="ghost"
-            onClick={handleImportMailbox}
-            disabled={loading || saving || syncBusy !== null}
-          >
-            {syncBusy === 'import' ? 'Übernehme…' : 'Postfach → Katalog'}
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            onClick={handleExportMailbox}
-            disabled={loading || syncBusy !== null}
-          >
-            {syncBusy === 'export' ? 'Spiegele…' : 'Katalog → Postfach'}
-          </button>
           <button type="button" className="ghost" onClick={handleReset} disabled={!isDirty || saving || loading}>
             Änderungen verwerfen
           </button>
@@ -985,21 +1027,60 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
           </button>
         </div>
       </div>
-      {!embedded && (
-        <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Katalog
-          </NavLink>
-        </nav>
-      )}
     </header>
   )
+
+  const syncControls =
+    showFolderTools && (
+      <section className="catalog-sync">
+        <div className="catalog-sync-info">
+          <h2>Ordnerabgleich</h2>
+          <p>Importiere die IMAP-Struktur oder lege fehlende Katalogordner im Postfach an.</p>
+          <p className="catalog-sync-warning">
+            Achtung: Der Import ersetzt den Katalog, beim Export werden Ordner direkt angelegt.
+          </p>
+        </div>
+        <div className="catalog-sync-controls">
+          <div className="catalog-sync-buttons">
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleImportMailbox}
+              disabled={loading || saving || syncBusy !== null}
+            >
+              {syncBusy === 'import' ? 'Übernehme…' : 'Postfach → Katalog'}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleExportMailbox}
+              disabled={loading || syncBusy !== null}
+            >
+              {syncBusy === 'export' ? 'Spiegele…' : 'Katalog → Postfach'}
+            </button>
+          </div>
+          <div className="catalog-sync-defaults">
+            <span>Standardordner überspringen</span>
+            <div className="catalog-default-grid">
+              {DEFAULT_MAILBOX_FOLDERS.map(folder => {
+                const checked = excludedDefaultsSet.has(folder.toLowerCase())
+                return (
+                  <label key={folder} className={syncBusy === 'import' ? 'disabled' : undefined}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleExcludedDefault(folder)}
+                      disabled={syncBusy === 'import'}
+                    />
+                    {folder}
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
+    )
 
   const notices = (
     <>
@@ -1016,8 +1097,11 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
   )
 
   const body = (
-    <div className="catalog-body">
-        <section className="catalog-section folder-section">
+    <>
+      {syncControls}
+      <div className="catalog-body">
+        {showFolderTools && (
+          <section className="catalog-section folder-section">
           <aside className="catalog-sidebar folder-nav">
             <div className="catalog-sidebar-header">
               <h2>Ordnerkatalog</h2>
@@ -1197,9 +1281,11 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
               )}
             </div>
           </div>
-        </section>
+          </section>
+        )}
 
-        <section className="catalog-section tag-section">
+        {showTagTools && (
+          <section className="catalog-section tag-section">
           <aside className="catalog-sidebar tag-nav">
             <div className="catalog-sidebar-header">
               <h2>Tag-Slots</h2>
@@ -1332,8 +1418,10 @@ export default function CatalogEditor({ embedded = false, showDevtools = !embedd
               )}
             </div>
           </div>
-        </section>
+          </section>
+        )}
       </div>
+    </>
   )
 
   const wrapperClass = embedded ? 'catalog-shell embedded-shell' : 'app-shell catalog-shell'

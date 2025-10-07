@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   KeywordFilterConfig,
@@ -12,6 +12,7 @@ import {
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
 import CatalogEditor from '../components/CatalogEditor'
 import DevtoolsPanel from '../components/DevtoolsPanel'
+import RuleEditorForm, { EditableRuleDraft } from '../components/RuleEditorForm'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
 
@@ -20,14 +21,39 @@ const fieldOrder: KeywordFilterField[] = ['subject', 'sender', 'body']
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
-const defaultRule = (): KeywordFilterRuleConfig => ({
+const baseRuleConfig = (): KeywordFilterRuleConfig => ({
   name: '',
   description: '',
   enabled: true,
   target_folder: '',
   tags: [],
   match: { mode: 'all', fields: [...fieldOrder], terms: [] },
-  date: { after: null, before: null },
+  date: { after: null, before: null, include_future: false },
+})
+
+const cloneRuleConfig = (rule: KeywordFilterRuleConfig): KeywordFilterRuleConfig => ({
+  name: rule.name,
+  description: rule.description ?? '',
+  enabled: rule.enabled,
+  target_folder: rule.target_folder,
+  tags: [...rule.tags],
+  match: {
+    mode: rule.match.mode,
+    fields: [...rule.match.fields],
+    terms: [...rule.match.terms],
+  },
+  date: rule.date
+    ? {
+        after: rule.date.after ?? null,
+        before: rule.date.before ?? null,
+        include_future: Boolean(rule.date.include_future),
+      }
+    : { after: null, before: null, include_future: false },
+})
+
+const createRuleDraft = (rule?: KeywordFilterRuleConfig): EditableRuleDraft => ({
+  ...cloneRuleConfig(rule ?? baseRuleConfig()),
+  id: createId(),
 })
 
 const normalizeList = (values: string[]): string[] => {
@@ -45,24 +71,16 @@ const normalizeList = (values: string[]): string[] => {
 
 const parseList = (value: string): string[] => normalizeList(value.split(/[\n,]+/))
 
-type SettingsTab = 'automation' | 'catalog' | 'analysis' | 'general'
+type SettingsTab = 'automation' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general'
+
+type RuleDraft = EditableRuleDraft
+type TemplateDraft = EditableRuleDraft
 
 type StatusKind = 'info' | 'success' | 'error'
 
 interface StatusMessage {
   kind: StatusKind
   message: string
-}
-
-interface RuleDraft extends KeywordFilterRuleConfig {
-  id: string
-}
-
-interface RuleTemplateDefinition {
-  id: string
-  label: string
-  description: string
-  create: () => KeywordFilterRuleConfig
 }
 
 interface ConfigDraft {
@@ -72,135 +90,77 @@ interface ConfigDraft {
   processedTag: string
   aiTagPrefix: string
 }
-
-const ruleTemplates: RuleTemplateDefinition[] = [
+const defaultTemplateConfigs: KeywordFilterRuleConfig[] = [
   {
-    id: 'newsletter-tech',
-    label: 'Newsletter – Technik',
-    description: 'Fängt Technik-Newsletter und sortiert sie in einen dedizierten Ordner.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Newsletter Technik',
-        description: 'Automatische Ablage von Technik-Updates und Produktnews.',
-        target_folder: 'Newsletter/Technik',
-        tags: ['newsletter', 'technik'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender'],
-          terms: ['newsletter', 'technik', 'update', 'abo'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Newsletter Technik',
+    description: 'Automatische Ablage von Technik-Updates und Produktnews.',
+    target_folder: 'Newsletter/Technik',
+    tags: ['newsletter', 'technik'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender'],
+      terms: ['newsletter', 'technik', 'update', 'abo'],
     },
   },
   {
-    id: 'newsletter-fashion',
-    label: 'Newsletter – Mode',
-    description: 'Bündelt Mode- und Lifestyle-Newsletter.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Newsletter Mode',
-        description: 'Sortiert Mode-Newsletter automatisch in einen Sammelordner.',
-        target_folder: 'Newsletter/Mode',
-        tags: ['newsletter', 'mode'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender'],
-          terms: ['newsletter', 'mode', 'fashion', 'lookbook', 'trend'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Newsletter Mode',
+    description: 'Sortiert Mode-Newsletter automatisch in einen Sammelordner.',
+    target_folder: 'Newsletter/Mode',
+    tags: ['newsletter', 'mode'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender'],
+      terms: ['newsletter', 'mode', 'fashion', 'lookbook', 'trend'],
     },
   },
   {
-    id: 'newsletter-food',
-    label: 'Newsletter – Lebensmittel',
-    description: 'Sammelt Rezepte, Wochenangebote und Food-Newsletter.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Newsletter Lebensmittel',
-        description: 'Lebensmittel-Newsletter landen zuverlässig im passenden Ordner.',
-        target_folder: 'Newsletter/Lebensmittel',
-        tags: ['newsletter', 'lebensmittel'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender'],
-          terms: ['newsletter', 'rezept', 'angebot', 'lebensmittel', 'wochenangebot'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Newsletter Lebensmittel',
+    description: 'Lebensmittel-Newsletter landen zuverlässig im passenden Ordner.',
+    target_folder: 'Newsletter/Lebensmittel',
+    tags: ['newsletter', 'lebensmittel'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender'],
+      terms: ['newsletter', 'rezept', 'angebot', 'lebensmittel', 'wochenangebot'],
     },
   },
   {
-    id: 'orders',
-    label: 'Bestellungen & Rechnungen',
-    description: 'Erkennt Bestellbestätigungen, Rechnungen und Versandbenachrichtigungen.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Bestellungen & Rechnungen',
-        description: 'Sortiert Bestell- und Rechnungs-Mails nach Händler in einen Sammelordner.',
-        target_folder: 'Finanzen/Bestellungen',
-        tags: ['bestellung', 'rechnung'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender', 'body'],
-          terms: [
-            'rechnung',
-            'bestellung',
-            'versandbestätigung',
-            'amazon',
-            'otto',
-            'mediamarkt',
-            'saturn',
-            'lieferung',
-          ],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Bestellungen & Rechnungen',
+    description: 'Sortiert Bestell- und Rechnungs-Mails nach Händler in einen Sammelordner.',
+    target_folder: 'Finanzen/Bestellungen',
+    tags: ['bestellung', 'rechnung'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender', 'body'],
+      terms: ['rechnung', 'bestellung', 'versandbestätigung', 'amazon', 'otto', 'mediamarkt', 'saturn', 'lieferung'],
     },
   },
   {
-    id: 'events',
-    label: 'Konzerte & Veranstaltungen',
-    description: 'Fängt Ticketbestätigungen und Event-Hinweise für kommende Termine ab.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Konzerte & Veranstaltungen',
-        description: 'Ticketbestätigungen werden gesammelt und bleiben bis zum Event verfügbar.',
-        target_folder: 'Events/Konzerte',
-        tags: ['event', 'konzert'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'body'],
-          terms: ['eventim', 'ticketmaster', 'konzert', 'veranstaltung', 'tickets', 'tour'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Konzerte & Veranstaltungen',
+    description: 'Ticketbestätigungen werden gesammelt und bleiben bis zum Event verfügbar.',
+    target_folder: 'Events/Konzerte',
+    tags: ['event', 'konzert'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'body'],
+      terms: ['eventim', 'ticketmaster', 'konzert', 'veranstaltung', 'tickets', 'tour'],
     },
   },
   {
-    id: 'calendar',
-    label: 'Kalendereinladungen',
-    description: 'Behandelt Termineinladungen und ICS-Dateien als priorisierte Aufgaben.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Kalendereinladungen',
-        description: 'Sammelt Einladungen mit Kalendereinträgen an einem Ort.',
-        target_folder: 'Termine/Eingehend',
-        tags: ['kalender', 'termin'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'body'],
-          terms: ['kalender', 'termin', 'einladung', '.ics', 'calendar', 'invite'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Kalendereinladungen',
+    description: 'Sammelt Einladungen mit Kalendereinträgen an einem Ort.',
+    target_folder: 'Termine/Eingehend',
+    tags: ['kalender', 'termin'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'body'],
+      terms: ['kalender', 'termin', 'einladung', '.ics', 'calendar', 'invite'],
     },
   },
 ]
@@ -219,6 +179,12 @@ export default function SettingsPage(): JSX.Element {
   const [filtersSaving, setFiltersSaving] = useState(false)
   const [filterError, setFilterError] = useState<string | null>(null)
   const [status, setStatus] = useState<StatusMessage | null>(null)
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false)
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false)
+  const [ruleTemplates, setRuleTemplates] = useState<TemplateDraft[]>(() =>
+    defaultTemplateConfigs.map(config => createRuleDraft(config)),
+  )
+  const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null)
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     mode: 'DRY_RUN',
     classifierModel: '',
@@ -228,6 +194,7 @@ export default function SettingsPage(): JSX.Element {
   })
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
+  const templateMenuRef = useRef<HTMLDivElement | null>(null)
 
   const {
     data: appConfig,
@@ -246,7 +213,7 @@ export default function SettingsPage(): JSX.Element {
     setFiltersLoading(true)
     try {
       const config = await getKeywordFilters()
-      const drafts = config.rules.map(rule => ({ ...rule, id: createId() }))
+      const drafts = config.rules.map(rule => createRuleDraft(rule))
       setRuleDrafts(drafts)
       setSelectedRuleId(drafts.length > 0 ? drafts[0].id : null)
       setFilterError(null)
@@ -260,6 +227,49 @@ export default function SettingsPage(): JSX.Element {
   useEffect(() => {
     void loadFilters()
   }, [loadFilters])
+
+  useEffect(() => {
+    setTemplateMenuOpen(false)
+    setTemplateManagerOpen(false)
+  }, [activeTab])
+
+  useEffect(() => {
+    if (!templateManagerOpen) {
+      return
+    }
+    if (ruleTemplates.length === 0) {
+      setExpandedTemplateId(null)
+      return
+    }
+    if (!expandedTemplateId || !ruleTemplates.some(template => template.id === expandedTemplateId)) {
+      setExpandedTemplateId(ruleTemplates[0].id)
+    }
+  }, [templateManagerOpen, ruleTemplates, expandedTemplateId])
+
+  useEffect(() => {
+    if (!templateMenuOpen) {
+      return
+    }
+    const handleClick = (event: MouseEvent) => {
+      if (!templateMenuRef.current) {
+        return
+      }
+      if (!templateMenuRef.current.contains(event.target as Node)) {
+        setTemplateMenuOpen(false)
+      }
+    }
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setTemplateMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [templateMenuOpen])
 
   useEffect(() => {
     if (!appConfig) {
@@ -278,6 +288,10 @@ export default function SettingsPage(): JSX.Element {
     () => (selectedRuleId ? ruleDrafts.find(rule => rule.id === selectedRuleId) ?? null : null),
     [ruleDrafts, selectedRuleId],
   )
+
+  const updateTemplate = useCallback((id: string, mutator: (template: TemplateDraft) => TemplateDraft) => {
+    setRuleTemplates(current => current.map(template => (template.id === id ? mutator(template) : template)))
+  }, [])
 
   const classifierOptions = useMemo(
     () =>
@@ -326,16 +340,80 @@ export default function SettingsPage(): JSX.Element {
   )
 
   const handleAddRule = useCallback(() => {
-    const draft: RuleDraft = { ...defaultRule(), id: createId() }
+    const draft = createRuleDraft()
     setRuleDrafts(current => [...current, draft])
     setSelectedRuleId(draft.id)
+    setTemplateMenuOpen(false)
   }, [])
 
-  const handleAddTemplate = useCallback((template: RuleTemplateDefinition) => {
-    const draft: RuleDraft = { ...template.create(), id: createId() }
-    setRuleDrafts(current => [...current, draft])
-    setSelectedRuleId(draft.id)
-    setStatus({ kind: 'info', message: `Template „${template.label}“ hinzugefügt. Passe Name und Zielordner an.` })
+  const handleApplyTemplate = useCallback(
+    (templateId: string) => {
+      const template = ruleTemplates.find(item => item.id === templateId)
+      if (!template) {
+        return
+      }
+      const draft = createRuleDraft(template)
+      setRuleDrafts(current => [...current, draft])
+      setSelectedRuleId(draft.id)
+      setStatus({
+        kind: 'info',
+        message: `Vorlage „${template.name || 'Ohne Titel'}“ übernommen. Passe die Details bei Bedarf an.`,
+      })
+      setTemplateMenuOpen(false)
+    },
+    [ruleTemplates],
+  )
+
+  const handleDuplicateRule = useCallback(
+    (id: string) => {
+      let nextId: string | null = null
+      setRuleDrafts(current => {
+        const index = current.findIndex(rule => rule.id === id)
+        if (index === -1) {
+          return current
+        }
+        const original = current[index]
+        const duplicate = createRuleDraft(original)
+        duplicate.name = original.name ? `${original.name} (Kopie)` : 'Unbenannte Regel'
+        nextId = duplicate.id
+        const next = [...current]
+        next.splice(index + 1, 0, duplicate)
+        return next
+      })
+      if (nextId) {
+        setSelectedRuleId(nextId)
+        setStatus({ kind: 'info', message: 'Regel dupliziert. Prüfe die Kopie vor dem Speichern.' })
+      }
+    },
+    [],
+  )
+
+  const handleSaveAsTemplate = useCallback(
+    (rule: RuleDraft) => {
+      const template = createRuleDraft(rule)
+      template.name = rule.name || 'Neue Vorlage'
+      setRuleTemplates(current => [...current, template])
+      setTemplateManagerOpen(true)
+      setExpandedTemplateId(template.id)
+      setStatus({
+        kind: 'success',
+        message: `Regel „${rule.name || 'Ohne Titel'}“ als Vorlage gespeichert.`,
+      })
+    },
+    [],
+  )
+
+  const handleAddTemplateDefinition = useCallback(() => {
+    const template = createRuleDraft()
+    template.name = 'Neue Vorlage'
+    setRuleTemplates(current => [...current, template])
+    setTemplateManagerOpen(true)
+    setExpandedTemplateId(template.id)
+  }, [])
+
+  const handleRemoveTemplateDefinition = useCallback((id: string) => {
+    setRuleTemplates(current => current.filter(template => template.id !== id))
+    setExpandedTemplateId(current => (current === id ? null : current))
   }, [])
 
   const handleFilterSave = useCallback(async () => {
@@ -360,8 +438,12 @@ export default function SettingsPage(): JSX.Element {
             terms: normalizeList(rule.match.terms),
           },
           date:
-            rule.date && (rule.date.after || rule.date.before)
-              ? { after: rule.date.after || null, before: rule.date.before || null }
+            rule.date && (rule.date.after || rule.date.before || rule.date.include_future)
+              ? {
+                  after: rule.date.after || null,
+                  before: rule.date.before || null,
+                  include_future: Boolean(rule.date.include_future),
+                }
               : undefined,
         }
       }),
@@ -453,9 +535,6 @@ export default function SettingsPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
-          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Katalog
-          </NavLink>
         </nav>
       </header>
 
@@ -471,10 +550,12 @@ export default function SettingsPage(): JSX.Element {
       {configError && <div className="status-banner error">{configError}</div>}
       {appConfigError && <div className="status-banner error">{appConfigError}</div>}
 
-      <div className="settings-layout">
-        <aside className="settings-sidebar">
+      <div className="settings-shell">
+        <nav className="settings-subnav" role="tablist" aria-label="Einstellungen">
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'automation'}
             className={`settings-tab ${activeTab === 'automation' ? 'active' : ''}`}
             onClick={() => setActiveTab('automation')}
           >
@@ -482,13 +563,26 @@ export default function SettingsPage(): JSX.Element {
           </button>
           <button
             type="button"
-            className={`settings-tab ${activeTab === 'catalog' ? 'active' : ''}`}
-            onClick={() => setActiveTab('catalog')}
+            role="tab"
+            aria-selected={activeTab === 'catalogFolders'}
+            className={`settings-tab ${activeTab === 'catalogFolders' ? 'active' : ''}`}
+            onClick={() => setActiveTab('catalogFolders')}
           >
-            Katalog
+            Ordnerkatalog
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'catalogTags'}
+            className={`settings-tab ${activeTab === 'catalogTags' ? 'active' : ''}`}
+            onClick={() => setActiveTab('catalogTags')}
+          >
+            Tag-Slots
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'analysis'}
             className={`settings-tab ${activeTab === 'analysis' ? 'active' : ''}`}
             onClick={() => setActiveTab('analysis')}
           >
@@ -496,12 +590,14 @@ export default function SettingsPage(): JSX.Element {
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'general'}
             className={`settings-tab ${activeTab === 'general' ? 'active' : ''}`}
             onClick={() => setActiveTab('general')}
           >
             Betrieb
           </button>
-        </aside>
+        </nav>
         <main className="settings-content">
           {activeTab === 'automation' && (
             <div className="settings-section">
@@ -516,8 +612,56 @@ export default function SettingsPage(): JSX.Element {
                 <button type="button" className="ghost" onClick={() => void loadFilters()} disabled={filtersLoading}>
                   {filtersLoading ? 'Lade…' : 'Neu laden'}
                 </button>
-                <button type="button" className="ghost" onClick={handleAddRule} disabled={filtersSaving}>
-                  Leere Regel
+                <div className="template-menu-wrapper" ref={templateMenuRef}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setTemplateMenuOpen(open => !open)}
+                    disabled={filtersSaving}
+                    aria-expanded={templateMenuOpen}
+                  >
+                    Neue Regel
+                  </button>
+                  {templateMenuOpen && (
+                    <div className="template-menu" role="menu">
+                      <button
+                        type="button"
+                        className="template-menu-item"
+                        onClick={handleAddRule}
+                        disabled={filtersSaving}
+                        role="menuitem"
+                      >
+                        Ohne Vorlage starten
+                      </button>
+                      <div className="template-menu-divider" role="presentation" />
+                      <div className="template-menu-list">
+                        {ruleTemplates.length === 0 && (
+                          <span className="template-menu-empty">Noch keine Vorlagen vorhanden.</span>
+                        )}
+                        {ruleTemplates.map(template => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            className="template-menu-item"
+                            onClick={() => handleApplyTemplate(template.id)}
+                            disabled={filtersSaving}
+                            role="menuitem"
+                          >
+                            <strong>{template.name || 'Unbenannte Vorlage'}</strong>
+                            <span>{template.target_folder || 'Kein Zielordner hinterlegt'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setTemplateManagerOpen(open => !open)}
+                  disabled={filtersSaving}
+                >
+                  {templateManagerOpen ? 'Vorlagen ausblenden' : 'Vorlagen verwalten'}
                 </button>
                 <button type="button" className="primary" onClick={handleFilterSave} disabled={filtersSaving}>
                   {filtersSaving ? 'Speichere…' : 'Filter speichern'}
@@ -531,9 +675,7 @@ export default function SettingsPage(): JSX.Element {
                   </div>
                   {filtersLoading && <div className="placeholder">Lade Filterdefinitionen…</div>}
                   {!filtersLoading && ruleDrafts.length === 0 && (
-                    <div className="placeholder">
-                      Noch keine Regeln vorhanden. Lege die erste Regel über „Leere Regel“ oder eine Vorlage an.
-                    </div>
+                    <div className="placeholder">Noch keine Regeln vorhanden. Nutze „Neue Regel“, um zu starten.</div>
                   )}
                   {!filtersLoading && ruleDrafts.length > 0 && (
                     <ul>
@@ -552,24 +694,6 @@ export default function SettingsPage(): JSX.Element {
                       ))}
                     </ul>
                   )}
-                  <div className="rule-templates">
-                    <h3>Vorlagen</h3>
-                    <ul>
-                      {ruleTemplates.map(template => (
-                        <li key={template.id}>
-                          <button
-                            type="button"
-                            className="template-button"
-                            onClick={() => handleAddTemplate(template)}
-                            disabled={filtersSaving}
-                          >
-                            <strong>{template.label}</strong>
-                            <span>{template.description}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
                 </aside>
 
                 <section className="rule-detail">
@@ -581,202 +705,107 @@ export default function SettingsPage(): JSX.Element {
                     <div className="filter-rule-card" key={selectedRule.id}>
                       <div className="filter-rule-header">
                         <div className="filter-rule-title">
-                          <label>
-                            <span>Name</span>
-                            <input
-                              type="text"
-                              value={selectedRule.name}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({ ...current, name: event.target.value }))
-                              }
-                              placeholder="z. B. Rechnungen 2024"
-                            />
-                          </label>
-                          <label className="inline">
-                            <input
-                              type="checkbox"
-                              checked={selectedRule.enabled}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({ ...current, enabled: event.target.checked }))
-                              }
-                            />
-                            Aktiv
-                          </label>
+                          <h2>{selectedRule.name || 'Unbenannte Regel'}</h2>
+                          <div className="filter-rule-meta">
+                            <span>{selectedRule.target_folder || 'Kein Zielordner'}</span>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          className="link"
-                          onClick={() => handleRuleRemoval(selectedRule.id)}
-                          disabled={filtersSaving}
-                        >
-                          Entfernen
-                        </button>
-                      </div>
-                      <div className="rule-card-body">
-                        <label>
-                          <span>Beschreibung</span>
-                          <textarea
-                            value={selectedRule.description ?? ''}
-                            onChange={event =>
-                              updateRule(selectedRule.id, current => ({ ...current, description: event.target.value }))
-                            }
-                            placeholder="Kurze Erläuterung der Regel"
-                          />
-                        </label>
-                        <label>
-                          <span>Zielordner</span>
-                          <input
-                            type="text"
-                            value={selectedRule.target_folder}
-                            onChange={event =>
-                              updateRule(selectedRule.id, current => ({ ...current, target_folder: event.target.value }))
-                            }
-                            placeholder="Projekt/2024/Abrechnung"
-                          />
-                        </label>
-                        <div className="filter-columns">
-                          <label>
-                            <span>Schlüsselwörter</span>
-                            <textarea
-                              value={selectedRule.match.terms.join('\n')}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({
-                                  ...current,
-                                  match: { ...current.match, terms: parseList(event.target.value) },
-                                }))
-                              }
-                              placeholder="Ein Begriff pro Zeile"
-                            />
-                          </label>
-                          <label>
-                            <span>Tags</span>
-                            <textarea
-                              value={selectedRule.tags.join('\n')}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({
-                                  ...current,
-                                  tags: parseList(event.target.value),
-                                }))
-                              }
-                              placeholder="Tag je Zeile, optional"
-                            />
-                          </label>
-                        </div>
-                        <div className="match-options">
-                          <fieldset>
-                            <legend>Match-Bedingung</legend>
-                            <label>
-                              <input
-                                type="radio"
-                                name={`mode-${selectedRule.id}`}
-                                value="all"
-                                checked={selectedRule.match.mode === 'all'}
-                                onChange={() =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    match: { ...current.match, mode: 'all' },
-                                  }))
-                                }
-                              />
-                              Alle Begriffe erforderlich
-                            </label>
-                            <label>
-                              <input
-                                type="radio"
-                                name={`mode-${selectedRule.id}`}
-                                value="any"
-                                checked={selectedRule.match.mode === 'any'}
-                                onChange={() =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    match: { ...current.match, mode: 'any' },
-                                  }))
-                                }
-                              />
-                              Ein Begriff genügt
-                            </label>
-                          </fieldset>
-                          <fieldset>
-                            <legend>Beobachtete Felder</legend>
-                            {fieldOrder.map(field => (
-                              <label key={field}>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedRule.match.fields.includes(field)}
-                                  onChange={() =>
-                                    updateRule(selectedRule.id, current => {
-                                      const set = new Set(current.match.fields)
-                                      if (set.has(field)) {
-                                        set.delete(field)
-                                      } else {
-                                        set.add(field)
-                                      }
-                                      if (set.size === 0) {
-                                        set.add(field)
-                                      }
-                                      const nextFields = Array.from(set).sort(
-                                        (a, b) => fieldOrder.indexOf(a) - fieldOrder.indexOf(b),
-                                      )
-                                      return {
-                                        ...current,
-                                        match: { ...current.match, fields: nextFields },
-                                      }
-                                    })
-                                  }
-                                />
-                                {field === 'subject' && 'Betreff'}
-                                {field === 'sender' && 'Absender'}
-                                {field === 'body' && 'Inhalt'}
-                              </label>
-                            ))}
-                          </fieldset>
-                          <fieldset>
-                            <legend>Datumsfenster</legend>
-                            <label>
-                              <span>ab</span>
-                              <input
-                                type="date"
-                                value={selectedRule.date?.after ?? ''}
-                                onChange={event =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    date: {
-                                      after: event.target.value || null,
-                                      before: current.date?.before ?? null,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>bis</span>
-                              <input
-                                type="date"
-                                value={selectedRule.date?.before ?? ''}
-                                onChange={event =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    date: {
-                                      after: current.date?.after ?? null,
-                                      before: event.target.value || null,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                          </fieldset>
+                        <div className="filter-rule-actions">
+                          <button type="button" className="ghost" onClick={() => handleDuplicateRule(selectedRule.id)}>
+                            Regel duplizieren
+                          </button>
+                          <button type="button" className="ghost" onClick={() => handleSaveAsTemplate(selectedRule)}>
+                            Als Vorlage speichern
+                          </button>
+                          <button type="button" className="link danger" onClick={() => handleRuleRemoval(selectedRule.id)}>
+                            Regel löschen
+                          </button>
                         </div>
                       </div>
+                      <RuleEditorForm
+                        draft={selectedRule}
+                        fieldOrder={fieldOrder}
+                        parseList={parseList}
+                        onChange={mutator => updateRule(selectedRule.id, mutator)}
+                      />
+                    </div>
+                  )}
+
+                </section>
+              </div>
+
+              {templateManagerOpen && (
+                <section className="template-manager">
+                  <div className="template-manager-header">
+                    <div>
+                      <h2>Regelvorlagen</h2>
+                      <p className="muted">Passe Vorlagen an oder ergänze neue Muster für häufige Fälle.</p>
+                    </div>
+                    <div className="template-manager-actions">
+                      <button type="button" className="ghost" onClick={handleAddTemplateDefinition}>
+                        Vorlage hinzufügen
+                      </button>
+                      <button type="button" className="link" onClick={() => setTemplateManagerOpen(false)}>
+                        Schließen
+                      </button>
+                    </div>
+                  </div>
+                  {ruleTemplates.length === 0 && (
+                    <div className="placeholder">Noch keine Vorlagen vorhanden. Lege eine neue Vorlage an.</div>
+                  )}
+                  {ruleTemplates.length > 0 && (
+                    <div className="template-list">
+                      {ruleTemplates.map(template => (
+                        <article className="template-card" key={template.id}>
+                          <header className="template-card-header">
+                            <button
+                              type="button"
+                              className={`template-toggle${template.id === expandedTemplateId ? ' open' : ''}`}
+                              onClick={() =>
+                                setExpandedTemplateId(current => (current === template.id ? null : template.id))
+                              }
+                              aria-expanded={template.id === expandedTemplateId}
+                            >
+                              <span className="template-name">{template.name || 'Unbenannte Vorlage'}</span>
+                              <span className="template-folder">{template.target_folder || 'Kein Zielordner'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="link danger"
+                              onClick={() => handleRemoveTemplateDefinition(template.id)}
+                            >
+                              Template löschen
+                            </button>
+                          </header>
+                          {expandedTemplateId === template.id && (
+                            <div className="template-card-body">
+                              <RuleEditorForm
+                                draft={template}
+                                fieldOrder={fieldOrder}
+                                parseList={parseList}
+                                onChange={mutator => updateTemplate(template.id, mutator)}
+                              />
+                            </div>
+                          )}
+                        </article>
+                      ))}
                     </div>
                   )}
                 </section>
-              </div>
+              )}
+
             </div>
           )}
 
-          {activeTab === 'catalog' && (
-            <div className="settings-section">
-              <CatalogEditor embedded showDevtools={false} />
+          {activeTab === 'catalogFolders' && (
+            <div className="settings-section wide">
+              <CatalogEditor embedded showDevtools={false} section="folders" />
+            </div>
+          )}
+
+          {activeTab === 'catalogTags' && (
+            <div className="settings-section wide">
+              <CatalogEditor embedded showDevtools={false} section="tagSlots" />
             </div>
           )}
 

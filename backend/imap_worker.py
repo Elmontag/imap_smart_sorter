@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import email
 import logging
+import os
 import re
 from email import policy
 from typing import Sequence
@@ -92,6 +93,20 @@ def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
     logger.debug("Adding AI Tags %s to %s", unique, uid)
     for tag in unique:
         add_message_tag(uid, folder, tag)
+
+
+def _should_autostart() -> bool:
+    raw = os.getenv("IMAP_WORKER_AUTOSTART")
+    if raw is None:
+        return False
+    normalized = raw.strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
+
+
+async def _idle_loop(interval: float) -> None:
+    delay = max(interval, 5.0)
+    while True:
+        await asyncio.sleep(delay)
 
 
 async def process_loop() -> None:
@@ -265,6 +280,13 @@ async def handle_message(
 if __name__ == "__main__":
     logging.basicConfig(level=getattr(logging, S.LOG_LEVEL.upper(), logging.INFO))
     try:
-        asyncio.run(process_loop())
+        if _should_autostart():
+            asyncio.run(process_loop())
+        else:
+            logger.info(
+                "Mailbox worker im Idle-Modus – setze IMAP_WORKER_AUTOSTART=1, um die Daueranalyse automatisch zu starten."
+            )
+            interval = float(getattr(S, "POLL_INTERVAL_SECONDS", 60))
+            asyncio.run(_idle_loop(interval))
     except KeyboardInterrupt:  # pragma: no cover - manual stop
         pass
