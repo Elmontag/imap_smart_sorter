@@ -535,7 +535,7 @@ export default function DashboardPage(): JSX.Element {
               </button>
             </div>
           </div>
-        )}
+        </div>
       </header>
       {dashboardView === 'mail' ? (
         <>
@@ -667,22 +667,22 @@ export default function DashboardPage(): JSX.Element {
                   {suggestionStats && (
                     <div className="suggestions-metrics">
                       <div className="suggestion-metric open">
-                    <span className="label">Zu bearbeiten</span>
-                    <strong>{suggestionStats.openCount}</strong>
-                    <span className="muted">offene Nachrichten</span>
-                  </div>
-                  <div className="suggestion-metric processed">
-                    <span className="label">Bereits bearbeitet</span>
-                    <strong>{suggestionStats.decidedCount}</strong>
-                    <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
-                  </div>
-                  <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
-                    <span className="label">Fehler</span>
-                    <strong>{suggestionStats.errorCount}</strong>
-                    <span className="muted">Mails mit Fehlern</span>
-                  </div>
-                </div>
-              )}
+                        <span className="label">Zu bearbeiten</span>
+                        <strong>{suggestionStats.openCount}</strong>
+                        <span className="muted">offene Nachrichten</span>
+                      </div>
+                      <div className="suggestion-metric processed">
+                        <span className="label">Bereits bearbeitet</span>
+                        <strong>{suggestionStats.decidedCount}</strong>
+                        <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
+                      </div>
+                      <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
+                        <span className="label">Fehler</span>
+                        <strong>{suggestionStats.errorCount}</strong>
+                        <span className="muted">Mails mit Fehlern</span>
+                      </div>
+                    </div>
+                  )}
               {loading && <div className="placeholder">Bitte warten…</div>}
               {!loading && !suggestions.length && (
                 <div className="placeholder">
