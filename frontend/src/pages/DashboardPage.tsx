@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
+  AnalysisModule,
   Suggestion,
   ScanStatus,
   getFolders,
@@ -40,6 +41,12 @@ const formatTimestamp = (value?: string | null) => {
   return parsed.toLocaleString('de-DE')
 }
 
+const moduleLabels: Record<AnalysisModule, string> = {
+  STATIC: 'Statisch',
+  HYBRID: 'Hybrid',
+  LLM_PURE: 'LLM Pure',
+}
+
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
   const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
@@ -61,6 +68,9 @@ export default function DashboardPage(): JSX.Element {
   const [scanBusy, setScanBusy] = useState(false)
   const [rescanBusy, setRescanBusy] = useState(false)
   const lastFinishedRef = useRef<string | null>(null)
+  const manualFinishedRef = useRef<string | null>(null)
+  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
+  const moduleLabel = moduleLabels[analysisModule]
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
@@ -110,6 +120,23 @@ export default function DashboardPage(): JSX.Element {
     lastFinishedRef.current = finishedAt
   }, [scanStatus?.last_finished_at, refresh])
 
+  useEffect(() => {
+    const manualFinishedAt = scanStatus?.rescan_finished_at ?? null
+    if (!manualFinishedAt) {
+      return
+    }
+    if (manualFinishedRef.current && manualFinishedRef.current !== manualFinishedAt) {
+      void refresh()
+    }
+    manualFinishedRef.current = manualFinishedAt
+  }, [scanStatus?.rescan_finished_at, refresh])
+
+  useEffect(() => {
+    if (!scanStatus?.rescan_active && rescanBusy) {
+      setRescanBusy(false)
+    }
+  }, [scanStatus?.rescan_active, rescanBusy])
+
   const handleStartScan = async () => {
     setScanBusy(true)
     try {
@@ -133,14 +160,24 @@ export default function DashboardPage(): JSX.Element {
     try {
       const response = await stopScan()
       setScanStatus(response.status)
-      setStatus({
-        kind: response.stopped ? 'success' : 'info',
-        message: response.stopped ? 'Analyse gestoppt.' : 'Es war keine Analyse aktiv.',
-      })
+      const nextStatus = response.status
+      let message = 'Analyse gestoppt.'
+      let kind: StatusKind = response.stopped ? 'success' : 'info'
+      if (!response.stopped) {
+        message = 'Es war keine Analyse aktiv.'
+      } else if (nextStatus.rescan_cancelled && !nextStatus.rescan_active) {
+        message = nextStatus.active
+          ? 'Einmalanalyse gestoppt, Automatik läuft weiter.'
+          : 'Einmalanalyse gestoppt.'
+      } else if (!nextStatus.active) {
+        message = 'Analyse gestoppt.'
+      }
+      setStatus({ kind, message })
       await loadScanStatus()
     } catch (err) {
       setStatus({ kind: 'error', message: `Analyse konnte nicht gestoppt werden: ${toMessage(err)}` })
     } finally {
+      setRescanBusy(false)
       setScanBusy(false)
     }
   }
@@ -150,18 +187,25 @@ export default function DashboardPage(): JSX.Element {
     try {
       const folders = selectedFolders.length ? selectedFolders : undefined
       const response = await rescan(folders)
-      const noun = response.new_suggestions === 1 ? 'Vorschlag' : 'Vorschläge'
-      setStatus({
-        kind: 'success',
-        message: `Einmalanalyse abgeschlossen (${response.new_suggestions} ${noun}).`,
-      })
+      if (!response.ok && response.cancelled) {
+        setStatus({ kind: 'info', message: 'Einmalanalyse abgebrochen.' })
+      } else if (!response.ok) {
+        setStatus({ kind: 'error', message: 'Einmalanalyse konnte nicht abgeschlossen werden.' })
+      } else {
+        const noun = response.new_suggestions === 1 ? 'Vorschlag' : 'Vorschläge'
+        setStatus({
+          kind: 'success',
+          message: `Einmalanalyse abgeschlossen (${response.new_suggestions} ${noun}).`,
+        })
+      }
       void refresh()
     } catch (err) {
       setStatus({ kind: 'error', message: `Einmalanalyse fehlgeschlagen: ${toMessage(err)}` })
     } finally {
       setRescanBusy(false)
+      await loadScanStatus()
     }
-  }, [refresh, selectedFolders])
+  }, [loadScanStatus, refresh, selectedFolders])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
@@ -228,16 +272,48 @@ export default function DashboardPage(): JSX.Element {
   }, [appConfig])
 
   const scanSummary = useMemo(() => {
-    const lastResultCount =
-      typeof scanStatus?.last_result_count === 'number' ? scanStatus.last_result_count : null
-    let resultLabel: string | null = null
-    if (lastResultCount !== null) {
-      const absolute = Math.max(0, lastResultCount)
-      const noun = absolute === 1 ? 'neuer Vorschlag' : 'neue Vorschläge'
-      resultLabel = `${absolute} ${noun}`
+    const autoActive = Boolean(scanStatus?.active)
+    const manualRemoteActive = Boolean(scanStatus?.rescan_active)
+    const manualActive = manualRemoteActive || rescanBusy
+    const hasHistory = Boolean(scanStatus?.last_started_at || scanStatus?.rescan_started_at)
+
+    const autoResultCount =
+      typeof scanStatus?.last_result_count === 'number' ? Math.max(0, scanStatus.last_result_count) : null
+    const manualResultCount =
+      typeof scanStatus?.rescan_result_count === 'number'
+        ? Math.max(0, scanStatus.rescan_result_count)
+        : null
+
+    const autoResultLabel =
+      autoResultCount !== null
+        ? `${autoResultCount} ${autoResultCount === 1 ? 'neuer Vorschlag' : 'neue Vorschläge'}`
+        : null
+    const manualResultLabel =
+      manualResultCount !== null
+        ? `${manualResultCount} ${manualResultCount === 1 ? 'Vorschlag' : 'Vorschläge'}`
+        : null
+
+    let statusLabel = 'Gestoppt'
+    let statusVariant: 'running' | 'paused' | 'stopped' = 'stopped'
+    if (autoActive) {
+      statusLabel = 'Automatik aktiv'
+      statusVariant = 'running'
+    } else if (manualActive) {
+      statusLabel = 'Einmalanalyse aktiv'
+      statusVariant = 'running'
+    } else if (hasHistory) {
+      statusLabel = 'Pausiert'
+      statusVariant = 'paused'
     }
+
+    const manualFolders =
+      scanStatus?.rescan_folders && scanStatus.rescan_folders.length > 0
+        ? scanStatus.rescan_folders.join(', ')
+        : null
+
     return {
-      active: Boolean(scanStatus?.active),
+      autoActive,
+      manualActive,
       folderLabel:
         scanStatus && scanStatus.folders.length > 0
           ? scanStatus.folders.join(', ')
@@ -245,12 +321,74 @@ export default function DashboardPage(): JSX.Element {
       pollInterval: scanStatus?.poll_interval ?? null,
       lastStarted: formatTimestamp(scanStatus?.last_started_at),
       lastFinished: formatTimestamp(scanStatus?.last_finished_at),
-      lastResultCount,
-      resultLabel,
+      lastResultCount: autoResultCount,
+      resultLabel: manualResultLabel ?? autoResultLabel,
       error: scanStatus?.last_error ?? null,
-      statusLabel: scanStatus?.active ? 'Analyse aktiv' : 'Analyse pausiert',
+      statusLabel,
+      statusVariant,
+      manual: {
+        active: manualRemoteActive,
+        folders: manualFolders,
+        started: formatTimestamp(scanStatus?.rescan_started_at),
+        finished: formatTimestamp(scanStatus?.rescan_finished_at),
+        resultLabel: manualResultLabel,
+        error: scanStatus?.rescan_error ?? null,
+        cancelled: Boolean(scanStatus?.rescan_cancelled),
+      },
     }
-  }, [scanStatus])
+  }, [rescanBusy, scanStatus])
+
+  const manualInfo = scanSummary.manual
+  const manualActive = scanSummary.manualActive
+  const autoActive = scanSummary.autoActive
+
+  const manualStatusParts: string[] = []
+  if (manualActive) {
+    manualStatusParts.push('läuft…')
+  } else if (manualInfo.finished) {
+    manualStatusParts.push(manualInfo.finished)
+  } else {
+    manualStatusParts.push('–')
+  }
+  if (!manualActive && manualInfo.resultLabel) {
+    manualStatusParts.push(`· ${manualInfo.resultLabel}`)
+  }
+  if (manualActive && manualInfo.folders) {
+    manualStatusParts.push(`· ${manualInfo.folders}`)
+  } else if (!manualActive && manualInfo.cancelled) {
+    manualStatusParts.push('· abgebrochen')
+  }
+  const manualMetaLabel = manualStatusParts.filter(Boolean).join(' ').trim() || '–'
+
+  const analysisFootEntries: React.ReactNode[] = []
+  if (scanSummary.lastStarted) {
+    analysisFootEntries.push(<span key="auto-start">Zuletzt gestartet: {scanSummary.lastStarted}</span>)
+  }
+  if (manualInfo.started) {
+    const folderSuffix = manualInfo.folders ? ` · ${manualInfo.folders}` : ''
+    const cancelSuffix = !manualInfo.active && manualInfo.cancelled ? ' (abgebrochen)' : ''
+    analysisFootEntries.push(
+      <span key="manual-start">
+        Einmalanalyse: {manualInfo.started}
+        {folderSuffix}
+        {cancelSuffix}
+      </span>,
+    )
+  }
+  if (scanSummary.error) {
+    analysisFootEntries.push(
+      <span key="auto-error" className="analysis-error">
+        Letzter Fehler: {scanSummary.error}
+      </span>,
+    )
+  }
+  if (manualInfo.error) {
+    analysisFootEntries.push(
+      <span key="manual-error" className="analysis-error">
+        Einmalanalyse-Fehler: {manualInfo.error}
+      </span>,
+    )
+  }
 
   return (
     <div className="app-shell">
@@ -261,7 +399,8 @@ export default function DashboardPage(): JSX.Element {
             <p className="app-subline">Intelligente Unterstützung für sauberes Postfach-Management.</p>
           </div>
           <div className="header-actions">
-            {appConfig?.mode && <span className="mode-badge">Modus: {appConfig.mode}</span>}
+            {appConfig && <span className="mode-badge module">Modul: {moduleLabel}</span>}
+            {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
         <nav className="primary-nav">
@@ -271,10 +410,67 @@ export default function DashboardPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
-          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Katalog
-          </NavLink>
         </nav>
+        <div className="analysis-top">
+          <div className="analysis-canvas">
+            <div className="analysis-status">
+              <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
+              <div className="analysis-status-text">
+                <span className="label">Analyse</span>
+                <strong>{scanSummary.statusLabel}</strong>
+              </div>
+            </div>
+            <dl className="analysis-meta">
+              <div>
+                <dt>Ordner</dt>
+                <dd>{scanSummary.folderLabel}</dd>
+              </div>
+              <div>
+                <dt>Intervall</dt>
+                <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
+              </div>
+              <div>
+                <dt>Einmalanalyse</dt>
+                <dd>{manualMetaLabel}</dd>
+              </div>
+              <div>
+                <dt>Letzter Abschluss</dt>
+                <dd>{scanSummary.lastFinished ?? '–'}</dd>
+              </div>
+              <div>
+                <dt>Ergebnis</dt>
+                <dd>{scanSummary.resultLabel ?? '–'}</dd>
+              </div>
+            </dl>
+            {analysisFootEntries.length > 0 && <div className="analysis-foot">{analysisFootEntries}</div>}
+          </div>
+          <div className="analysis-actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleRescan}
+              disabled={manualActive || autoActive || scanBusy}
+            >
+              {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={handleStartScan}
+              disabled={scanBusy || autoActive || manualActive}
+            >
+              {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleStopScan}
+              disabled={scanBusy || (!autoActive && !manualActive)}
+            >
+              {scanBusy && (autoActive || manualActive) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
+            </button>
+          </div>
+        </div>
       </header>
 
       {status && (
@@ -319,78 +515,14 @@ export default function DashboardPage(): JSX.Element {
           )}
         </aside>
         <main className="app-main">
-          <section className={`scan-status-card ${scanSummary.active ? 'active' : 'idle'}`}>
-            <div className="scan-status-header">
-              <div>
-                <h2>Analyse-Status</h2>
-                <p className="scan-status-subline">
-                  {scanSummary.active
-                    ? 'Die automatische Analyse läuft kontinuierlich. Einmalanalysen sind währenddessen deaktiviert.'
-                    : 'Starte bei Bedarf die Daueranalyse oder führe eine Einmalanalyse für eine sofortige Auswertung aus.'}
-                </p>
-              </div>
-              <div className="scan-actions">
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={handleRescan}
-                  disabled={rescanBusy || scanBusy || scanSummary.active}
-                >
-                  {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={handleStartScan}
-                  disabled={scanBusy || scanSummary.active}
-                >
-                  {scanBusy && !scanSummary.active ? 'Starte Analyse…' : 'Analyse starten'}
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={handleStopScan}
-                  disabled={scanBusy || !scanSummary.active}
-                >
-                  {scanBusy && scanSummary.active ? 'Stoppe Analyse…' : 'Analyse stoppen'}
-                </button>
-              </div>
-            </div>
-            <div className="scan-status-body">
-              <div className="scan-stat">
-                <span className="label">Status</span>
-                <strong>{scanSummary.statusLabel}</strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Ordner</span>
-                <strong>{scanSummary.folderLabel}</strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Intervall</span>
-                <strong>
-                  {scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}
-                </strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Letzter Lauf</span>
-                <strong>{scanSummary.lastFinished ?? '–'}</strong>
-              </div>
-              <div className="scan-stat">
-                <span className="label">Ergebnis</span>
-                <strong>{scanSummary.resultLabel ?? '–'}</strong>
-              </div>
-            </div>
-            {scanSummary.lastStarted && (
-              <div className="scan-status-meta">Zuletzt gestartet: {scanSummary.lastStarted}</div>
-            )}
-            {scanSummary.error && <div className="scan-status-error">Letzter Fehler: {scanSummary.error}</div>}
-          </section>
-          <AutomationSummaryCard
-            activity={filterActivity}
-            loading={filterActivityLoading}
-            error={filterActivityError}
-            onReload={refreshFilterActivity}
-          />
+          {analysisModule !== 'LLM_PURE' && (
+            <AutomationSummaryCard
+              activity={filterActivity}
+              loading={filterActivityLoading}
+              error={filterActivityError}
+              onReload={refreshFilterActivity}
+            />
+          )}
 
           <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
 
@@ -436,7 +568,7 @@ export default function DashboardPage(): JSX.Element {
               </div>
             )}
             {!loading && suggestions.length > 0 && (
-              <div className="suggestion-grid">
+              <ul className="suggestion-list">
                 {suggestions.map((item: Suggestion) => (
                   <SuggestionCard
                     key={item.message_uid}
@@ -445,9 +577,10 @@ export default function DashboardPage(): JSX.Element {
                     tagSlots={appConfig?.tag_slots}
                     availableFolders={availableFolders}
                     onFolderCreated={handleFolderCreated}
+                    analysisModule={analysisModule}
                   />
                 ))}
-              </div>
+              </ul>
             )}
           </section>
         </main>

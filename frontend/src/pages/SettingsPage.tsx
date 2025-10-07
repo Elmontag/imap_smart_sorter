@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
+  AnalysisModule,
   KeywordFilterConfig,
   KeywordFilterField,
   KeywordFilterRuleConfig,
+  TagSlotConfig,
   MoveMode,
   getKeywordFilters,
   updateKeywordFilters,
@@ -12,22 +14,49 @@ import {
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
 import CatalogEditor from '../components/CatalogEditor'
 import DevtoolsPanel from '../components/DevtoolsPanel'
+import RuleEditorForm, { EditableRuleDraft } from '../components/RuleEditorForm'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 const fieldOrder: KeywordFilterField[] = ['subject', 'sender', 'body']
+const moduleOptions: AnalysisModule[] = ['STATIC', 'HYBRID', 'LLM_PURE']
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
-const defaultRule = (): KeywordFilterRuleConfig => ({
+const baseRuleConfig = (): KeywordFilterRuleConfig => ({
   name: '',
   description: '',
   enabled: true,
   target_folder: '',
   tags: [],
   match: { mode: 'all', fields: [...fieldOrder], terms: [] },
-  date: { after: null, before: null },
+  date: { after: null, before: null, include_future: false },
+})
+
+const cloneRuleConfig = (rule: KeywordFilterRuleConfig): KeywordFilterRuleConfig => ({
+  name: rule.name,
+  description: rule.description ?? '',
+  enabled: rule.enabled,
+  target_folder: rule.target_folder,
+  tags: [...rule.tags],
+  match: {
+    mode: rule.match.mode,
+    fields: [...rule.match.fields],
+    terms: [...rule.match.terms],
+  },
+  date: rule.date
+    ? {
+        after: rule.date.after ?? null,
+        before: rule.date.before ?? null,
+        include_future: Boolean(rule.date.include_future),
+      }
+    : { after: null, before: null, include_future: false },
+})
+
+const createRuleDraft = (rule?: KeywordFilterRuleConfig): EditableRuleDraft => ({
+  ...cloneRuleConfig(rule ?? baseRuleConfig()),
+  id: createId(),
 })
 
 const normalizeList = (values: string[]): string[] => {
@@ -45,7 +74,10 @@ const normalizeList = (values: string[]): string[] => {
 
 const parseList = (value: string): string[] => normalizeList(value.split(/[\n,]+/))
 
-type SettingsTab = 'automation' | 'catalog' | 'analysis' | 'general'
+type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general'
+
+type RuleDraft = EditableRuleDraft
+type TemplateDraft = EditableRuleDraft
 
 type StatusKind = 'info' | 'success' | 'error'
 
@@ -54,156 +86,100 @@ interface StatusMessage {
   message: string
 }
 
-interface RuleDraft extends KeywordFilterRuleConfig {
-  id: string
-}
-
-interface RuleTemplateDefinition {
-  id: string
-  label: string
-  description: string
-  create: () => KeywordFilterRuleConfig
-}
-
 interface ConfigDraft {
   mode: MoveMode
+  analysisModule: AnalysisModule
   classifierModel: string
   protectedTag: string
   processedTag: string
   aiTagPrefix: string
 }
-
-const ruleTemplates: RuleTemplateDefinition[] = [
+const defaultTemplateConfigs: KeywordFilterRuleConfig[] = [
   {
-    id: 'newsletter-tech',
-    label: 'Newsletter – Technik',
-    description: 'Fängt Technik-Newsletter und sortiert sie in einen dedizierten Ordner.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Newsletter Technik',
-        description: 'Automatische Ablage von Technik-Updates und Produktnews.',
-        target_folder: 'Newsletter/Technik',
-        tags: ['newsletter', 'technik'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender'],
-          terms: ['newsletter', 'technik', 'update', 'abo'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Newsletter Technik',
+    description: 'Automatische Ablage von Technik-Updates und Produktnews.',
+    target_folder: 'Newsletter/Technik',
+    tags: ['newsletter', 'technik'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender'],
+      terms: ['newsletter', 'technik', 'update', 'abo'],
     },
   },
   {
-    id: 'newsletter-fashion',
-    label: 'Newsletter – Mode',
-    description: 'Bündelt Mode- und Lifestyle-Newsletter.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Newsletter Mode',
-        description: 'Sortiert Mode-Newsletter automatisch in einen Sammelordner.',
-        target_folder: 'Newsletter/Mode',
-        tags: ['newsletter', 'mode'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender'],
-          terms: ['newsletter', 'mode', 'fashion', 'lookbook', 'trend'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Newsletter Mode',
+    description: 'Sortiert Mode-Newsletter automatisch in einen Sammelordner.',
+    target_folder: 'Newsletter/Mode',
+    tags: ['newsletter', 'mode'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender'],
+      terms: ['newsletter', 'mode', 'fashion', 'lookbook', 'trend'],
     },
   },
   {
-    id: 'newsletter-food',
-    label: 'Newsletter – Lebensmittel',
-    description: 'Sammelt Rezepte, Wochenangebote und Food-Newsletter.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Newsletter Lebensmittel',
-        description: 'Lebensmittel-Newsletter landen zuverlässig im passenden Ordner.',
-        target_folder: 'Newsletter/Lebensmittel',
-        tags: ['newsletter', 'lebensmittel'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender'],
-          terms: ['newsletter', 'rezept', 'angebot', 'lebensmittel', 'wochenangebot'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Newsletter Lebensmittel',
+    description: 'Lebensmittel-Newsletter landen zuverlässig im passenden Ordner.',
+    target_folder: 'Newsletter/Lebensmittel',
+    tags: ['newsletter', 'lebensmittel'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender'],
+      terms: ['newsletter', 'rezept', 'angebot', 'lebensmittel', 'wochenangebot'],
     },
   },
   {
-    id: 'orders',
-    label: 'Bestellungen & Rechnungen',
-    description: 'Erkennt Bestellbestätigungen, Rechnungen und Versandbenachrichtigungen.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Bestellungen & Rechnungen',
-        description: 'Sortiert Bestell- und Rechnungs-Mails nach Händler in einen Sammelordner.',
-        target_folder: 'Finanzen/Bestellungen',
-        tags: ['bestellung', 'rechnung'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'sender', 'body'],
-          terms: [
-            'rechnung',
-            'bestellung',
-            'versandbestätigung',
-            'amazon',
-            'otto',
-            'mediamarkt',
-            'saturn',
-            'lieferung',
-          ],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Bestellungen & Rechnungen',
+    description: 'Sortiert Bestell- und Rechnungs-Mails nach Händler in einen Sammelordner.',
+    target_folder: 'Finanzen/Bestellungen',
+    tags: ['bestellung', 'rechnung'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'sender', 'body'],
+      terms: ['rechnung', 'bestellung', 'versandbestätigung', 'amazon', 'otto', 'mediamarkt', 'saturn', 'lieferung'],
     },
   },
   {
-    id: 'events',
-    label: 'Konzerte & Veranstaltungen',
-    description: 'Fängt Ticketbestätigungen und Event-Hinweise für kommende Termine ab.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Konzerte & Veranstaltungen',
-        description: 'Ticketbestätigungen werden gesammelt und bleiben bis zum Event verfügbar.',
-        target_folder: 'Events/Konzerte',
-        tags: ['event', 'konzert'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'body'],
-          terms: ['eventim', 'ticketmaster', 'konzert', 'veranstaltung', 'tickets', 'tour'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Konzerte & Veranstaltungen',
+    description: 'Ticketbestätigungen werden gesammelt und bleiben bis zum Event verfügbar.',
+    target_folder: 'Events/Konzerte',
+    tags: ['event', 'konzert'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'body'],
+      terms: ['eventim', 'ticketmaster', 'konzert', 'veranstaltung', 'tickets', 'tour'],
     },
   },
   {
-    id: 'calendar',
-    label: 'Kalendereinladungen',
-    description: 'Behandelt Termineinladungen und ICS-Dateien als priorisierte Aufgaben.',
-    create: () => {
-      const base = defaultRule()
-      return {
-        ...base,
-        name: 'Kalendereinladungen',
-        description: 'Sammelt Einladungen mit Kalendereinträgen an einem Ort.',
-        target_folder: 'Termine/Eingehend',
-        tags: ['kalender', 'termin'],
-        match: {
-          mode: 'any',
-          fields: ['subject', 'body'],
-          terms: ['kalender', 'termin', 'einladung', '.ics', 'calendar', 'invite'],
-        },
-      }
+    ...baseRuleConfig(),
+    name: 'Kalendereinladungen',
+    description: 'Sammelt Einladungen mit Kalendereinträgen an einem Ort.',
+    target_folder: 'Termine/Eingehend',
+    tags: ['kalender', 'termin'],
+    match: {
+      mode: 'any',
+      fields: ['subject', 'body'],
+      terms: ['kalender', 'termin', 'einladung', '.ics', 'calendar', 'invite'],
     },
   },
 ]
+
+const moduleLabels: Record<AnalysisModule, string> = {
+  STATIC: 'Statisch',
+  HYBRID: 'Hybrid',
+  LLM_PURE: 'LLM Pure',
+}
+
+const moduleDescriptions: Record<AnalysisModule, string> = {
+  STATIC: 'Nur definierte Regeln laufen – KI-Kontexte werden im Dashboard ausgeblendet.',
+  HYBRID: 'Regeln filtern vor und übergeben verbleibende Mails an die KI zur Analyse.',
+  LLM_PURE: 'Alle Nachrichten gehen direkt an das LLM – Regelübersichten werden ausgeblendet.',
+}
 
 const modeDescriptions = {
   DRY_RUN: 'Verschiebe nichts automatisch, protokolliere nur die Vorschläge.',
@@ -212,15 +188,22 @@ const modeDescriptions = {
 } as const
 
 export default function SettingsPage(): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('automation')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('staticRules')
   const [ruleDrafts, setRuleDrafts] = useState<RuleDraft[]>([])
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null)
   const [filtersLoading, setFiltersLoading] = useState(true)
   const [filtersSaving, setFiltersSaving] = useState(false)
   const [filterError, setFilterError] = useState<string | null>(null)
   const [status, setStatus] = useState<StatusMessage | null>(null)
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false)
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false)
+  const [ruleTemplates, setRuleTemplates] = useState<TemplateDraft[]>(() =>
+    defaultTemplateConfigs.map(config => createRuleDraft(config)),
+  )
+  const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null)
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     mode: 'DRY_RUN',
+    analysisModule: 'HYBRID',
     classifierModel: '',
     protectedTag: '',
     processedTag: '',
@@ -228,6 +211,7 @@ export default function SettingsPage(): JSX.Element {
   })
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
+  const templateMenuRef = useRef<HTMLDivElement | null>(null)
 
   const {
     data: appConfig,
@@ -246,7 +230,7 @@ export default function SettingsPage(): JSX.Element {
     setFiltersLoading(true)
     try {
       const config = await getKeywordFilters()
-      const drafts = config.rules.map(rule => ({ ...rule, id: createId() }))
+      const drafts = config.rules.map(rule => createRuleDraft(rule))
       setRuleDrafts(drafts)
       setSelectedRuleId(drafts.length > 0 ? drafts[0].id : null)
       setFilterError(null)
@@ -262,11 +246,55 @@ export default function SettingsPage(): JSX.Element {
   }, [loadFilters])
 
   useEffect(() => {
+    setTemplateMenuOpen(false)
+    setTemplateManagerOpen(false)
+  }, [activeTab])
+
+  useEffect(() => {
+    if (!templateManagerOpen) {
+      return
+    }
+    if (ruleTemplates.length === 0) {
+      setExpandedTemplateId(null)
+      return
+    }
+    if (!expandedTemplateId || !ruleTemplates.some(template => template.id === expandedTemplateId)) {
+      setExpandedTemplateId(ruleTemplates[0].id)
+    }
+  }, [templateManagerOpen, ruleTemplates, expandedTemplateId])
+
+  useEffect(() => {
+    if (!templateMenuOpen) {
+      return
+    }
+    const handleClick = (event: MouseEvent) => {
+      if (!templateMenuRef.current) {
+        return
+      }
+      if (!templateMenuRef.current.contains(event.target as Node)) {
+        setTemplateMenuOpen(false)
+      }
+    }
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setTemplateMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [templateMenuOpen])
+
+  useEffect(() => {
     if (!appConfig) {
       return
     }
     setConfigDraft({
       mode: appConfig.mode,
+      analysisModule: appConfig.analysis_module,
       classifierModel: appConfig.classifier_model ?? '',
       protectedTag: appConfig.protected_tag ?? '',
       processedTag: appConfig.processed_tag ?? '',
@@ -279,6 +307,10 @@ export default function SettingsPage(): JSX.Element {
     [ruleDrafts, selectedRuleId],
   )
 
+  const updateTemplate = useCallback((id: string, mutator: (template: TemplateDraft) => TemplateDraft) => {
+    setRuleTemplates(current => current.map(template => (template.id === id ? mutator(template) : template)))
+  }, [])
+
   const classifierOptions = useMemo(
     () =>
       (appConfig?.ollama?.models || [])
@@ -287,12 +319,44 @@ export default function SettingsPage(): JSX.Element {
     [appConfig?.ollama?.models],
   )
 
+  const tagSlotOptions = useMemo<TagSlotConfig[]>(() => {
+    if (!appConfig?.tag_slots) {
+      return []
+    }
+    return appConfig.tag_slots
+      .map(slot => {
+        const seen = new Set<string>()
+        const options = slot.options
+          .map(option => option.trim())
+          .filter(option => {
+            if (!option) {
+              return false
+            }
+            const key = option.toLowerCase()
+            if (seen.has(key)) {
+              return false
+            }
+            seen.add(key)
+            return true
+          })
+          .sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }))
+        return {
+          name: slot.name,
+          description: slot.description,
+          options,
+          aliases: [...slot.aliases],
+        }
+      })
+      .filter(slot => slot.options.length > 0)
+  }, [appConfig?.tag_slots])
+
   const configDirty = useMemo(() => {
     if (!appConfig) {
       return false
     }
     return (
       configDraft.mode !== appConfig.mode ||
+      configDraft.analysisModule !== appConfig.analysis_module ||
       configDraft.classifierModel.trim() !== (appConfig.classifier_model ?? '').trim() ||
       configDraft.protectedTag.trim() !== (appConfig.protected_tag ?? '').trim() ||
       configDraft.processedTag.trim() !== (appConfig.processed_tag ?? '').trim() ||
@@ -326,16 +390,80 @@ export default function SettingsPage(): JSX.Element {
   )
 
   const handleAddRule = useCallback(() => {
-    const draft: RuleDraft = { ...defaultRule(), id: createId() }
+    const draft = createRuleDraft()
     setRuleDrafts(current => [...current, draft])
     setSelectedRuleId(draft.id)
+    setTemplateMenuOpen(false)
   }, [])
 
-  const handleAddTemplate = useCallback((template: RuleTemplateDefinition) => {
-    const draft: RuleDraft = { ...template.create(), id: createId() }
-    setRuleDrafts(current => [...current, draft])
-    setSelectedRuleId(draft.id)
-    setStatus({ kind: 'info', message: `Template „${template.label}“ hinzugefügt. Passe Name und Zielordner an.` })
+  const handleApplyTemplate = useCallback(
+    (templateId: string) => {
+      const template = ruleTemplates.find(item => item.id === templateId)
+      if (!template) {
+        return
+      }
+      const draft = createRuleDraft(template)
+      setRuleDrafts(current => [...current, draft])
+      setSelectedRuleId(draft.id)
+      setStatus({
+        kind: 'info',
+        message: `Vorlage „${template.name || 'Ohne Titel'}“ übernommen. Passe die Details bei Bedarf an.`,
+      })
+      setTemplateMenuOpen(false)
+    },
+    [ruleTemplates],
+  )
+
+  const handleDuplicateRule = useCallback(
+    (id: string) => {
+      let nextId: string | null = null
+      setRuleDrafts(current => {
+        const index = current.findIndex(rule => rule.id === id)
+        if (index === -1) {
+          return current
+        }
+        const original = current[index]
+        const duplicate = createRuleDraft(original)
+        duplicate.name = original.name ? `${original.name} (Kopie)` : 'Unbenannte Regel'
+        nextId = duplicate.id
+        const next = [...current]
+        next.splice(index + 1, 0, duplicate)
+        return next
+      })
+      if (nextId) {
+        setSelectedRuleId(nextId)
+        setStatus({ kind: 'info', message: 'Regel dupliziert. Prüfe die Kopie vor dem Speichern.' })
+      }
+    },
+    [],
+  )
+
+  const handleSaveAsTemplate = useCallback(
+    (rule: RuleDraft) => {
+      const template = createRuleDraft(rule)
+      template.name = rule.name || 'Neue Vorlage'
+      setRuleTemplates(current => [...current, template])
+      setTemplateManagerOpen(true)
+      setExpandedTemplateId(template.id)
+      setStatus({
+        kind: 'success',
+        message: `Regel „${rule.name || 'Ohne Titel'}“ als Vorlage gespeichert.`,
+      })
+    },
+    [],
+  )
+
+  const handleAddTemplateDefinition = useCallback(() => {
+    const template = createRuleDraft()
+    template.name = 'Neue Vorlage'
+    setRuleTemplates(current => [...current, template])
+    setTemplateManagerOpen(true)
+    setExpandedTemplateId(template.id)
+  }, [])
+
+  const handleRemoveTemplateDefinition = useCallback((id: string) => {
+    setRuleTemplates(current => current.filter(template => template.id !== id))
+    setExpandedTemplateId(current => (current === id ? null : current))
   }, [])
 
   const handleFilterSave = useCallback(async () => {
@@ -360,8 +488,12 @@ export default function SettingsPage(): JSX.Element {
             terms: normalizeList(rule.match.terms),
           },
           date:
-            rule.date && (rule.date.after || rule.date.before)
-              ? { after: rule.date.after || null, before: rule.date.before || null }
+            rule.date && (rule.date.after || rule.date.before || rule.date.include_future)
+              ? {
+                  after: rule.date.after || null,
+                  before: rule.date.before || null,
+                  include_future: Boolean(rule.date.include_future),
+                }
               : undefined,
         }
       }),
@@ -398,7 +530,7 @@ export default function SettingsPage(): JSX.Element {
   }, [ruleDrafts, selectedRuleId])
 
   const handleConfigChange = useCallback(
-    (field: keyof ConfigDraft, value: string | MoveMode) => {
+    (field: keyof ConfigDraft, value: string | MoveMode | AnalysisModule) => {
       setConfigDraft(current => ({ ...current, [field]: value }))
     },
     [],
@@ -413,6 +545,7 @@ export default function SettingsPage(): JSX.Element {
     try {
       const response = await updateAppConfig({
         mode: configDraft.mode,
+        analysis_module: configDraft.analysisModule,
         classifier_model: configDraft.classifierModel.trim(),
         protected_tag: configDraft.protectedTag.trim() || null,
         processed_tag: configDraft.processedTag.trim() || null,
@@ -420,6 +553,7 @@ export default function SettingsPage(): JSX.Element {
       })
       setConfigDraft({
         mode: response.mode,
+        analysisModule: response.analysis_module,
         classifierModel: response.classifier_model,
         protectedTag: response.protected_tag ?? '',
         processedTag: response.processed_tag ?? '',
@@ -453,9 +587,6 @@ export default function SettingsPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
-          <NavLink to="/catalog" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Katalog
-          </NavLink>
         </nav>
       </header>
 
@@ -471,24 +602,39 @@ export default function SettingsPage(): JSX.Element {
       {configError && <div className="status-banner error">{configError}</div>}
       {appConfigError && <div className="status-banner error">{appConfigError}</div>}
 
-      <div className="settings-layout">
-        <aside className="settings-sidebar">
+      <div className="settings-shell">
+        <nav className="settings-subnav" role="tablist" aria-label="Einstellungen">
           <button
             type="button"
-            className={`settings-tab ${activeTab === 'automation' ? 'active' : ''}`}
-            onClick={() => setActiveTab('automation')}
+            role="tab"
+            aria-selected={activeTab === 'staticRules'}
+            className={`settings-tab ${activeTab === 'staticRules' ? 'active' : ''}`}
+            onClick={() => setActiveTab('staticRules')}
           >
-            Automatisierung
+            Statische Regeln
           </button>
           <button
             type="button"
-            className={`settings-tab ${activeTab === 'catalog' ? 'active' : ''}`}
-            onClick={() => setActiveTab('catalog')}
+            role="tab"
+            aria-selected={activeTab === 'catalogFolders'}
+            className={`settings-tab ${activeTab === 'catalogFolders' ? 'active' : ''}`}
+            onClick={() => setActiveTab('catalogFolders')}
           >
-            Katalog
+            Ordnerkatalog
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'catalogTags'}
+            className={`settings-tab ${activeTab === 'catalogTags' ? 'active' : ''}`}
+            onClick={() => setActiveTab('catalogTags')}
+          >
+            Tag-Slots
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'analysis'}
             className={`settings-tab ${activeTab === 'analysis' ? 'active' : ''}`}
             onClick={() => setActiveTab('analysis')}
           >
@@ -496,14 +642,16 @@ export default function SettingsPage(): JSX.Element {
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'general'}
             className={`settings-tab ${activeTab === 'general' ? 'active' : ''}`}
             onClick={() => setActiveTab('general')}
           >
             Betrieb
           </button>
-        </aside>
+        </nav>
         <main className="settings-content">
-          {activeTab === 'automation' && (
+          {activeTab === 'staticRules' && (
             <div className="settings-section">
               <AutomationSummaryCard
                 activity={filterActivity}
@@ -516,8 +664,56 @@ export default function SettingsPage(): JSX.Element {
                 <button type="button" className="ghost" onClick={() => void loadFilters()} disabled={filtersLoading}>
                   {filtersLoading ? 'Lade…' : 'Neu laden'}
                 </button>
-                <button type="button" className="ghost" onClick={handleAddRule} disabled={filtersSaving}>
-                  Leere Regel
+                <div className="template-menu-wrapper" ref={templateMenuRef}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setTemplateMenuOpen(open => !open)}
+                    disabled={filtersSaving}
+                    aria-expanded={templateMenuOpen}
+                  >
+                    Neue Regel
+                  </button>
+                  {templateMenuOpen && (
+                    <div className="template-menu" role="menu">
+                      <button
+                        type="button"
+                        className="template-menu-item"
+                        onClick={handleAddRule}
+                        disabled={filtersSaving}
+                        role="menuitem"
+                      >
+                        Ohne Vorlage starten
+                      </button>
+                      <div className="template-menu-divider" role="presentation" />
+                      <div className="template-menu-list">
+                        {ruleTemplates.length === 0 && (
+                          <span className="template-menu-empty">Noch keine Vorlagen vorhanden.</span>
+                        )}
+                        {ruleTemplates.map(template => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            className="template-menu-item"
+                            onClick={() => handleApplyTemplate(template.id)}
+                            disabled={filtersSaving}
+                            role="menuitem"
+                          >
+                            <strong>{template.name || 'Unbenannte Vorlage'}</strong>
+                            <span>{template.target_folder || 'Kein Zielordner hinterlegt'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setTemplateManagerOpen(open => !open)}
+                  disabled={filtersSaving}
+                >
+                  {templateManagerOpen ? 'Vorlagen ausblenden' : 'Vorlagen verwalten'}
                 </button>
                 <button type="button" className="primary" onClick={handleFilterSave} disabled={filtersSaving}>
                   {filtersSaving ? 'Speichere…' : 'Filter speichern'}
@@ -531,9 +727,7 @@ export default function SettingsPage(): JSX.Element {
                   </div>
                   {filtersLoading && <div className="placeholder">Lade Filterdefinitionen…</div>}
                   {!filtersLoading && ruleDrafts.length === 0 && (
-                    <div className="placeholder">
-                      Noch keine Regeln vorhanden. Lege die erste Regel über „Leere Regel“ oder eine Vorlage an.
-                    </div>
+                    <div className="placeholder">Noch keine Regeln vorhanden. Nutze „Neue Regel“, um zu starten.</div>
                   )}
                   {!filtersLoading && ruleDrafts.length > 0 && (
                     <ul>
@@ -552,24 +746,6 @@ export default function SettingsPage(): JSX.Element {
                       ))}
                     </ul>
                   )}
-                  <div className="rule-templates">
-                    <h3>Vorlagen</h3>
-                    <ul>
-                      {ruleTemplates.map(template => (
-                        <li key={template.id}>
-                          <button
-                            type="button"
-                            className="template-button"
-                            onClick={() => handleAddTemplate(template)}
-                            disabled={filtersSaving}
-                          >
-                            <strong>{template.label}</strong>
-                            <span>{template.description}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
                 </aside>
 
                 <section className="rule-detail">
@@ -581,202 +757,114 @@ export default function SettingsPage(): JSX.Element {
                     <div className="filter-rule-card" key={selectedRule.id}>
                       <div className="filter-rule-header">
                         <div className="filter-rule-title">
-                          <label>
-                            <span>Name</span>
-                            <input
-                              type="text"
-                              value={selectedRule.name}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({ ...current, name: event.target.value }))
-                              }
-                              placeholder="z. B. Rechnungen 2024"
-                            />
-                          </label>
-                          <label className="inline">
-                            <input
-                              type="checkbox"
-                              checked={selectedRule.enabled}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({ ...current, enabled: event.target.checked }))
-                              }
-                            />
-                            Aktiv
-                          </label>
+                          <h2>{selectedRule.name || 'Unbenannte Regel'}</h2>
+                          <div className="filter-rule-meta">
+                            <span>{selectedRule.target_folder || 'Kein Zielordner'}</span>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          className="link"
-                          onClick={() => handleRuleRemoval(selectedRule.id)}
-                          disabled={filtersSaving}
-                        >
-                          Entfernen
-                        </button>
-                      </div>
-                      <div className="rule-card-body">
-                        <label>
-                          <span>Beschreibung</span>
-                          <textarea
-                            value={selectedRule.description ?? ''}
-                            onChange={event =>
-                              updateRule(selectedRule.id, current => ({ ...current, description: event.target.value }))
-                            }
-                            placeholder="Kurze Erläuterung der Regel"
-                          />
-                        </label>
-                        <label>
-                          <span>Zielordner</span>
-                          <input
-                            type="text"
-                            value={selectedRule.target_folder}
-                            onChange={event =>
-                              updateRule(selectedRule.id, current => ({ ...current, target_folder: event.target.value }))
-                            }
-                            placeholder="Projekt/2024/Abrechnung"
-                          />
-                        </label>
-                        <div className="filter-columns">
-                          <label>
-                            <span>Schlüsselwörter</span>
-                            <textarea
-                              value={selectedRule.match.terms.join('\n')}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({
-                                  ...current,
-                                  match: { ...current.match, terms: parseList(event.target.value) },
-                                }))
-                              }
-                              placeholder="Ein Begriff pro Zeile"
-                            />
-                          </label>
-                          <label>
-                            <span>Tags</span>
-                            <textarea
-                              value={selectedRule.tags.join('\n')}
-                              onChange={event =>
-                                updateRule(selectedRule.id, current => ({
-                                  ...current,
-                                  tags: parseList(event.target.value),
-                                }))
-                              }
-                              placeholder="Tag je Zeile, optional"
-                            />
-                          </label>
-                        </div>
-                        <div className="match-options">
-                          <fieldset>
-                            <legend>Match-Bedingung</legend>
-                            <label>
-                              <input
-                                type="radio"
-                                name={`mode-${selectedRule.id}`}
-                                value="all"
-                                checked={selectedRule.match.mode === 'all'}
-                                onChange={() =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    match: { ...current.match, mode: 'all' },
-                                  }))
-                                }
-                              />
-                              Alle Begriffe erforderlich
-                            </label>
-                            <label>
-                              <input
-                                type="radio"
-                                name={`mode-${selectedRule.id}`}
-                                value="any"
-                                checked={selectedRule.match.mode === 'any'}
-                                onChange={() =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    match: { ...current.match, mode: 'any' },
-                                  }))
-                                }
-                              />
-                              Ein Begriff genügt
-                            </label>
-                          </fieldset>
-                          <fieldset>
-                            <legend>Beobachtete Felder</legend>
-                            {fieldOrder.map(field => (
-                              <label key={field}>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedRule.match.fields.includes(field)}
-                                  onChange={() =>
-                                    updateRule(selectedRule.id, current => {
-                                      const set = new Set(current.match.fields)
-                                      if (set.has(field)) {
-                                        set.delete(field)
-                                      } else {
-                                        set.add(field)
-                                      }
-                                      if (set.size === 0) {
-                                        set.add(field)
-                                      }
-                                      const nextFields = Array.from(set).sort(
-                                        (a, b) => fieldOrder.indexOf(a) - fieldOrder.indexOf(b),
-                                      )
-                                      return {
-                                        ...current,
-                                        match: { ...current.match, fields: nextFields },
-                                      }
-                                    })
-                                  }
-                                />
-                                {field === 'subject' && 'Betreff'}
-                                {field === 'sender' && 'Absender'}
-                                {field === 'body' && 'Inhalt'}
-                              </label>
-                            ))}
-                          </fieldset>
-                          <fieldset>
-                            <legend>Datumsfenster</legend>
-                            <label>
-                              <span>ab</span>
-                              <input
-                                type="date"
-                                value={selectedRule.date?.after ?? ''}
-                                onChange={event =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    date: {
-                                      after: event.target.value || null,
-                                      before: current.date?.before ?? null,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>bis</span>
-                              <input
-                                type="date"
-                                value={selectedRule.date?.before ?? ''}
-                                onChange={event =>
-                                  updateRule(selectedRule.id, current => ({
-                                    ...current,
-                                    date: {
-                                      after: current.date?.after ?? null,
-                                      before: event.target.value || null,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                          </fieldset>
+                        <div className="filter-rule-actions">
+                          <button type="button" className="ghost" onClick={() => handleDuplicateRule(selectedRule.id)}>
+                            Regel duplizieren
+                          </button>
+                          <button type="button" className="ghost" onClick={() => handleSaveAsTemplate(selectedRule)}>
+                            Als Vorlage speichern
+                          </button>
+                          <button type="button" className="link danger" onClick={() => handleRuleRemoval(selectedRule.id)}>
+                            Regel löschen
+                          </button>
                         </div>
                       </div>
+                      <RuleEditorForm
+                        draft={selectedRule}
+                        fieldOrder={fieldOrder}
+                        parseList={parseList}
+                        onChange={mutator => updateRule(selectedRule.id, mutator)}
+                        tagSlots={tagSlotOptions}
+                      />
+                    </div>
+                  )}
+
+                </section>
+              </div>
+
+              {templateManagerOpen && (
+                <section className="template-manager">
+                  <div className="template-manager-header">
+                    <div>
+                      <h2>Regelvorlagen</h2>
+                      <p className="muted">Passe Vorlagen an oder ergänze neue Muster für häufige Fälle.</p>
+                    </div>
+                    <div className="template-manager-actions">
+                      <button type="button" className="ghost" onClick={handleAddTemplateDefinition}>
+                        Vorlage hinzufügen
+                      </button>
+                      <button type="button" className="link" onClick={() => setTemplateManagerOpen(false)}>
+                        Schließen
+                      </button>
+                    </div>
+                  </div>
+                  {ruleTemplates.length === 0 && (
+                    <div className="placeholder">Noch keine Vorlagen vorhanden. Lege eine neue Vorlage an.</div>
+                  )}
+                  {ruleTemplates.length > 0 && (
+                    <div className="template-list">
+                      {ruleTemplates.map(template => (
+                        <article className="template-card" key={template.id}>
+                          <header className="template-card-header">
+                            <button
+                              type="button"
+                              className={`template-toggle${template.id === expandedTemplateId ? ' open' : ''}`}
+                              onClick={() =>
+                                setExpandedTemplateId(current => (current === template.id ? null : template.id))
+                              }
+                              aria-expanded={template.id === expandedTemplateId}
+                            >
+                              <div className="template-toggle-body">
+                                <span className="template-name">{template.name || 'Unbenannte Vorlage'}</span>
+                                <span className="template-folder">{template.target_folder || 'Kein Zielordner'}</span>
+                              </div>
+                              <span className="template-toggle-icon" aria-hidden="true">
+                                {template.id === expandedTemplateId ? '▾' : '▸'}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="link danger"
+                              onClick={() => handleRemoveTemplateDefinition(template.id)}
+                            >
+                              Template löschen
+                            </button>
+                          </header>
+                          {expandedTemplateId === template.id && (
+                            <div className="template-card-body">
+                              <RuleEditorForm
+                                draft={template}
+                                fieldOrder={fieldOrder}
+                                parseList={parseList}
+                                onChange={mutator => updateTemplate(template.id, mutator)}
+                                tagSlots={tagSlotOptions}
+                              />
+                            </div>
+                          )}
+                    </article>
+                      ))}
                     </div>
                   )}
                 </section>
-              </div>
+              )}
+
             </div>
           )}
 
-          {activeTab === 'catalog' && (
-            <div className="settings-section">
-              <CatalogEditor embedded showDevtools={false} />
+          {activeTab === 'catalogFolders' && (
+            <div className="settings-section wide">
+              <CatalogEditor embedded showDevtools={false} section="folders" />
+            </div>
+          )}
+
+          {activeTab === 'catalogTags' && (
+            <div className="settings-section wide">
+              <CatalogEditor embedded showDevtools={false} section="tagSlots" />
             </div>
           )}
 
@@ -808,6 +896,35 @@ export default function SettingsPage(): JSX.Element {
                 ) : (
                   <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
                 )}
+              </section>
+              <section className="analysis-card">
+                <h2>Analyse-Modell</h2>
+                <label className="mode-select large">
+                  <span>Sprachmodell</span>
+                  <input
+                    type="text"
+                    list="classifier-models"
+                    value={configDraft.classifierModel}
+                    onChange={event => handleConfigChange('classifierModel', event.target.value)}
+                    placeholder="z. B. llama3"
+                    disabled={configSaving}
+                  />
+                  <datalist id="classifier-models">
+                    {classifierOptions.map(option => (
+                      <option key={option} value={option} />
+                    ))}
+                  </datalist>
+                </label>
+                <div className="config-actions secondary">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={handleConfigSave}
+                    disabled={!configDirty || configSaving}
+                  >
+                    {configSaving ? 'Speichere…' : 'Konfiguration speichern'}
+                  </button>
+                </div>
               </section>
               <section className="analysis-card">
                 <h2>Tag-Slots & Kontext</h2>
@@ -861,38 +978,47 @@ export default function SettingsPage(): JSX.Element {
           {activeTab === 'general' && (
             <div className="settings-section">
               <section className="general-card">
-                <h2>Verarbeitungsmodus & Modell</h2>
-                <div className="config-grid">
-                  <label className="mode-select large">
-                    <span>Verarbeitungsmodus</span>
-                    <select
-                      value={configDraft.mode}
-                      onChange={event => handleConfigChange('mode', event.target.value as MoveMode)}
-                      disabled={configSaving || appConfigLoading}
-                    >
+                <h2>Analyse-Module & Modus</h2>
+                <div className="option-board">
+                  <div className="option-group">
+                    <h3>Analyse-Modul</h3>
+                    <div className="option-grid modules">
+                      {moduleOptions.map(option => (
+                        <button
+                          key={option}
+                          type="button"
+                          className={`option-card${configDraft.analysisModule === option ? ' selected' : ''}`}
+                          onClick={() => handleConfigChange('analysisModule', option)}
+                          disabled={configSaving || appConfigLoading}
+                        >
+                          <div className="option-title">
+                            <strong>{moduleLabels[option]}</strong>
+                            {appConfig?.analysis_module === option && <span className="badge">Aktuell</span>}
+                          </div>
+                          <p>{moduleDescriptions[option]}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="option-group">
+                    <h3>Verarbeitungsmodus</h3>
+                    <div className="option-grid modes">
                       {modeOptions.map(option => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
+                        <button
+                          key={option}
+                          type="button"
+                          className={`option-card${configDraft.mode === option ? ' selected' : ''}`}
+                          onClick={() => handleConfigChange('mode', option)}
+                          disabled={configSaving || appConfigLoading}
+                        >
+                          <div className="option-title">
+                            <strong>{option}</strong>
+                          </div>
+                          <p>{modeDescriptions[option]}</p>
+                        </button>
                       ))}
-                    </select>
-                  </label>
-                  <label className="mode-select large">
-                    <span>Sprachmodell</span>
-                    <input
-                      type="text"
-                      list="classifier-models"
-                      value={configDraft.classifierModel}
-                      onChange={event => handleConfigChange('classifierModel', event.target.value)}
-                      placeholder="z. B. llama3"
-                      disabled={configSaving}
-                    />
-                    <datalist id="classifier-models">
-                      {classifierOptions.map(option => (
-                        <option key={option} value={option} />
-                      ))}
-                    </datalist>
-                  </label>
+                    </div>
+                  </div>
                 </div>
                 <div className="config-actions">
                   <button
@@ -904,14 +1030,6 @@ export default function SettingsPage(): JSX.Element {
                     {configSaving ? 'Speichere…' : 'Konfiguration speichern'}
                   </button>
                 </div>
-                <ul className="mode-description-list">
-                  {modeOptions.map(option => (
-                    <li key={option} className={configDraft.mode === option ? 'active' : ''}>
-                      <strong>{option}</strong>
-                      <span>{modeDescriptions[option]}</span>
-                    </li>
-                  ))}
-                </ul>
               </section>
               <section className="general-card">
                 <h2>Postfach-Tags</h2>

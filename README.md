@@ -6,9 +6,9 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Anzeige des Betriebsmodus und manuellen Aktionen.
   Die Ordnerauswahl präsentiert sich als einklappbare Baumstruktur, neu gefundene Ordner lassen sich direkt aus den Vorschlagskarten anlegen.
-  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick.
-  Eine Einstellungsseite (`#/settings`) bündelt Automatisierung, KI-Parameter und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln.
-  Der Automatisierungs-Tab bietet eine zweigeteilte Ansicht mit Regel-Sidebar, Detailformular und Vorlagen für Newsletter-, Bestell-, Event- und Kalendereinladungs-Filter.
+  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick. Offene Vorschläge erscheinen als aufklappbare Listeneinträge mit kompaktem Kopfbereich.
+  Eine Einstellungsseite (`#/settings`) bündelt Statische Regeln, KI-Parameter und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln.
+  Der Tab „Statische Regeln“ bietet eine zweigeteilte Ansicht mit Regel-Sidebar, Detailformular und Vorlagen für Newsletter-, Bestell-, Event- und Kalendereinladungs-Filter. Tags aus den definierten Tag-Slots lassen sich dort über Chips bequem zu- oder abwählen.
   Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
 Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie passende Tags bestimmt. Die KI orientiert sich an bestehenden Ordnerhierarchien und schlägt neue Ordner nur dann vor, wenn keine Hierarchieebene überzeugt.
@@ -105,30 +105,34 @@ MIN_MATCH_SCORE=60
 - Der `/api/config`-Endpunkt liefert die komplette Katalogkonfiguration (`folder_templates`, `tag_slots`, `context_tags`),
   sodass auch externe Tools auf die Vorgaben zugreifen können. Änderungen an `llm_config.json` werden beim nächsten Request
   automatisch berücksichtigt.
-- Für interaktive Anpassungen stellt das Frontend eine Editor-Seite unter `#/catalog` bereit. Dort lassen sich Bereiche,
+- Für interaktive Anpassungen stellt das Frontend einen Editor im Einstellungs-Tab „Katalog“ bereit. Dort lassen sich Bereiche,
   Unterordner, Kontext-Tags sowie Tag-Slots (inklusive Aliase) grafisch pflegen und direkt speichern.
 - Das Backend stellt die Rohdaten zusätzlich über `GET /api/catalog` bereit und akzeptiert Aktualisierungen per `PUT /api/catalog`.
-- Über zusätzliche Buttons lassen sich IMAP-Ordnerstrukturen direkt in den Katalog übernehmen (`POST /api/catalog/import-mailbox`) oder der gepflegte Katalog spiegelbildlich im Postfach anlegen (`POST /api/catalog/export-mailbox`). Beide Aktionen sind in der Katalogansicht und im Einstellungs-Tab „Katalog“ verfügbar.
+- Über zusätzliche Buttons lassen sich IMAP-Ordnerstrukturen direkt in den Katalog übernehmen (`POST /api/catalog/import-mailbox`) oder der gepflegte Katalog spiegelbildlich im Postfach anlegen (`POST /api/catalog/export-mailbox`). Beim Import können Standard-IMAP-Ordner wie „INBOX“, „Sent“ oder „Trash“ über eine Ausschlussliste ignoriert werden.
 
 ### Schutz- und Monitoring-Einstellungen
 
 - `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).
 - `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
-- Der Tab „Betrieb“ in den Einstellungen erlaubt das Bearbeiten von Verarbeitungsmodus, Ollama-Modell und IMAP-Tags; das Dashboard zeigt den aktuellen Modus nur noch an.
+- Der Tab „Betrieb“ in den Einstellungen bündelt Analyse-Modul, Verarbeitungsmodus und IMAP-Tags; das Dashboard zeigt den gewählten Modus weiterhin an. Die Auswahl des Sprachmodells erfolgt im Tab „KI & Tags“.
+- Die Module steuern, welche Informationen sichtbar sind:
+  - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien) werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist.
+  - **Hybrid** nutzt zuerst die statischen Regeln und analysiert verbleibende Nachrichten per LLM. Alle Kontextinformationen bleiben sichtbar.
+  - **LLM Pure** ignoriert die Regeln und verarbeitet jede Mail per LLM. Die Regel-Übersicht im Dashboard blendet sich dabei automatisch aus.
 - `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
   Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
-- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Analyse-Controller. Das Frontend bietet zusätzlich einen Button „Einmalige Analyse“ (via `/api/rescan`), sodass sich eine sofortige Auswertung ohne Daueranalyse starten lässt.
+- Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Analyse-Controller. Das Frontend bietet zusätzlich einen Button „Einmalige Analyse“ (via `/api/rescan`), sodass sich eine sofortige Auswertung ohne Daueranalyse starten lässt. Laufende Einmalanalysen lassen sich über „Analyse stoppen“ abbrechen; das Backend verwirft dabei den aktiven Scanauftrag.
 - Laufende Dauer-Analysen blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Analyse starten“ und „Analyse stoppen“ für die kontinuierliche Ausführung verfügbar.
 - Die Ordnerauswahl im Dashboard stellt die überwachten IMAP-Ordner als aufklappbaren Baum dar. Der Filter hebt Treffer farblich hervor und öffnet automatisch die relevanten Äste, sodass komplexe Hierarchien schneller angepasst werden können.
 
 ### Keyword-Filter & Direktzuordnung
 
-- `backend/keyword_filters.json` definiert Regeln, die E-Mails noch vor der KI-Analyse verschieben. Jede Regel besitzt `name`, `enabled`, `target_folder`, optionale `tags`, eine `match`-Sektion (`mode` = `all` oder `any`, `fields` = `subject`/`sender`/`body`, `terms`) sowie eine optionale `date`-Spanne (`after`/`before` im Format `YYYY-MM-DD`).
-- Der Editor im Tab „Automatisierung“ stellt dafür Vorlagen für Technik-, Mode- und Lebensmittel-Newsletter, Bestellungen und Rechnungen, Konzert- & Eventtickets sowie Kalendereinladungen bereit. Die Vorlagen befüllen passende Tags und Keywords, Zielordner und Beschreibungen lassen sich anschließend anpassen.
+- `backend/keyword_filters.json` definiert Regeln, die E-Mails noch vor der KI-Analyse verschieben. Jede Regel besitzt `name`, `enabled`, `target_folder`, optionale `tags`, eine `match`-Sektion (`mode` = `all` oder `any`, `fields` = `subject`/`sender`/`body`, `terms`) sowie eine optionale `date`-Spanne (`after`/`before` im Format `YYYY-MM-DD`). Über `include_future` lässt sich zusätzlich festlegen, dass Datumsangaben im Mailtext berücksichtigt werden, auch wenn sie nach dem Empfangsdatum liegen (z. B. Event-Termine).
+- Der Editor im Tab „Statische Regeln“ stellt dafür Vorlagen für Technik-, Mode- und Lebensmittel-Newsletter, Bestellungen und Rechnungen, Konzert- & Eventtickets sowie Kalendereinladungen bereit. Die Vorlagen befüllen passende Tags und Keywords, Zielordner und Beschreibungen lassen sich anschließend anpassen; Tag-Slot-Optionen können per Klick übernommen werden.
 - Trifft eine Regel zu, legt der Worker fehlende Ordner automatisch an, verschiebt die Nachricht sofort, setzt definierte Tags und protokolliert das Ergebnis als `FilterHit`.
-- Über `GET /api/filters` und `PUT /api/filters` bearbeitest du die Regeln programmatisch. Das Frontend bündelt die Pflege im Tab „Automatisierung“ der Einstellungsseite (`#/settings`) und visualisiert Treffer in einer Automationskachel auf dem Dashboard.
+- Über `GET /api/filters` und `PUT /api/filters` bearbeitest du die Regeln programmatisch. Das Frontend bündelt die Pflege im Tab „Statische Regeln“ der Einstellungsseite (`#/settings`) und visualisiert Treffer in einer Automationskachel auf dem Dashboard.
 - `GET /api/filters/activity` liefert aggregierte Kennzahlen (Gesamtanzahl, letzte 24 h, Top-Regeln, aktuelle Treffer) und bildet die Grundlage für das Automatisierungs-Dashboard.
 
 ## Lokale Entwicklung
@@ -206,7 +210,7 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 | `POST`  | `/api/scan/start`   | Startet den kontinuierlichen Scan für die übergebenen Ordner (oder die gespeicherte Auswahl) |
 | `POST`  | `/api/scan/stop`    | Stoppt den laufenden Scan-Controller |
 | `GET`   | `/api/catalog`      | Gibt den aktuellen Ordner- und Tag-Katalog (inkl. Hierarchie) zurück |
-| `POST`  | `/api/catalog/import-mailbox` | Übernimmt die IMAP-Ordnerstruktur als neue Katalogdefinition |
+| `POST`  | `/api/catalog/import-mailbox` | Übernimmt die IMAP-Ordnerstruktur als neue Katalogdefinition (`exclude_defaults` filtert Standardordner) |
 | `POST`  | `/api/catalog/export-mailbox` | Erstellt alle Katalogordner im Postfach (inkl. Zwischenpfade) |
 | `PUT`   | `/api/catalog`      | Persistiert einen aktualisierten Katalog (Ordner & Tag-Slots) |
 

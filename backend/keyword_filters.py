@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import lru_cache
@@ -36,6 +37,7 @@ class KeywordFilterRule:
     match: KeywordMatch
     date_after: date | None
     date_before: date | None
+    include_future_dates: bool
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,9 @@ def get_filter_rules() -> tuple[KeywordFilterRule, ...]:
         raw_date = entry.get("date") if isinstance(entry.get("date"), dict) else {}
         after = _to_date(raw_date.get("after")) if isinstance(raw_date, dict) else None
         before = _to_date(raw_date.get("before")) if isinstance(raw_date, dict) else None
+        include_future = False
+        if isinstance(raw_date, dict):
+            include_future = bool(raw_date.get("include_future"))
         rules.append(
             KeywordFilterRule(
                 name=name,
@@ -142,6 +147,7 @@ def get_filter_rules() -> tuple[KeywordFilterRule, ...]:
                 match=match,
                 date_after=after,
                 date_before=before,
+                include_future_dates=include_future,
             )
         )
     return tuple(rules)
@@ -174,15 +180,67 @@ def _term_matches(term: str, content: str) -> bool:
     return _normalise(term) in _normalise(content)
 
 
-def _date_in_range(rule: KeywordFilterRule, received: datetime | None) -> bool:
-    if not received:
-        return rule.date_after is None and rule.date_before is None
-    local_date = received.date()
-    if rule.date_after and local_date < rule.date_after:
-        return False
-    if rule.date_before and local_date > rule.date_before:
-        return False
-    return True
+def _extract_dates(content: str) -> tuple[date, ...]:
+    if not content:
+        return tuple()
+    matches: list[date] = []
+    seen: set[date] = set()
+    iso_pattern = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+    dot_pattern = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b")
+
+    for year_str, month_str, day_str in iso_pattern.findall(content):
+        try:
+            parsed = date(int(year_str), int(month_str), int(day_str))
+        except ValueError:
+            continue
+        if parsed in seen:
+            continue
+        seen.add(parsed)
+        matches.append(parsed)
+        if len(matches) >= 50:
+            return tuple(matches)
+
+    for day_str, month_str, year_str in dot_pattern.findall(content):
+        try:
+            year_int = int(year_str)
+            if year_int < 100:
+                year_int += 2000 if year_int < 70 else 1900
+            parsed = date(year_int, int(month_str), int(day_str))
+        except ValueError:
+            continue
+        if parsed in seen:
+            continue
+        seen.add(parsed)
+        matches.append(parsed)
+        if len(matches) >= 50:
+            break
+    return tuple(matches)
+
+
+def _date_in_range(
+    rule: KeywordFilterRule,
+    received: datetime | None,
+    content_dates: Sequence[date] | None = None,
+) -> bool:
+    has_window = rule.date_after is not None or rule.date_before is not None
+    candidates: list[date] = []
+    if received:
+        candidates.append(received.date())
+    if rule.include_future_dates and content_dates:
+        base_date = received.date() if received else None
+        for candidate in content_dates:
+            if base_date and candidate < base_date:
+                continue
+            candidates.append(candidate)
+    if not candidates:
+        return not has_window
+    for candidate in candidates:
+        if rule.date_after and candidate < rule.date_after:
+            continue
+        if rule.date_before and candidate > rule.date_before:
+            continue
+        return True
+    return False
 
 
 def evaluate_filters(
@@ -193,10 +251,17 @@ def evaluate_filters(
 ) -> KeywordMatchResult | None:
     """Return the first matching keyword filter or ``None`` if no rule applies."""
 
+    future_dates: tuple[date, ...] | None = None
     for rule in get_filter_rules():
         if not rule.enabled:
             continue
-        if not _date_in_range(rule, received):
+        if rule.include_future_dates:
+            if future_dates is None:
+                future_dates = _extract_dates(body)
+            content_dates = future_dates
+        else:
+            content_dates = tuple()
+        if not _date_in_range(rule, received, content_dates):
             continue
         terms = rule.match.terms
         fields = rule.match.fields or ("subject", "sender", "body")

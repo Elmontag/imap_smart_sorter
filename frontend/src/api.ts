@@ -1,6 +1,7 @@
 import { recordDevEvent } from './devtools'
 
 export type MoveMode = 'DRY_RUN' | 'CONFIRM' | 'AUTO'
+export type AnalysisModule = 'STATIC' | 'HYBRID' | 'LLM_PURE'
 
 export interface SuggestionScore {
   name: string
@@ -150,6 +151,7 @@ export interface KeywordFilterMatchConfig {
 export interface KeywordFilterDateConfig {
   after?: string | null
   before?: string | null
+  include_future?: boolean
 }
 
 export interface KeywordFilterRuleConfig {
@@ -197,6 +199,7 @@ export interface AppConfig {
   dev_mode: boolean
   pending_list_limit: number
   mode: MoveMode
+  analysis_module: AnalysisModule
   classifier_model: string
   protected_tag: string | null
   processed_tag: string | null
@@ -209,6 +212,7 @@ export interface AppConfig {
 
 export interface AppConfigUpdateRequest {
   mode?: MoveMode
+  analysis_module?: AnalysisModule
   classifier_model?: string
   protected_tag?: string | null
   processed_tag?: string | null
@@ -237,6 +241,7 @@ export interface DecideResponse {
 export interface RescanResponse {
   ok: boolean
   new_suggestions: number
+  cancelled?: boolean
 }
 
 export interface FolderSelectionResponse {
@@ -262,6 +267,13 @@ export interface ScanStatus {
   last_finished_at?: string | null
   last_error?: string | null
   last_result_count?: number | null
+  rescan_active?: boolean
+  rescan_folders?: string[]
+  rescan_started_at?: string | null
+  rescan_finished_at?: string | null
+  rescan_error?: string | null
+  rescan_result_count?: number | null
+  rescan_cancelled?: boolean
 }
 
 export interface ScanStartResponse {
@@ -387,8 +399,18 @@ export async function updateCatalogDefinition(payload: CatalogDefinition): Promi
   })
 }
 
-export async function importCatalogFromMailbox(): Promise<CatalogSyncResponse> {
-  return request<CatalogSyncResponse>('/api/catalog/import-mailbox', { method: 'POST' })
+export interface CatalogImportOptions {
+  excludeDefaults?: string[]
+}
+
+export async function importCatalogFromMailbox(options?: CatalogImportOptions): Promise<CatalogSyncResponse> {
+  const payload = {
+    exclude_defaults: options?.excludeDefaults?.filter(value => value.trim().length > 0) ?? [],
+  }
+  return request<CatalogSyncResponse>('/api/catalog/import-mailbox', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function exportCatalogToMailbox(): Promise<CatalogSyncResponse> {
