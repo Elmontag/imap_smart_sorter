@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useMemo } from 'react'
 import { KeywordFilterField, KeywordFilterRuleConfig } from '../api'
 
 export interface EditableRuleDraft extends KeywordFilterRuleConfig {
@@ -10,6 +10,7 @@ interface RuleEditorFormProps {
   fieldOrder: KeywordFilterField[]
   parseList: (value: string) => string[]
   onChange: (updater: (draft: EditableRuleDraft) => EditableRuleDraft) => void
+  tagOptions?: string[]
 }
 
 const ensureDateConfig = (draft: EditableRuleDraft) =>
@@ -20,6 +21,7 @@ export default function RuleEditorForm({
   fieldOrder,
   parseList,
   onChange,
+  tagOptions,
 }: RuleEditorFormProps): JSX.Element {
   const handleNameChange = (value: string) =>
     onChange(current => ({ ...current, name: value }))
@@ -41,6 +43,52 @@ export default function RuleEditorForm({
 
   const handleTagsChange = (value: string) =>
     onChange(current => ({ ...current, tags: parseList(value) }))
+
+  const availableTagOptions = useMemo(() => {
+    if (!tagOptions || tagOptions.length === 0) {
+      return []
+    }
+    const seen = new Set<string>()
+    return tagOptions
+      .map(option => option.trim())
+      .filter(option => {
+        const key = option.toLowerCase()
+        if (!option || seen.has(key)) {
+          return false
+        }
+        seen.add(key)
+        return true
+      })
+      .sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }))
+  }, [tagOptions])
+
+  const normalizedDraftTags = useMemo(() => {
+    const seen = new Set<string>()
+    draft.tags.forEach(tag => {
+      const trimmed = tag.trim()
+      if (trimmed) {
+        seen.add(trimmed.toLowerCase())
+      }
+    })
+    return seen
+  }, [draft.tags])
+
+  const handleTagToggle = (tag: string) =>
+    onChange(current => {
+      const normalized = tag.trim()
+      if (!normalized) {
+        return current
+      }
+      const lower = normalized.toLowerCase()
+      const filtered = current.tags
+        .map(entry => entry.trim())
+        .filter(entry => entry.length > 0)
+      const exists = filtered.some(entry => entry.toLowerCase() === lower)
+      const next = exists
+        ? filtered.filter(entry => entry.toLowerCase() !== lower)
+        : [...filtered, normalized]
+      return { ...current, tags: next }
+    })
 
   const handleModeChange = (mode: 'all' | 'any') =>
     onChange(current => ({
@@ -148,6 +196,23 @@ export default function RuleEditorForm({
             onChange={event => handleTagsChange(event.target.value)}
             placeholder="Tag je Zeile, optional"
           />
+          {availableTagOptions.length > 0 && (
+            <div className="tag-option-chips" role="group" aria-label="Tag-Vorlagen">
+              {availableTagOptions.map(option => {
+                const active = normalizedDraftTags.has(option.toLowerCase())
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    className={`tag-option-chip${active ? ' active' : ''}`}
+                    onClick={() => handleTagToggle(option)}
+                  >
+                    {option}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </label>
       </div>
 

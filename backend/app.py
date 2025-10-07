@@ -32,6 +32,7 @@ from database import (
     mark_moved,
     record_decision,
     record_dry_run,
+    set_analysis_module,
     set_classifier_model,
     set_mailbox_tags,
     set_mode,
@@ -39,7 +40,12 @@ from database import (
     suggestion_status_counts,
     update_proposal,
 )
-from imap_worker import one_shot_scan
+from rescan_control import (
+    RescanBusyError,
+    RescanCancelledError,
+    RescanStatus,
+    controller as rescan_controller,
+)
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from scan_control import ScanStatus, controller as scan_controller
 from models import Suggestion
@@ -49,13 +55,24 @@ from ollama_service import ensure_ollama_ready, get_status, status_as_dict
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
 from settings import S
-from runtime_settings import resolve_classifier_model, resolve_mailbox_tags, resolve_move_mode
+from runtime_settings import (
+    resolve_analysis_module,
+    resolve_classifier_model,
+    resolve_mailbox_tags,
+    resolve_move_mode,
+)
 
 
 class MoveMode(str, Enum):
     DRY_RUN = "DRY_RUN"
     CONFIRM = "CONFIRM"
     AUTO = "AUTO"
+
+
+class AnalysisModule(str, Enum):
+    STATIC = "STATIC"
+    HYBRID = "HYBRID"
+    LLM_PURE = "LLM_PURE"
 
 
 class ModeResponse(BaseModel):
@@ -297,9 +314,22 @@ class ScanStatusResponse(BaseModel):
     last_finished_at: datetime | None = None
     last_error: str | None = None
     last_result_count: int | None = None
+    rescan_active: bool = False
+    rescan_folders: List[str] = Field(default_factory=list)
+    rescan_started_at: datetime | None = None
+    rescan_finished_at: datetime | None = None
+    rescan_error: str | None = None
+    rescan_result_count: int | None = None
+    rescan_cancelled: bool = False
 
     @classmethod
-    def from_status(cls, status: ScanStatus) -> "ScanStatusResponse":
+    def from_status(
+        cls,
+        status: ScanStatus,
+        *,
+        rescan_status: RescanStatus | None = None,
+    ) -> "ScanStatusResponse":
+        rescan = rescan_status or RescanStatus()
         return cls(
             active=status.active,
             folders=list(status.folders),
@@ -308,6 +338,13 @@ class ScanStatusResponse(BaseModel):
             last_finished_at=status.last_finished_at,
             last_error=status.last_error,
             last_result_count=status.last_result_count,
+            rescan_active=rescan.active,
+            rescan_folders=list(rescan.folders),
+            rescan_started_at=rescan.started_at,
+            rescan_finished_at=rescan.finished_at,
+            rescan_error=rescan.last_error,
+            rescan_result_count=rescan.last_result_count,
+            rescan_cancelled=rescan.cancelled,
         )
 
 
@@ -353,6 +390,7 @@ class ConfigResponse(BaseModel):
     dev_mode: bool
     pending_list_limit: int
     mode: MoveMode
+    analysis_module: AnalysisModule
     classifier_model: str
     protected_tag: str | None = None
     processed_tag: str | None = None
@@ -365,6 +403,7 @@ class ConfigResponse(BaseModel):
 
 class ConfigUpdateRequest(BaseModel):
     mode: Optional[MoveMode] = None
+    analysis_module: Optional[AnalysisModule] = None
     classifier_model: Optional[str] = Field(default=None, min_length=1)
     protected_tag: Optional[str] = None
     processed_tag: Optional[str] = None
@@ -708,6 +747,7 @@ async def _config_response() -> ConfigResponse:
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
         mode=_resolve_mode(),
+        analysis_module=AnalysisModule(resolve_analysis_module()),
         classifier_model=resolve_classifier_model(),
         protected_tag=protected_tag,
         processed_tag=processed_tag,
@@ -731,6 +771,10 @@ async def api_update_config(payload: ConfigUpdateRequest) -> ConfigResponse:
         if payload.mode is None:
             raise HTTPException(400, "mode must not be null")
         set_mode(payload.mode.value)
+    if "analysis_module" in updates:
+        if payload.analysis_module is None:
+            raise HTTPException(400, "analysis_module must not be null")
+        set_analysis_module(payload.analysis_module.value)
     if "classifier_model" in updates:
         model = (payload.classifier_model or "").strip()
         if not model:
@@ -997,23 +1041,42 @@ async def api_rescan(payload: Dict[str, Any] = Body(default={})) -> Dict[str, An
     if folders is not None and not isinstance(folders, list):
         raise HTTPException(400, "folders must be a list of folder names")
     target_folders = folders if folders is not None else get_monitored_folders()
-    count = await one_shot_scan(target_folders)
+    try:
+        count = await rescan_controller.run(target_folders)
+    except RescanBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RescanCancelledError:
+        return {"ok": False, "cancelled": True, "new_suggestions": 0}
     return {"ok": True, "new_suggestions": count}
 
 
 @app.get("/api/scan/status", response_model=ScanStatusResponse)
 async def api_scan_status() -> ScanStatusResponse:
-    return ScanStatusResponse.from_status(scan_controller.status)
+    return ScanStatusResponse.from_status(scan_controller.status, rescan_status=rescan_controller.status)
 
 
 @app.post("/api/scan/start", response_model=ScanStartResponse)
 async def api_scan_start(payload: ScanStartRequest | None = Body(default=None)) -> ScanStartResponse:
     folders = payload.folders if payload else None
     started = await scan_controller.start(folders)
-    return ScanStartResponse(started=started, status=ScanStatusResponse.from_status(scan_controller.status))
+    return ScanStartResponse(
+        started=started,
+        status=ScanStatusResponse.from_status(
+            scan_controller.status,
+            rescan_status=rescan_controller.status,
+        ),
+    )
 
 
 @app.post("/api/scan/stop", response_model=ScanStopResponse)
 async def api_scan_stop() -> ScanStopResponse:
-    stopped = await scan_controller.stop()
-    return ScanStopResponse(stopped=stopped, status=ScanStatusResponse.from_status(scan_controller.status))
+    auto_stopped = await scan_controller.stop()
+    one_shot_stopped = await rescan_controller.stop()
+    stopped = auto_stopped or one_shot_stopped
+    return ScanStopResponse(
+        stopped=stopped,
+        status=ScanStatusResponse.from_status(
+            scan_controller.status,
+            rescan_status=rescan_controller.status,
+        ),
+    )
