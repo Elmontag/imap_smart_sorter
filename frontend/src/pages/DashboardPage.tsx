@@ -476,64 +476,66 @@ export default function DashboardPage(): JSX.Element {
             {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
-        <div className="analysis-top">
-          <div className="analysis-canvas">
+        <div className="analysis-bar">
+          <div className="analysis-bar-main">
             <div className="analysis-status">
               <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
               <div className="analysis-status-text">
                 <span className="label">Analyse</span>
                 <strong>{scanSummary.statusLabel}</strong>
               </div>
-              <dl className="analysis-meta">
-                <div>
-                  <dt>Ordner</dt>
-                  <dd>{scanSummary.folderLabel}</dd>
-                </div>
-                <div>
-                  <dt>Intervall</dt>
-                  <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
-                </div>
-                <div>
-                  <dt>Einmalanalyse</dt>
-                  <dd>{manualMetaLabel}</dd>
-                </div>
-                <div>
-                  <dt>Letzter Abschluss</dt>
-                  <dd>{scanSummary.lastFinished ?? '–'}</dd>
-                </div>
-                <div>
-                  <dt>Ergebnis</dt>
-                  <dd>{scanSummary.resultLabel ?? '–'}</dd>
-                </div>
-              </dl>
-              {analysisFootEntries.length > 0 && <div className="analysis-foot">{analysisFootEntries}</div>}
             </div>
-            <div className="analysis-actions">
-              <button
-                type="button"
-                className="ghost"
-                onClick={handleRescan}
-                disabled={manualActive || autoActive || scanBusy}
-              >
-                {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={handleStartScan}
-                disabled={scanBusy || autoActive || manualActive}
-              >
-                {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={handleStopScan}
-                disabled={scanBusy || (!autoActive && !manualActive)}
-              >
-                {scanBusy && (autoActive || manualActive) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
-              </button>
-            </div>
+            <dl className="analysis-bar-meta">
+              <div>
+                <dt>Ordner</dt>
+                <dd>{scanSummary.folderLabel}</dd>
+              </div>
+              <div>
+                <dt>Intervall</dt>
+                <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
+              </div>
+              <div>
+                <dt>Einmalanalyse</dt>
+                <dd>{manualMetaLabel}</dd>
+              </div>
+              <div>
+                <dt>Letzter Abschluss</dt>
+                <dd>{scanSummary.lastFinished ?? '–'}</dd>
+              </div>
+              <div>
+                <dt>Ergebnis</dt>
+                <dd>{scanSummary.resultLabel ?? '–'}</dd>
+              </div>
+            </dl>
+            {analysisFootEntries.length > 0 && (
+              <div className="analysis-bar-foot">{analysisFootEntries}</div>
+            )}
+          </div>
+          <div className="analysis-bar-actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleRescan}
+              disabled={manualActive || autoActive || scanBusy}
+            >
+              {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={handleStartScan}
+              disabled={scanBusy || autoActive || manualActive}
+            >
+              {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleStopScan}
+              disabled={scanBusy || (!autoActive && !manualActive)}
+            >
+              {scanBusy && (autoActive || manualActive) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
+            </button>
           </div>
         </div>
       </header>
@@ -708,18 +710,18 @@ export default function DashboardPage(): JSX.Element {
                   )}
                 </section>
               ) : (
-            <section className="suggestions">
-              <div className="suggestions-header">
-                <h2>Keine KI-Vorschläge im Statischen Modul</h2>
-              </div>
-              <div className="placeholder">
-                Im Modul „Statisch“ werden neue Nachrichten ausschließlich über Keyword-Regeln verarbeitet. Für manuelle
-                Entscheidungen gibt es daher keine Vorschlagsliste.
-              </div>
-            </section>
-          )}
-        </main>
-      </div>
+                <section className="suggestions">
+                  <div className="suggestions-header">
+                    <h2>Keine KI-Vorschläge im Statischen Modul</h2>
+                  </div>
+                  <div className="placeholder">
+                    Im Modul „Statisch“ werden neue Nachrichten ausschließlich über Keyword-Regeln verarbeitet. Für manuelle
+                    Entscheidungen gibt es daher keine Vorschlagsliste.
+                  </div>
+                </section>
+              )}
+            </main>
+          </div>
         </>
       ) : (
         <CalendarDashboard />
