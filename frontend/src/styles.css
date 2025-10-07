@@ -2408,6 +2408,10 @@ button.link.danger:hover {
   transform: rotate(90deg);
 }
 
+.template-toggle.open .template-toggle-icon {
+  transform: rotate(90deg);
+}
+
 .template-card-body {
   margin-top: 14px;
   background: rgba(255, 255, 255, 0.9);
