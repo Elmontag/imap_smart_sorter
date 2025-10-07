@@ -307,27 +307,36 @@ def update_calendar_event_status(
         return row
 
 
+def _count_from_result(value: object) -> int:
+    if isinstance(value, tuple):
+        value = value[0]
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def calendar_event_metrics() -> Dict[str, int]:
     with get_session() as ses:
-        total = ses.exec(select(func.count(CalendarEventEntry.id))).scalar_one()
+        total = ses.exec(select(func.count(CalendarEventEntry.id))).one()
         pending = ses.exec(
             select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "pending")
-        ).scalar_one()
+        ).one()
         imported = ses.exec(
             select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "imported")
-        ).scalar_one()
+        ).one()
         failed = ses.exec(
             select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "failed")
-        ).scalar_one()
+        ).one()
         scanned_messages = ses.exec(
             select(func.count(func.distinct(CalendarEventEntry.message_uid)))
-        ).scalar_one()
+        ).one()
     return {
-        "total": int(total or 0),
-        "pending": int(pending or 0),
-        "imported": int(imported or 0),
-        "failed": int(failed or 0),
-        "scanned_messages": int(scanned_messages or 0),
+        "total": _count_from_result(total),
+        "pending": _count_from_result(pending),
+        "imported": _count_from_result(imported),
+        "failed": _count_from_result(failed),
+        "scanned_messages": _count_from_result(scanned_messages),
     }
 
 
