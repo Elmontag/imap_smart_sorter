@@ -196,6 +196,7 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 | `GET`   | `/api/filters/activity` | Statistik zu Filtertreffern (Gesamt, letzte 24 h, letzte Aktionen) |
 | `GET`   | `/api/ollama`       | Aktuelle Erreichbarkeit des Ollama-Hosts und Modellstatus |
 | `POST`  | `/api/ollama/pull`  | Startet das Nachladen eines Modells (JSON: `{ "model": "name", "purpose": "classifier" }`) |
+| `POST`  | `/api/ollama/delete`| Löscht ein Modell vom Ollama-Host (JSON: `{ "model": "name" }`) |
 | `GET`   | `/api/config`       | Liefert Laufzeitkonfiguration (Modus, Modell, Tag-Namen, Listenlimit) |
 | `PUT`   | `/api/config`       | Aktualisiert Modus, Sprachmodell und IMAP-Tags (Teil-Update möglich) |
 | `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |

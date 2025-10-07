@@ -111,6 +111,10 @@ export interface OllamaPullRequest {
   purpose?: OllamaModelPurpose
 }
 
+export interface OllamaDeleteRequest {
+  model: string
+}
+
 export interface FolderChildConfig {
   name: string
   description?: string | null
@@ -417,6 +421,13 @@ export async function getOllamaStatus(): Promise<OllamaStatus> {
 
 export async function pullOllamaModel(payload: OllamaPullRequest): Promise<OllamaStatus> {
   return request<OllamaStatus>('/api/ollama/pull', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteOllamaModel(payload: OllamaDeleteRequest): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama/delete', {
     method: 'POST',
     body: JSON.stringify(payload),
   })

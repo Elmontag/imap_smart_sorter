@@ -54,6 +54,7 @@ from tags import TagSuggestion, load_tag_suggestions
 from ollama_service import (
     OllamaModelStatus,
     OllamaStatus,
+    delete_model,
     ensure_ollama_ready,
     get_status,
     start_model_pull,
@@ -408,6 +409,10 @@ class OllamaPullRequest(BaseModel):
     purpose: str | None = Field(default=None, pattern=r"^(classifier|embedding|custom)?$")
 
 
+class OllamaDeleteRequest(BaseModel):
+    model: str = Field(..., min_length=1)
+
+
 def _required_ollama_models() -> List[tuple[str, str]]:
     mapping: List[tuple[str, str]] = []
     classifier = (resolve_classifier_model() or "").strip()
@@ -741,7 +746,10 @@ logger = logging.getLogger(__name__)
 async def _startup() -> None:
     init_db()
     if analysis_module_uses_llm():
-        await ensure_ollama_ready()
+        try:
+            await ensure_ollama_ready()
+        except Exception as exc:  # pragma: no cover - defensive startup guard
+            logger.warning("Initialer Ollama-Check fehlgeschlagen: %s", exc, exc_info=True)
 
 
 @app.get("/healthz")
@@ -998,6 +1006,21 @@ async def api_ollama_pull(payload: OllamaPullRequest) -> OllamaStatusResponse:
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("Start des Ollama-Pulls fehlgeschlagen", exc_info=True)
         status = _fallback_ollama_status(f"Modell-Download konnte nicht gestartet werden: {exc}")
+        return OllamaStatusResponse.model_validate(status_as_dict(status))
+    status = await _load_ollama_status(force_refresh=True)
+    return OllamaStatusResponse.model_validate(status_as_dict(status))
+
+
+@app.post("/api/ollama/delete", response_model=OllamaStatusResponse)
+async def api_ollama_delete(payload: OllamaDeleteRequest) -> OllamaStatusResponse:
+    model = (payload.model or "").strip()
+    if not model:
+        raise HTTPException(400, "model must not be empty")
+    try:
+        await delete_model(model)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Löschen des Ollama-Modells fehlgeschlagen", exc_info=True)
+        status = _fallback_ollama_status(f"Modell konnte nicht gelöscht werden: {exc}")
         return OllamaStatusResponse.model_validate(status_as_dict(status))
     status = await _load_ollama_status(force_refresh=True)
     return OllamaStatusResponse.model_validate(status_as_dict(status))

@@ -286,10 +286,11 @@ export default function SettingsPage(): JSX.Element {
     pullBusy: ollamaPullBusy,
     refresh: refreshOllama,
     pullModel,
+    deleteModel,
   } = useOllamaStatus(ollamaEnabled)
   const [pullModelDraft, setPullModelDraft] = useState('')
   const [pullPurpose, setPullPurpose] = useState<OllamaModelPurpose>('classifier')
-  const [pullFeedback, setPullFeedback] = useState<StatusMessage | null>(null)
+  const [modelActionFeedback, setModelActionFeedback] = useState<StatusMessage | null>(null)
 
   const loadFilters = useCallback(async () => {
     setFiltersLoading(true)
@@ -622,15 +623,38 @@ export default function SettingsPage(): JSX.Element {
       if (!trimmed) {
         return
       }
-      setPullFeedback(null)
+      setModelActionFeedback(null)
       try {
         await pullModel(trimmed, purpose)
-        setPullFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
+        setModelActionFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
       } catch (err) {
-        setPullFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
+        setModelActionFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
       }
     },
     [pullModel],
+  )
+
+  const handleModelDelete = useCallback(
+    async (model: string) => {
+      const trimmed = model.trim()
+      if (!trimmed) {
+        return
+      }
+      if (typeof window !== 'undefined') {
+        const confirmed = window.confirm(`Soll das Modell ${trimmed} wirklich gelöscht werden?`)
+        if (!confirmed) {
+          return
+        }
+      }
+      setModelActionFeedback(null)
+      try {
+        await deleteModel(trimmed)
+        setModelActionFeedback({ kind: 'success', message: `Modell ${trimmed} gelöscht.` })
+      } catch (err) {
+        setModelActionFeedback({ kind: 'error', message: `Löschen fehlgeschlagen: ${toMessage(err)}` })
+      }
+    },
+    [deleteModel],
   )
 
   const handlePullSubmit = useCallback(
@@ -638,16 +662,16 @@ export default function SettingsPage(): JSX.Element {
       event.preventDefault()
       const trimmed = pullModelDraft.trim()
       if (!trimmed) {
-        setPullFeedback({ kind: 'error', message: 'Bitte einen Modellnamen angeben.' })
+        setModelActionFeedback({ kind: 'error', message: 'Bitte einen Modellnamen angeben.' })
         return
       }
-      setPullFeedback(null)
+      setModelActionFeedback(null)
       try {
         await pullModel(trimmed, pullPurpose)
-        setPullFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
+        setModelActionFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
         setPullModelDraft('')
       } catch (err) {
-        setPullFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
+        setModelActionFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
       }
     },
     [pullModelDraft, pullPurpose, pullModel],
@@ -1019,14 +1043,24 @@ export default function SettingsPage(): JSX.Element {
                                     <strong>{model.name}</strong>
                                   </div>
                                   {model.name && (
-                                    <button
-                                      type="button"
-                                      className="link"
-                                      onClick={() => handleModelReload(model.name, model.purpose as OllamaModelPurpose)}
-                                      disabled={ollamaPullBusy || model.pulling}
-                                    >
-                                      {model.pulling ? 'Lädt…' : 'Neu laden'}
-                                    </button>
+                                    <div className="ollama-model-detail-actions">
+                                      <button
+                                        type="button"
+                                        className="link"
+                                        onClick={() => handleModelReload(model.name, model.purpose as OllamaModelPurpose)}
+                                        disabled={ollamaPullBusy || model.pulling}
+                                      >
+                                        {model.pulling ? 'Lädt…' : 'Neu laden'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="link danger"
+                                        onClick={() => handleModelDelete(model.name)}
+                                        disabled={ollamaPullBusy || model.pulling}
+                                      >
+                                        Löschen
+                                      </button>
+                                    </div>
                                   )}
                                 </div>
                                 {model.pulling && (
@@ -1107,8 +1141,10 @@ export default function SettingsPage(): JSX.Element {
                       </button>
                     </div>
                   </div>
-                  {pullFeedback && (
-                    <div className={`status-banner ${pullFeedback.kind} inline`}>{pullFeedback.message}</div>
+                  {modelActionFeedback && (
+                    <div className={`status-banner ${modelActionFeedback.kind} inline`}>
+                      {modelActionFeedback.message}
+                    </div>
                   )}
                 </form>
               </section>

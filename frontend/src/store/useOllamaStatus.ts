@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getOllamaStatus, pullOllamaModel, OllamaModelPurpose, OllamaStatus } from '../api'
+import {
+  getOllamaStatus,
+  pullOllamaModel,
+  deleteOllamaModel,
+  OllamaModelPurpose,
+  OllamaStatus,
+} from '../api'
 
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
@@ -11,6 +17,7 @@ export interface OllamaStatusState {
   pullBusy: boolean
   refresh: () => Promise<void>
   pullModel: (model: string, purpose?: OllamaModelPurpose) => Promise<void>
+  deleteModel: (model: string) => Promise<void>
 }
 
 export function useOllamaStatus(enabled: boolean): OllamaStatusState {
@@ -112,6 +119,35 @@ export function useOllamaStatus(enabled: boolean): OllamaStatusState {
     [],
   )
 
+  const deleteModel = useCallback(async (model: string) => {
+    const trimmed = model.trim()
+    if (!trimmed) {
+      throw new Error('Modellname darf nicht leer sein')
+    }
+    setPullBusy(true)
+    setLoading(true)
+    setError(null)
+    try {
+      const data = await deleteOllamaModel({ model: trimmed })
+      if (!activeRef.current) {
+        return
+      }
+      setStatus(data)
+      setError(null)
+    } catch (err) {
+      if (!activeRef.current) {
+        return
+      }
+      setError(toMessage(err))
+      throw err
+    } finally {
+      if (activeRef.current) {
+        setPullBusy(false)
+        setLoading(false)
+      }
+    }
+  }, [])
+
   const refreshing = useMemo(() => loading && !pullBusy, [loading, pullBusy])
 
   return {
@@ -122,5 +158,6 @@ export function useOllamaStatus(enabled: boolean): OllamaStatusState {
     pullBusy,
     refresh,
     pullModel,
+    deleteModel,
   }
 }

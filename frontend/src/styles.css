@@ -375,6 +375,11 @@ input {
   align-items: center;
 }
 
+.ollama-model-detail-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .model-name,
 .model-purpose {
   font-weight: 600;
