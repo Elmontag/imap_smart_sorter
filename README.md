@@ -7,7 +7,9 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Anzeige des Betriebsmodus und manuellen Aktionen.
   Die Ordnerauswahl präsentiert sich als einklappbare Baumstruktur, neu gefundene Ordner lassen sich direkt aus den Vorschlagskarten anlegen.
   Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick. Offene Vorschläge erscheinen als aufklappbare Listeneinträge mit kompaktem Kopfbereich. Die Ollama-Kachel zeigt Host-Erreichbarkeit sowie Pull-Fortschritte der Modelle per Progressbar an und meldet bei Verbindungsproblemen klar, dass die restlichen Funktionen weiterhin verfügbar bleiben.
-  Eine Einstellungsseite (`#/settings`) bündelt Statische Regeln, KI-Parameter und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln. Im Tab „KI & Tags“ lassen sich Modelle direkt über die UI nachladen; der Fortschritt wird wie im Dashboard live visualisiert und alternative Modelle können per Formular mit Zweckauswahl gepullt werden.
+  Über einen Umschalter wechselst du nahtlos zum Kalender-Dashboard: Eingehende Mails werden auf ICS-Einladungen, Absagen oder Aktualisierungen geprüft, Kennzahlen zu gescannten Nachrichten sowie importierten, ausstehenden und fehlgeschlagenen Terminen erscheinen auf einen Blick.
+  Die Kalenderansicht bietet Listen-, Tages-, Wochen-, Monats- und Jahresmodus; in Woche und Monat markierst du Tage direkt in der Übersicht und siehst darunter eine Detailleiste mit allen Terminen des ausgewählten Datums.
+  Eine Einstellungsseite (`#/settings`) bündelt Statische Regeln, KI-Parameter, Kalenderanbindung und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln. Im Tab „KI & Tags“ lassen sich Modelle direkt über die UI nachladen; der Fortschritt wird wie im Dashboard live visualisiert und alternative Modelle können per Formular mit Zweckauswahl gepullt werden. Der Tab „Kalender“ verwaltet CalDAV-Zugangsdaten, Standard-Zeitzone sowie den IMAP-Tag, der nach erfolgreichem Import gesetzt wird.
   Der Tab „Statische Regeln“ bietet eine zweigeteilte Ansicht mit Regel-Sidebar, Detailformular und Vorlagen für Newsletter-, Bestell-, Event- und Kalendereinladungs-Filter. Tags aus den definierten Tag-Slots lassen sich dort über Chips bequem zu- oder abwählen.
   Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
@@ -33,6 +35,7 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 | LLM/Ollama | `OLLAMA_HOST`, `CLASSIFIER_*`, `EMBED_MODEL`, `EMBED_PROMPT_HINT`, `EMBED_PROMPT_MAX_CHARS` | Legt Host, Modellwahl und Sampling-Parameter fest. Der Worker prüft beim Start, ob die Modelle verfügbar sind. |
 | Routing & Vorschläge | `MOVE_MODE`, `AUTO_THRESHOLD`, `MAX_SUGGESTIONS`, `MIN_NEW_FOLDER_SCORE`, `MIN_MATCH_SCORE`, `PENDING_LIST_LIMIT` | Default-Einstellungen für Vorschlagsgrenzen, Auto-Moves und Listenbegrenzungen. |
 | Tags | `IMAP_PROTECTED_TAG`, `IMAP_PROCESSED_TAG`, `IMAP_AI_TAG_PREFIX` | Kennzeichnet geschützte Nachrichten, markiert verarbeitete Mails und definiert das Präfix für KI-Tags. |
+| Kalender-Sync | `CALENDAR_SYNC_ENABLED`, `CALDAV_URL`, `CALDAV_USERNAME`, `CALDAV_PASSWORD`, `CALDAV_CALENDAR`, `CALENDAR_DEFAULT_TIMEZONE`, `CALENDAR_PROCESSED_TAG` | Aktiviert die CalDAV-Integration, steuert Zielkalender, Standard-Zeitzone und den IMAP-Tag für erfolgreich importierte Termine. |
 | System | `DATABASE_URL`, `LOG_LEVEL`, `DEV_MODE`, `ANALYSIS_MODULE` | Pfad zur Datenbank, Logging-Level sowie Standard für Entwicklungs- bzw. Analyse-Modus. |
 
 > **GUI-Overrides:** Mehrere Defaults lassen sich im Frontend überschreiben und werden danach in der Datenbank gespeichert. Dazu zählen `MOVE_MODE` (Tab „Betrieb“), die Modellwahl (`CLASSIFIER_MODEL` im Tab „KI & Tags“), Mailbox-Tags (`IMAP_PROTECTED_TAG`, `IMAP_PROCESSED_TAG`, `IMAP_AI_TAG_PREFIX`) sowie das Analyse-Modul (`ANALYSIS_MODULE`). Die `.env`-Werte dienen als Startzustand und greifen erneut, wenn gespeicherte Einstellungen zurückgesetzt werden.
@@ -72,6 +75,22 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   auf einen nicht erreichbaren Ollama-Host hin. Stelle sicher, dass `OLLAMA_HOST` auf `http://ollama:11434`
   zeigt, wenn alle Dienste via Docker Compose laufen. Bei lokal gestarteten Komponenten außerhalb
   von Docker muss der Wert auf `http://localhost:11434` oder die entsprechende IP des Hosts gesetzt werden.
+
+### Kalender-Synchronisation & Terminübersicht
+
+- Der Kalender-Scanner durchsucht überwachte IMAP-Ordner nach `text/calendar`-Anhängen oder `.ics`-Dateien
+  und legt gefundene Termine als Einträge in der Datenbank ab. Sequence-Nummern und `UID`s sorgen dafür,
+  dass Aktualisierungen oder Absagen bestehender Termine als neue Version erkannt werden.
+- Nach erfolgreichem Import über das Kalender-Dashboard setzt das Backend den IMAP-Tag aus `CALENDAR_PROCESSED_TAG`
+  (Standard „Termin bearbeitet“). So erkennst du im Postfach sofort, welche Einladungen bereits in CalDAV übertragen wurden.
+- Die Übersicht liefert Kennzahlen zu gescannten Nachrichten, importierten, ausstehenden und fehlgeschlagenen Terminen
+  sowie zur Gesamtzahl der erkannten Einladungen. Über Buttons startest du einen neuen Scan oder lädst die Anzeige neu.
+- Die Kalenderansicht wechselt zwischen Liste, Tages-, Wochen-, Monats- und Jahresübersicht. In Woche und Monat
+  markierst du Tage direkt in der Kachelansicht und siehst die Details aller Termine des gewählten Tages in einem separaten Panel – inklusive Status, Uhrzeit, Ort und direkter Import-Aktion.
+- Die Zeitzone orientiert sich an der Benutzerkonfiguration (`CALENDAR_DEFAULT_TIMEZONE` bzw. gespeicherte Einstellung).
+  Für Einladungen mit `TZID`-Hinweisen wird automatisch auf die passende Zone umgerechnet; Ganztagstermine bleiben erhalten.
+- Im Einstellungs-Tab „Kalender“ aktivierst du die Synchronisation, hinterlegst CalDAV-URL, Benutzername, optionales Passwort,
+  Kalenderpfad und Standard-Zeitzone. Änderungen werden dauerhaft gespeichert und können jederzeit neu geladen werden.
 
 ### Automatische Kategorien, Tags & Kataloge
 
@@ -194,6 +213,11 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 | `GET`   | `/api/filters`      | Liefert aktuelle Keyword-Regeln für direkte Zuordnungen |
 | `PUT`   | `/api/filters`      | Persistiert aktualisierte Keyword-Regeln |
 | `GET`   | `/api/filters/activity` | Statistik zu Filtertreffern (Gesamt, letzte 24 h, letzte Aktionen) |
+| `GET`   | `/api/calendar/overview` | Übersicht erkannter Termine inkl. Status, Zeitzone und Kennzahlen |
+| `POST`  | `/api/calendar/scan` | Startet einen manuellen Scan nach ICS-Anhängen in den überwachten Ordnern |
+| `POST`  | `/api/calendar/import` | Importiert einen Kalendereintrag in den konfigurierten CalDAV-Kalender (`{ "event_id": 123 }`) |
+| `GET`   | `/api/calendar/config` | Liefert die gespeicherten CalDAV-Einstellungen (ohne Passwort) |
+| `PUT`   | `/api/calendar/config` | Speichert CalDAV-URL, Zugangsdaten, Zeitzone und Import-Tag |
 | `GET`   | `/api/ollama`       | Aktuelle Erreichbarkeit des Ollama-Hosts und Modellstatus |
 | `POST`  | `/api/ollama/pull`  | Startet das Nachladen eines Modells (JSON: `{ "model": "name", "purpose": "classifier" }`) |
 | `POST`  | `/api/ollama/delete`| Löscht ein Modell vom Ollama-Host (JSON: `{ "model": "name" }`) |

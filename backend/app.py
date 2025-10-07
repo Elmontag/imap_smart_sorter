@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Sequence
+
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi import WebSocketDisconnect
@@ -48,7 +50,7 @@ from rescan_control import (
 )
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from scan_control import ScanStatus, controller as scan_controller
-from models import Suggestion
+from models import CalendarEventEntry, Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
 from tags import TagSuggestion, load_tag_suggestions
 from ollama_service import (
@@ -63,6 +65,16 @@ from ollama_service import (
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
 from settings import S
+from calendar_sync import (
+    CalendarImportError,
+    import_calendar_event as perform_calendar_import,
+    load_calendar_overview,
+    scan_calendar_mailboxes,
+)
+from calendar_settings import (
+    load_calendar_settings,
+    persist_calendar_settings,
+)
 from runtime_settings import (
     analysis_module_uses_llm,
     resolve_analysis_module,
@@ -734,6 +746,169 @@ class PendingOverviewResponse(BaseModel):
         )
 
 
+def _localize_datetime(value: datetime | None, tz: ZoneInfo) -> Optional[datetime]:
+    if value is None:
+        return None
+    dt = value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(tz)
+
+
+def _resolve_timezone(name: str) -> ZoneInfo:
+    candidate = (name or "").strip() or "Europe/Berlin"
+    try:
+        return ZoneInfo(candidate)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unbekannte Zeitzone %s – nutze UTC als Fallback", candidate)
+        return ZoneInfo("UTC")
+
+
+def _calendar_metrics_response(data: Dict[str, Any]) -> CalendarMetricsResponse:
+    return CalendarMetricsResponse(
+        scanned_mails=int(data.get("scanned_messages", 0) or 0),
+        pending_events=int(data.get("pending", 0) or 0),
+        imported_events=int(data.get("imported", 0) or 0),
+        failed_events=int(data.get("failed", 0) or 0),
+        total_events=int(data.get("total", 0) or 0),
+    )
+
+
+def _calendar_overview_payload() -> CalendarOverviewResponse:
+    settings = load_calendar_settings(include_password=False)
+    tz = _resolve_timezone(settings.timezone)
+    timezone_label = settings.timezone.strip() if settings.timezone else getattr(tz, "key", "UTC")
+    events, metrics = load_calendar_overview()
+    return CalendarOverviewResponse(
+        timezone=timezone_label,
+        events=[CalendarEventResponse.from_entry(event, tz) for event in events],
+        metrics=_calendar_metrics_response(metrics),
+    )
+
+
+def _calendar_settings_payload() -> CalendarSettingsResponse:
+    settings = load_calendar_settings(include_password=True)
+    sanitized = settings.sanitized()
+    return CalendarSettingsResponse(
+        enabled=sanitized.enabled,
+        caldav_url=sanitized.caldav_url,
+        username=sanitized.username,
+        calendar_name=sanitized.calendar_name,
+        timezone=sanitized.timezone,
+        processed_tag=sanitized.processed_tag,
+        has_password=bool(settings.password),
+    )
+
+
+class CalendarEventResponse(BaseModel):
+    id: int
+    message_uid: str
+    folder: str
+    subject: Optional[str] = None
+    from_addr: Optional[str] = None
+    message_date: Optional[datetime] = None
+    event_uid: str
+    sequence: Optional[int] = None
+    summary: Optional[str] = None
+    organizer: Optional[str] = None
+    location: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    local_starts_at: Optional[datetime] = None
+    local_ends_at: Optional[datetime] = None
+    all_day: bool = False
+    timezone: Optional[str] = None
+    method: Optional[str] = None
+    cancellation: bool = False
+    status: Literal["pending", "imported", "failed"]
+    last_error: Optional[str] = None
+    last_import_at: Optional[datetime] = None
+
+    @classmethod
+    def from_entry(cls, entry: CalendarEventEntry, tz: ZoneInfo) -> "CalendarEventResponse":
+        status_value = entry.status if entry.status in {"pending", "imported", "failed"} else "pending"
+        return cls(
+            id=entry.id or 0,
+            message_uid=entry.message_uid,
+            folder=entry.folder,
+            subject=entry.subject,
+            from_addr=entry.from_addr,
+            message_date=entry.message_date,
+            event_uid=entry.event_uid,
+            sequence=entry.sequence,
+            summary=entry.summary,
+            organizer=entry.organizer,
+            location=entry.location,
+            starts_at=entry.starts_at,
+            ends_at=entry.ends_at,
+            local_starts_at=_localize_datetime(entry.starts_at, tz) if entry.starts_at else None,
+            local_ends_at=_localize_datetime(entry.ends_at, tz) if entry.ends_at else None,
+            all_day=bool(entry.all_day),
+            timezone=entry.timezone,
+            method=entry.method,
+            cancellation=bool(entry.cancellation),
+            status=status_value,
+            last_error=entry.last_error,
+            last_import_at=entry.last_import_at,
+        )
+
+
+class CalendarMetricsResponse(BaseModel):
+    scanned_mails: int
+    pending_events: int
+    imported_events: int
+    failed_events: int
+    total_events: int
+
+
+class CalendarOverviewResponse(BaseModel):
+    timezone: str
+    events: List[CalendarEventResponse]
+    metrics: CalendarMetricsResponse
+
+
+class CalendarScanSummaryResponse(BaseModel):
+    scanned_messages: int
+    processed_events: int
+    created: int
+    updated: int
+    errors: List[str]
+
+
+class CalendarScanResponse(BaseModel):
+    overview: CalendarOverviewResponse
+    scan: CalendarScanSummaryResponse
+
+
+class CalendarImportRequest(BaseModel):
+    event_id: int = Field(..., gt=0)
+
+
+class CalendarImportResponse(BaseModel):
+    event: CalendarEventResponse
+    metrics: CalendarMetricsResponse
+
+
+class CalendarSettingsResponse(BaseModel):
+    enabled: bool
+    caldav_url: str
+    username: str
+    calendar_name: str
+    timezone: str
+    processed_tag: str
+    has_password: bool
+
+
+class CalendarSettingsUpdate(BaseModel):
+    enabled: bool
+    caldav_url: str = ""
+    username: str = ""
+    calendar_name: str = ""
+    timezone: str = "Europe/Berlin"
+    processed_tag: str = "Termin bearbeitet"
+    password: Optional[str] = None
+    clear_password: bool = False
+
 app = FastAPI(title="IMAP Smart Sorter")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
@@ -1040,6 +1215,92 @@ async def api_pending() -> PendingOverviewResponse:
 def api_tags() -> List[TagSuggestionResponse]:
     suggestions = load_tag_suggestions()
     return [TagSuggestionResponse.from_domain(item) for item in suggestions]
+
+
+@app.get("/api/calendar/overview", response_model=CalendarOverviewResponse)
+def api_calendar_overview() -> CalendarOverviewResponse:
+    return _calendar_overview_payload()
+
+
+@app.post("/api/calendar/scan", response_model=CalendarScanResponse)
+async def api_calendar_scan() -> CalendarScanResponse:
+    result = await scan_calendar_mailboxes()
+    overview = _calendar_overview_payload()
+    summary = CalendarScanSummaryResponse(
+        scanned_messages=result.scanned_messages,
+        processed_events=result.processed_events,
+        created=result.created,
+        updated=result.updated,
+        errors=result.errors,
+    )
+    return CalendarScanResponse(overview=overview, scan=summary)
+
+
+@app.post("/api/calendar/import", response_model=CalendarImportResponse)
+async def api_calendar_import(payload: CalendarImportRequest) -> CalendarImportResponse:
+    try:
+        updated = await perform_calendar_import(payload.event_id)
+    except CalendarImportError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Kalenderimport fehlgeschlagen", exc_info=True)
+        raise HTTPException(500, "Kalenderimport fehlgeschlagen") from exc
+    if not isinstance(updated, CalendarEventEntry):
+        raise HTTPException(500, "Kalendereintrag konnte nicht geladen werden")
+    settings = load_calendar_settings(include_password=False)
+    tz = _resolve_timezone(settings.timezone)
+    _, metrics_raw = load_calendar_overview()
+    metrics = _calendar_metrics_response(metrics_raw)
+    return CalendarImportResponse(
+        event=CalendarEventResponse.from_entry(updated, tz),
+        metrics=metrics,
+    )
+
+
+@app.get("/api/calendar/config", response_model=CalendarSettingsResponse)
+def api_calendar_config() -> CalendarSettingsResponse:
+    return _calendar_settings_payload()
+
+
+@app.put("/api/calendar/config", response_model=CalendarSettingsResponse)
+def api_update_calendar_config(payload: CalendarSettingsUpdate) -> CalendarSettingsResponse:
+    if payload.clear_password and payload.password:
+        raise HTTPException(400, "Passwort kann nicht gleichzeitig gesetzt und gelöscht werden.")
+    timezone_value = (payload.timezone or "").strip()
+    if not timezone_value:
+        raise HTTPException(400, "Zeitzone darf nicht leer sein.")
+    try:
+        ZoneInfo(timezone_value)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(400, f"Unbekannte Zeitzone: {timezone_value}") from exc
+    password_value = payload.password
+    clear_password = payload.clear_password
+    if password_value is not None:
+        if password_value.strip():
+            password_value = password_value
+        else:
+            password_value = None
+            clear_password = True
+    updated = persist_calendar_settings(
+        enabled=payload.enabled,
+        caldav_url=(payload.caldav_url or "").strip(),
+        username=(payload.username or "").strip(),
+        calendar_name=(payload.calendar_name or "").strip(),
+        timezone=timezone_value,
+        processed_tag=(payload.processed_tag or "").strip(),
+        password=password_value,
+        clear_password=clear_password,
+    )
+    sanitized = updated.sanitized()
+    return CalendarSettingsResponse(
+        enabled=sanitized.enabled,
+        caldav_url=sanitized.caldav_url,
+        username=sanitized.username,
+        calendar_name=sanitized.calendar_name,
+        timezone=sanitized.timezone,
+        processed_tag=sanitized.processed_tag,
+        has_password=bool(updated.password),
+    )
 
 
 def _ensure_suggestion(uid: str) -> Suggestion:
