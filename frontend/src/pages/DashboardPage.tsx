@@ -683,31 +683,31 @@ export default function DashboardPage(): JSX.Element {
                       </div>
                     </div>
                   )}
-              {loading && <div className="placeholder">Bitte warten…</div>}
-              {!loading && !suggestions.length && (
-                <div className="placeholder">
-                  {suggestionScope === 'open'
-                    ? 'Super! Alles abgearbeitet.'
-                    : 'Es liegen noch keine analysierten Vorschläge vor.'}
-                </div>
-              )}
-              {!loading && suggestions.length > 0 && (
-                <ul className="suggestion-list">
-                  {suggestions.map((item: Suggestion) => (
-                    <SuggestionCard
-                      key={item.message_uid}
-                      suggestion={item}
-                      onActionComplete={handleSuggestionUpdate}
-                      tagSlots={appConfig?.tag_slots}
-                      availableFolders={availableFolders}
-                      onFolderCreated={handleFolderCreated}
-                      analysisModule={analysisModule}
-                    />
-                  ))}
-                </ul>
-              )}
-            </section>
-          ) : (
+                  {loading && <div className="placeholder">Bitte warten…</div>}
+                  {!loading && !suggestions.length && (
+                    <div className="placeholder">
+                      {suggestionScope === 'open'
+                        ? 'Super! Alles abgearbeitet.'
+                        : 'Es liegen noch keine analysierten Vorschläge vor.'}
+                    </div>
+                  )}
+                  {!loading && suggestions.length > 0 && (
+                    <ul className="suggestion-list">
+                      {suggestions.map((item: Suggestion) => (
+                        <SuggestionCard
+                          key={item.message_uid}
+                          suggestion={item}
+                          onActionComplete={handleSuggestionUpdate}
+                          tagSlots={appConfig?.tag_slots}
+                          availableFolders={availableFolders}
+                          onFolderCreated={handleFolderCreated}
+                          analysisModule={analysisModule}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              ) : (
             <section className="suggestions">
               <div className="suggestions-header">
                 <h2>Keine KI-Vorschläge im Statischen Modul</h2>
