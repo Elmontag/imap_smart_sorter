@@ -21,9 +21,9 @@ input {
 }
 
 .app-shell {
-  max-width: 1180px;
+  max-width: 1320px;
   margin: 24px auto 48px;
-  padding: 0 24px 40px;
+  padding: 0 32px 40px;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -57,10 +57,10 @@ input {
 }
 
 .analysis-canvas {
-  flex: 1 1 420px;
+  flex: 1 1 460px;
   background: rgba(255, 255, 255, 0.92);
   border-radius: 20px;
-  padding: 18px 24px;
+  padding: 22px 28px;
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.14);
   display: flex;
   flex-direction: column;
@@ -70,20 +70,46 @@ input {
 .analysis-status {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
 }
 
-.status-dot {
-  width: 12px;
-  height: 12px;
+.status-indicator {
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
-  background: #94a3b8;
-  box-shadow: inset 0 0 0 2px rgba(148, 163, 184, 0.2);
+  background: linear-gradient(135deg, #94a3b8, #64748b);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.15);
+  position: relative;
 }
 
-.status-dot.active {
-  background: #22c55e;
-  box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.25);
+.status-indicator::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.35);
+  mix-blend-mode: screen;
+}
+
+.status-indicator.running {
+  background: linear-gradient(135deg, #16a34a, #22c55e);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
+}
+
+.status-indicator.paused {
+  background: linear-gradient(135deg, #f59e0b, #facc15);
+  box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.25);
+}
+
+.status-indicator.stopped {
+  background: linear-gradient(135deg, #ef4444, #f97316);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.22);
+}
+
+.analysis-status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .analysis-status .label {
@@ -94,7 +120,7 @@ input {
 }
 
 .analysis-status strong {
-  font-size: 16px;
+  font-size: 18px;
   color: #0f172a;
 }
 
@@ -127,20 +153,20 @@ input {
 }
 
 .analysis-actions {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: flex-end;
-  padding: 18px 20px;
-  background: rgba(15, 23, 42, 0.03);
+  display: grid;
+  gap: 14px;
+  padding: 22px 24px;
+  background: rgba(15, 23, 42, 0.04);
   border-radius: 20px;
-  flex: 0 0 280px;
+  flex: 0 1 320px;
+  min-width: 280px;
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  align-content: flex-start;
 }
 
 .analysis-actions button {
-  min-width: 160px;
+  min-width: unset;
+  width: 100%;
 }
 
 .analysis-foot {
@@ -167,7 +193,8 @@ input {
 
   .analysis-actions {
     width: 100%;
-    justify-content: flex-start;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    min-width: 0;
   }
 }
 
@@ -178,7 +205,7 @@ input {
 }
 
 .app-sidebar {
-  flex: 0 0 260px;
+  flex: 0 0 220px;
   position: sticky;
   top: 24px;
   align-self: flex-start;
@@ -232,6 +259,18 @@ input {
   font-weight: 600;
   font-size: 13px;
   border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.mode-badge.module {
+  background: rgba(34, 197, 94, 0.18);
+  color: #047857;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.mode-badge.subtle {
+  background: rgba(148, 163, 184, 0.18);
+  color: #334155;
+  border-color: rgba(148, 163, 184, 0.32);
 }
 
 .ollama-status-card {
@@ -2155,28 +2194,40 @@ button.link.danger:hover {
 
 .template-toggle {
   border: none;
-  background: transparent;
+  background: rgba(37, 99, 235, 0.08);
   text-align: left;
-  padding: 0;
+  padding: 12px 16px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   color: #0f172a;
+  border-radius: 14px;
+  min-width: 240px;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  align-items: flex-start;
 }
 
 .template-toggle .template-name {
   font-weight: 600;
-  font-size: 15px;
+  font-size: 16px;
+  line-height: 1.3;
 }
 
 .template-toggle .template-folder {
   font-size: 13px;
-  color: #64748b;
+  color: #475569;
 }
 
-.template-toggle:hover .template-name,
-.template-toggle.open .template-name {
+.template-toggle:hover,
+.template-toggle.open {
+  background: rgba(37, 99, 235, 0.16);
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+}
+
+.template-toggle:hover .template-folder,
+.template-toggle.open .template-folder {
   color: #1d4ed8;
 }
 
@@ -2494,6 +2545,57 @@ button.link.danger:hover {
 .mode-select.large select {
   padding: 12px 14px;
   font-size: 16px;
+}
+
+.module-description-list {
+  list-style: none;
+  padding: 0;
+  margin: 20px 0 12px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.module-description-list li {
+  background: rgba(15, 23, 42, 0.04);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid transparent;
+  min-height: 92px;
+}
+
+.module-description-list li.active {
+  border-color: rgba(37, 99, 235, 0.3);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.module-headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.module-headline .badge {
+  background: rgba(34, 197, 94, 0.18);
+  color: #047857;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.module-description-list span {
+  font-size: 13px;
+  color: #475569;
 }
 
 .mode-description-list {

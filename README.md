@@ -114,7 +114,11 @@ MIN_MATCH_SCORE=60
 
 - `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).
 - `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
-- Der Tab „Betrieb“ in den Einstellungen erlaubt das Bearbeiten von Verarbeitungsmodus, Ollama-Modell und IMAP-Tags; das Dashboard zeigt den aktuellen Modus nur noch an.
+- Der Tab „Betrieb“ in den Einstellungen bündelt die Auswahl von Analyse-Modul, Verarbeitungsmodus, Ollama-Modell und IMAP-Tags; das Dashboard zeigt den gewählten Modus weiterhin an.
+- Die Module steuern, welche Informationen sichtbar sind:
+  - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien) werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist.
+  - **Hybrid** nutzt zuerst die statischen Regeln und analysiert verbleibende Nachrichten per LLM. Alle Kontextinformationen bleiben sichtbar.
+  - **LLM Pure** ignoriert die Regeln und verarbeitet jede Mail per LLM. Die Regel-Übersicht im Dashboard blendet sich dabei automatisch aus.
 - `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.

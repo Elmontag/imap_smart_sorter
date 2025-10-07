@@ -218,6 +218,21 @@ def get_classifier_model() -> Optional[str]:
     return normalized or None
 
 
+def set_analysis_module(module: str) -> None:
+    normalized = str(module or "").strip().upper()
+    if not normalized:
+        raise ValueError("analysis module must not be empty")
+    _set_config_value("ANALYSIS_MODULE", normalized)
+
+
+def get_analysis_module_override() -> Optional[str]:
+    value = _get_config_value("ANALYSIS_MODULE")
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    return normalized or None
+
+
 def set_mailbox_tags(protected: str | None, processed: str | None, ai_prefix: str | None) -> None:
     payload = json.dumps(
         {

@@ -1,6 +1,7 @@
 import { recordDevEvent } from './devtools'
 
 export type MoveMode = 'DRY_RUN' | 'CONFIRM' | 'AUTO'
+export type AnalysisModule = 'STATIC' | 'HYBRID' | 'LLM_PURE'
 
 export interface SuggestionScore {
   name: string
@@ -198,6 +199,7 @@ export interface AppConfig {
   dev_mode: boolean
   pending_list_limit: number
   mode: MoveMode
+  analysis_module: AnalysisModule
   classifier_model: string
   protected_tag: string | null
   processed_tag: string | null
@@ -210,6 +212,7 @@ export interface AppConfig {
 
 export interface AppConfigUpdateRequest {
   mode?: MoveMode
+  analysis_module?: AnalysisModule
   classifier_model?: string
   protected_tag?: string | null
   processed_tag?: string | null

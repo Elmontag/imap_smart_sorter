@@ -32,6 +32,7 @@ from database import (
     mark_moved,
     record_decision,
     record_dry_run,
+    set_analysis_module,
     set_classifier_model,
     set_mailbox_tags,
     set_mode,
@@ -49,13 +50,24 @@ from ollama_service import ensure_ollama_ready, get_status, status_as_dict
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
 from settings import S
-from runtime_settings import resolve_classifier_model, resolve_mailbox_tags, resolve_move_mode
+from runtime_settings import (
+    resolve_analysis_module,
+    resolve_classifier_model,
+    resolve_mailbox_tags,
+    resolve_move_mode,
+)
 
 
 class MoveMode(str, Enum):
     DRY_RUN = "DRY_RUN"
     CONFIRM = "CONFIRM"
     AUTO = "AUTO"
+
+
+class AnalysisModule(str, Enum):
+    STATIC = "STATIC"
+    HYBRID = "HYBRID"
+    LLM_PURE = "LLM_PURE"
 
 
 class ModeResponse(BaseModel):
@@ -353,6 +365,7 @@ class ConfigResponse(BaseModel):
     dev_mode: bool
     pending_list_limit: int
     mode: MoveMode
+    analysis_module: AnalysisModule
     classifier_model: str
     protected_tag: str | None = None
     processed_tag: str | None = None
@@ -365,6 +378,7 @@ class ConfigResponse(BaseModel):
 
 class ConfigUpdateRequest(BaseModel):
     mode: Optional[MoveMode] = None
+    analysis_module: Optional[AnalysisModule] = None
     classifier_model: Optional[str] = Field(default=None, min_length=1)
     protected_tag: Optional[str] = None
     processed_tag: Optional[str] = None
@@ -708,6 +722,7 @@ async def _config_response() -> ConfigResponse:
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
         mode=_resolve_mode(),
+        analysis_module=AnalysisModule(resolve_analysis_module()),
         classifier_model=resolve_classifier_model(),
         protected_tag=protected_tag,
         processed_tag=processed_tag,
@@ -731,6 +746,10 @@ async def api_update_config(payload: ConfigUpdateRequest) -> ConfigResponse:
         if payload.mode is None:
             raise HTTPException(400, "mode must not be null")
         set_mode(payload.mode.value)
+    if "analysis_module" in updates:
+        if payload.analysis_module is None:
+            raise HTTPException(400, "analysis_module must not be null")
+        set_analysis_module(payload.analysis_module.value)
     if "classifier_model" in updates:
         model = (payload.classifier_model or "").strip()
         if not model:

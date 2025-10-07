@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
+  AnalysisModule,
   KeywordFilterConfig,
   KeywordFilterField,
   KeywordFilterRuleConfig,
@@ -18,6 +19,7 @@ import { useFilterActivity } from '../store/useFilterActivity'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 const fieldOrder: KeywordFilterField[] = ['subject', 'sender', 'body']
+const moduleOptions: AnalysisModule[] = ['STATIC', 'HYBRID', 'LLM_PURE']
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
@@ -85,6 +87,7 @@ interface StatusMessage {
 
 interface ConfigDraft {
   mode: MoveMode
+  analysisModule: AnalysisModule
   classifierModel: string
   protectedTag: string
   processedTag: string
@@ -165,6 +168,18 @@ const defaultTemplateConfigs: KeywordFilterRuleConfig[] = [
   },
 ]
 
+const moduleLabels: Record<AnalysisModule, string> = {
+  STATIC: 'Statisch',
+  HYBRID: 'Hybrid',
+  LLM_PURE: 'LLM Pure',
+}
+
+const moduleDescriptions: Record<AnalysisModule, string> = {
+  STATIC: 'Nur definierte Regeln laufen – KI-Kontexte werden im Dashboard ausgeblendet.',
+  HYBRID: 'Regeln filtern vor und übergeben verbleibende Mails an die KI zur Analyse.',
+  LLM_PURE: 'Alle Nachrichten gehen direkt an das LLM – Regelübersichten werden ausgeblendet.',
+}
+
 const modeDescriptions = {
   DRY_RUN: 'Verschiebe nichts automatisch, protokolliere nur die Vorschläge.',
   CONFIRM: 'Automatische Moves benötigen eine manuelle Bestätigung im Dashboard.',
@@ -187,6 +202,7 @@ export default function SettingsPage(): JSX.Element {
   const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null)
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     mode: 'DRY_RUN',
+    analysisModule: 'HYBRID',
     classifierModel: '',
     protectedTag: '',
     processedTag: '',
@@ -277,6 +293,7 @@ export default function SettingsPage(): JSX.Element {
     }
     setConfigDraft({
       mode: appConfig.mode,
+      analysisModule: appConfig.analysis_module,
       classifierModel: appConfig.classifier_model ?? '',
       protectedTag: appConfig.protected_tag ?? '',
       processedTag: appConfig.processed_tag ?? '',
@@ -307,6 +324,7 @@ export default function SettingsPage(): JSX.Element {
     }
     return (
       configDraft.mode !== appConfig.mode ||
+      configDraft.analysisModule !== appConfig.analysis_module ||
       configDraft.classifierModel.trim() !== (appConfig.classifier_model ?? '').trim() ||
       configDraft.protectedTag.trim() !== (appConfig.protected_tag ?? '').trim() ||
       configDraft.processedTag.trim() !== (appConfig.processed_tag ?? '').trim() ||
@@ -480,7 +498,7 @@ export default function SettingsPage(): JSX.Element {
   }, [ruleDrafts, selectedRuleId])
 
   const handleConfigChange = useCallback(
-    (field: keyof ConfigDraft, value: string | MoveMode) => {
+    (field: keyof ConfigDraft, value: string | MoveMode | AnalysisModule) => {
       setConfigDraft(current => ({ ...current, [field]: value }))
     },
     [],
@@ -495,6 +513,7 @@ export default function SettingsPage(): JSX.Element {
     try {
       const response = await updateAppConfig({
         mode: configDraft.mode,
+        analysis_module: configDraft.analysisModule,
         classifier_model: configDraft.classifierModel.trim(),
         protected_tag: configDraft.protectedTag.trim() || null,
         processed_tag: configDraft.processedTag.trim() || null,
@@ -502,6 +521,7 @@ export default function SettingsPage(): JSX.Element {
       })
       setConfigDraft({
         mode: response.mode,
+        analysisModule: response.analysis_module,
         classifierModel: response.classifier_model,
         protectedTag: response.protected_tag ?? '',
         processedTag: response.processed_tag ?? '',
@@ -890,8 +910,24 @@ export default function SettingsPage(): JSX.Element {
           {activeTab === 'general' && (
             <div className="settings-section">
               <section className="general-card">
-                <h2>Verarbeitungsmodus & Modell</h2>
+                <h2>Analyse-Module & Modell</h2>
                 <div className="config-grid">
+                  <label className="mode-select large">
+                    <span>Analyse-Modul</span>
+                    <select
+                      value={configDraft.analysisModule}
+                      onChange={event =>
+                        handleConfigChange('analysisModule', event.target.value as AnalysisModule)
+                      }
+                      disabled={configSaving || appConfigLoading}
+                    >
+                      {moduleOptions.map(option => (
+                        <option key={option} value={option}>
+                          {moduleLabels[option]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="mode-select large">
                     <span>Verarbeitungsmodus</span>
                     <select
@@ -933,6 +969,17 @@ export default function SettingsPage(): JSX.Element {
                     {configSaving ? 'Speichere…' : 'Konfiguration speichern'}
                   </button>
                 </div>
+                <ul className="module-description-list">
+                  {moduleOptions.map(option => (
+                    <li key={option} className={configDraft.analysisModule === option ? 'active' : ''}>
+                      <div className="module-headline">
+                        <strong>{moduleLabels[option]}</strong>
+                        {appConfig?.analysis_module === option && <span className="badge">Aktuell</span>}
+                      </div>
+                      <span>{moduleDescriptions[option]}</span>
+                    </li>
+                  ))}
+                </ul>
                 <ul className="mode-description-list">
                   {modeOptions.map(option => (
                     <li key={option} className={configDraft.mode === option ? 'active' : ''}>
