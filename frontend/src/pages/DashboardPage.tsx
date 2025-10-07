@@ -77,6 +77,7 @@ export default function DashboardPage(): JSX.Element {
   const [rescanBusy, setRescanBusy] = useState(false)
   const lastFinishedRef = useRef<string | null>(null)
   const manualFinishedRef = useRef<string | null>(null)
+  const scanStateRef = useRef({ auto: false, manual: false })
   const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
   const moduleLabel = moduleLabels[analysisModule]
 
@@ -145,6 +146,18 @@ export default function DashboardPage(): JSX.Element {
       setRescanBusy(false)
     }
   }, [scanStatus?.rescan_active, rescanBusy])
+
+  useEffect(() => {
+    const autoActive = Boolean(scanStatus?.active)
+    const manualActive = Boolean(scanStatus?.rescan_active || rescanBusy)
+    const previous = scanStateRef.current
+
+    if ((autoActive && !previous.auto) || (manualActive && !previous.manual)) {
+      void refreshPendingOverview().catch(() => undefined)
+    }
+
+    scanStateRef.current = { auto: autoActive, manual: manualActive }
+  }, [scanStatus?.active, scanStatus?.rescan_active, rescanBusy, refreshPendingOverview])
 
   const handleStartScan = async () => {
     setScanBusy(true)

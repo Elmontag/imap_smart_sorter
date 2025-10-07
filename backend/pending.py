@@ -16,7 +16,7 @@ from utils import subject_from
 
 @dataclass
 class PendingMail:
-    """Lightweight representation of a message without AI processing."""
+    """Lightweight representation of a message that still awaits processing."""
 
     message_uid: str
     folder: str
@@ -52,7 +52,7 @@ class PendingOverview:
 
 
 async def load_pending_overview(folders: Sequence[str] | None = None) -> PendingOverview:
-    """Return metadata about messages that have not been processed by the AI yet."""
+    """Return metadata about messages that still await automated processing."""
 
     if folders is not None:
         target_folders: List[str] = [str(folder) for folder in folders if str(folder).strip()]
