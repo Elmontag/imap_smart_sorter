@@ -1,9 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { NavLink } from 'react-router-dom'
 import { CalendarEvent, CalendarScanSummary, importCalendarEvent } from '../api'
 import { useCalendarOverview } from '../store/useCalendarOverview'
 import { useAppConfig } from '../store/useAppConfig'
-import { useDevMode } from '../devtools'
 
 type CalendarView = 'list' | 'day' | 'week' | 'month' | 'year'
 
@@ -205,7 +203,6 @@ export default function CalendarDashboard(): JSX.Element {
   const [cancelBusy, setCancelBusy] = useState(false)
   const [importingId, setImportingId] = useState<number | null>(null)
   const { data: appConfig } = useAppConfig()
-  const devMode = useDevMode()
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -524,22 +521,6 @@ export default function CalendarDashboard(): JSX.Element {
             {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
-        <nav className="primary-nav">
-          <NavLink to="/mail" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            E-Mail-Dashboard
-          </NavLink>
-          <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Kalenderdashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-          {devMode && (
-            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-              Dev-Mode
-            </NavLink>
-          )}
-        </nav>
         <div className="analysis-top">
           <div className="analysis-canvas">
             <div className="analysis-status">

@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink } from 'react-router-dom'
 import {
   AnalysisModule,
   OllamaModelStatus,
@@ -23,7 +22,6 @@ import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
 import { useOllamaStatus } from '../store/useOllamaStatus'
-import { useDevMode } from '../devtools'
 
 type StatusKind = 'info' | 'success' | 'error'
 
@@ -145,7 +143,6 @@ export default function DashboardPage(): JSX.Element {
   const manualFinishedRef = useRef<string | null>(null)
   const scanStateRef = useRef({ auto: false, manual: false })
   const moduleLabel = moduleLabels[analysisModule]
-  const devMode = useDevMode()
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
@@ -479,51 +476,13 @@ export default function DashboardPage(): JSX.Element {
             {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
-        <nav className="primary-nav">
-          <NavLink to="/mail" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            E-Mail-Dashboard
-          </NavLink>
-          <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Kalenderdashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-          {devMode && (
-            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-              Dev-Mode
-            </NavLink>
-          )}
-        </nav>
-        <div className="dashboard-view-toggle" role="tablist" aria-label="Dashboard-Ansicht">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={dashboardView === 'mail'}
-            className={`dashboard-view-button${dashboardView === 'mail' ? ' active' : ''}`}
-            onClick={() => setDashboardView('mail')}
-          >
-            E-Mail-Dashboard
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={dashboardView === 'calendar'}
-            className={`dashboard-view-button${dashboardView === 'calendar' ? ' active' : ''}`}
-            onClick={() => setDashboardView('calendar')}
-          >
-            Kalender
-          </button>
-        </div>
-        {dashboardView === 'mail' && (
-          <div className="analysis-top">
-            <div className="analysis-canvas">
-              <div className="analysis-status">
-                <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
-                <div className="analysis-status-text">
-                  <span className="label">Analyse</span>
-                  <strong>{scanSummary.statusLabel}</strong>
-                </div>
+        <div className="analysis-top">
+          <div className="analysis-canvas">
+            <div className="analysis-status">
+              <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
+              <div className="analysis-status-text">
+                <span className="label">Analyse</span>
+                <strong>{scanSummary.statusLabel}</strong>
               </div>
               <dl className="analysis-meta">
                 <div>

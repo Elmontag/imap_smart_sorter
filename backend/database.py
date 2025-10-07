@@ -309,34 +309,25 @@ def update_calendar_event_status(
 
 def calendar_event_metrics() -> Dict[str, int]:
     with get_session() as ses:
-        total = ses.exec(select(func.count(CalendarEventEntry.id))).scalar() or 0
-        pending = (
-            ses.exec(
-                select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "pending")
-            ).scalar()
-            or 0
-        )
-        imported = (
-            ses.exec(
-                select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "imported")
-            ).scalar()
-            or 0
-        )
-        failed = (
-            ses.exec(
-                select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "failed")
-            ).scalar()
-            or 0
-        )
-        scanned_messages = (
-            ses.exec(select(func.count(func.distinct(CalendarEventEntry.message_uid)))).scalar() or 0
-        )
+        total = ses.exec(select(func.count(CalendarEventEntry.id))).one()
+        pending = ses.exec(
+            select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "pending")
+        ).one()
+        imported = ses.exec(
+            select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "imported")
+        ).one()
+        failed = ses.exec(
+            select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "failed")
+        ).one()
+        scanned_messages = ses.exec(
+            select(func.count(func.distinct(CalendarEventEntry.message_uid)))
+        ).one()
     return {
-        "total": int(total),
-        "pending": int(pending),
-        "imported": int(imported),
-        "failed": int(failed),
-        "scanned_messages": int(scanned_messages),
+        "total": int(total or 0),
+        "pending": int(pending or 0),
+        "imported": int(imported or 0),
+        "failed": int(failed or 0),
+        "scanned_messages": int(scanned_messages or 0),
     }
 
 

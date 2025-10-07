@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   AnalysisModule,
   KeywordFilterConfig,
@@ -25,7 +25,6 @@ import RuleEditorForm, { EditableRuleDraft } from '../components/RuleEditorForm'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
 import { useOllamaStatus } from '../store/useOllamaStatus'
-import { useDevMode } from '../devtools'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 const fieldOrder: KeywordFilterField[] = ['subject', 'sender', 'body']
@@ -335,7 +334,6 @@ export default function SettingsPage(): JSX.Element {
     error: appConfigError,
     refresh: refreshAppConfig,
   } = useAppConfig()
-  const devMode = useDevMode()
   const {
     data: filterActivity,
     loading: activityLoading,
@@ -1010,22 +1008,6 @@ export default function SettingsPage(): JSX.Element {
             <p className="app-subline">Passe Automatisierung, KI-Verhalten und Betriebsmodus fein an.</p>
           </div>
         </div>
-        <nav className="primary-nav">
-          <NavLink to="/mail" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            E-Mail-Dashboard
-          </NavLink>
-          <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Kalenderdashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-          {devMode && (
-            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-              Dev-Mode
-            </NavLink>
-          )}
-        </nav>
       </header>
 
       {status && (
