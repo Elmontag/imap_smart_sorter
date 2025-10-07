@@ -542,7 +542,7 @@ button.link {
 .folder-toolbar {
   display: flex;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
 }
 
@@ -557,6 +557,15 @@ button.link {
 
 .toolbar-buttons {
   display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 0;
+  justify-content: flex-start;
+}
+
+.toolbar-column {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   flex-wrap: wrap;
   padding: 0 12px;
@@ -2405,19 +2414,10 @@ button.link.danger:hover {
 .template-toggle:hover .template-folder,
 .template-toggle.open .template-folder {
   color: #1d4ed8;
-  transition: transform 0.2s ease;
 }
 
-.template-toggle:hover,
-.template-toggle.open {
-  background: rgba(37, 99, 235, 0.16);
-  color: #1d4ed8;
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
-}
-
-.template-toggle:hover .template-folder,
-.template-toggle.open .template-folder {
-  color: #1d4ed8;
+.template-toggle.open .template-toggle-icon {
+  transform: rotate(90deg);
 }
 
 .template-toggle.open .template-toggle-icon {
