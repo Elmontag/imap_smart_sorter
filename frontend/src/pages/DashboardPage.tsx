@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   AnalysisModule,
+  OllamaModelStatus,
   Suggestion,
   ScanStatus,
   getFolders,
@@ -20,6 +21,7 @@ import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
+import { useOllamaStatus } from '../store/useOllamaStatus'
 import { useDevMode } from '../devtools'
 
 type StatusKind = 'info' | 'success' | 'error'
@@ -51,6 +53,50 @@ const moduleLabels: Record<AnalysisModule, string> = {
 const normalizeFolders = (folders: string[]): string[] =>
   Array.from(new Set(folders.map(folder => folder.trim()).filter(folder => folder.length > 0)))
 
+const formatBytes = (value?: number | null) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let remaining = value
+  let unitIndex = 0
+  while (remaining >= 1024 && unitIndex < units.length - 1) {
+    remaining /= 1024
+    unitIndex += 1
+  }
+  return `${remaining.toFixed(remaining >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+const modelLabel = (model: OllamaModelStatus) => {
+  if (model.purpose === 'classifier') {
+    return 'Klassifikator'
+  }
+  if (model.purpose === 'embedding') {
+    return 'Embeddings'
+  }
+  return 'Modell'
+}
+
+const modelProgressLabel = (model: OllamaModelStatus) => {
+  const percent = typeof model.progress === 'number' ? Math.round(model.progress * 100) : null
+  const completed = formatBytes(model.download_completed)
+  const total = formatBytes(model.download_total)
+  if (percent === null && !completed) {
+    return model.status ?? 'lädt…'
+  }
+  const parts: string[] = []
+  if (percent !== null) {
+    parts.push(`${percent}%`)
+  }
+  if (completed && total) {
+    parts.push(`${completed} / ${total}`)
+  }
+  if (parts.length === 0 && completed) {
+    parts.push(completed)
+  }
+  return parts.join(' · ')
+}
+
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
   const { data: appConfig, error: configError } = useAppConfig()
@@ -75,6 +121,12 @@ export default function DashboardPage(): JSX.Element {
     error: filterActivityError,
     refresh: refreshFilterActivity,
   } = useFilterActivity(showAutomationCard)
+  const {
+    status: ollamaStatus,
+    loading: ollamaLoading,
+    error: ollamaError,
+    refresh: refreshOllama,
+  } = useOllamaStatus(showOllamaCard)
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
   const [folderDraft, setFolderDraft] = useState<string[]>([])
@@ -289,24 +341,6 @@ export default function DashboardPage(): JSX.Element {
   const handleSuggestionUpdate = useCallback(async () => {
     await refresh()
   }, [refresh])
-
-  const ollamaInfo = useMemo(() => {
-    const status = appConfig?.ollama
-    if (!status) {
-      return null
-    }
-    const classifier = status.models.find(model => model.purpose === 'classifier')
-    const embedding = status.models.find(model => model.purpose === 'embedding')
-    const classifierLabel = classifier ? `${classifier.name}${classifier.available ? '' : ' (fehlt)'}` : '–'
-    const embeddingLabel = embedding ? `${embedding.name}${embedding.available ? '' : ' (fehlt)'}` : '–'
-    return {
-      reachable: status.reachable,
-      host: status.host,
-      message: status.message ?? undefined,
-      classifier: classifierLabel,
-      embedding: embeddingLabel,
-    }
-  }, [appConfig])
 
   const scanSummary = useMemo(() => {
     const autoActive = Boolean(scanStatus?.active)
@@ -534,6 +568,9 @@ export default function DashboardPage(): JSX.Element {
           </span>
         </div>
       )}
+      {showOllamaCard && ollamaError && (
+        <div className="status-banner error">Ollama-Status konnte nicht geladen werden: {ollamaError}</div>
+      )}
 
       <div className="app-layout">
         <aside className="app-sidebar">
@@ -546,20 +583,64 @@ export default function DashboardPage(): JSX.Element {
             loading={foldersLoading}
             saving={savingFolders}
           />
-          {showOllamaCard && ollamaInfo && (
-            <div className={`ollama-status-card ${ollamaInfo.reachable ? 'ok' : 'error'}`} title={ollamaInfo.message}>
+          {showOllamaCard && (
+            <div className={`ollama-status-card ${ollamaStatus?.reachable ? 'ok' : 'error'}`}>
               <div className="ollama-status-header">
                 <span className="label">Ollama</span>
-                <span className={`indicator ${ollamaInfo.reachable ? 'online' : 'offline'}`}>
-                  {ollamaInfo.reachable ? 'verbunden' : 'offline'}
+                <span className={`indicator ${ollamaStatus?.reachable ? 'online' : 'offline'}`}>
+                  {ollamaStatus?.reachable ? 'verbunden' : 'nicht verbunden'}
                 </span>
               </div>
               <div className="ollama-status-body">
-                <div className="host">{ollamaInfo.host}</div>
-                <div className="models">
-                  <span>Klassifikator: {ollamaInfo.classifier}</span>
-                  <span>Embeddings: {ollamaInfo.embedding}</span>
-                </div>
+                {ollamaLoading && <div className="placeholder">Lade Status…</div>}
+                {!ollamaLoading && ollamaStatus && (
+                  <>
+                    <div className="host">{ollamaStatus.host}</div>
+                    <div className="models">
+                      {ollamaStatus.models.length === 0 && <span>Keine Modelle bekannt.</span>}
+                      {ollamaStatus.models.map(model => {
+                        const progressValue = Math.max(0, Math.min(100, Math.round((model.progress ?? 0) * 100)))
+                        return (
+                          <div key={model.normalized_name} className="ollama-model">
+                            <div className="ollama-model-header">
+                              <span className="model-name">
+                                {modelLabel(model)}: {model.name}
+                              </span>
+                              <span className={`model-state ${model.available ? 'available' : 'missing'}`}>
+                                {model.available ? 'bereit' : model.pulling ? 'lädt…' : 'fehlt'}
+                              </span>
+                            </div>
+                            {model.pulling && (
+                              <div
+                                className="ollama-progress-bar"
+                                role="progressbar"
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={progressValue}
+                              >
+                                <div className="ollama-progress-indicator" style={{ width: `${progressValue}%` }} />
+                              </div>
+                            )}
+                            <div className="ollama-model-meta">
+                              {model.pulling && <span>{modelProgressLabel(model)}</span>}
+                              {!model.pulling && model.message && <span>{model.message}</span>}
+                              {model.error && <span className="error">{model.error}</span>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {ollamaStatus.message && <div className="ollama-note">{ollamaStatus.message}</div>}
+                  </>
+                )}
+                {!ollamaLoading && !ollamaStatus && (
+                  <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
+                )}
+              </div>
+              <div className="ollama-status-actions">
+                <button type="button" className="link" onClick={() => refreshOllama()} disabled={ollamaLoading}>
+                  Status aktualisieren
+                </button>
               </div>
             </div>
           )}

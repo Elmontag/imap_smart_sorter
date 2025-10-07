@@ -79,15 +79,23 @@ export interface TagSuggestion {
   examples: TagExample[]
 }
 
+export type OllamaModelPurpose = 'classifier' | 'embedding' | 'custom'
+
 export interface OllamaModelStatus {
   name: string
   normalized_name: string
-  purpose: 'classifier' | 'embedding'
+  purpose: OllamaModelPurpose
   available: boolean
   pulled: boolean
   digest?: string | null
   size?: number | null
   message?: string | null
+  pulling?: boolean
+  progress?: number | null
+  download_total?: number | null
+  download_completed?: number | null
+  status?: string | null
+  error?: string | null
 }
 
 export interface OllamaStatus {
@@ -96,6 +104,11 @@ export interface OllamaStatus {
   message?: string | null
   last_checked?: string | null
   models: OllamaModelStatus[]
+}
+
+export interface OllamaPullRequest {
+  model: string
+  purpose?: OllamaModelPurpose
 }
 
 export interface FolderChildConfig {
@@ -383,6 +396,17 @@ export async function getTagSuggestions(): Promise<TagSuggestion[]> {
 
 export async function getAppConfig(): Promise<AppConfig> {
   return request<AppConfig>('/api/config')
+}
+
+export async function getOllamaStatus(): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama')
+}
+
+export async function pullOllamaModel(payload: OllamaPullRequest): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama/pull', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function updateAppConfig(payload: AppConfigUpdateRequest): Promise<AppConfig> {
