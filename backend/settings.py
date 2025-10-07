@@ -52,6 +52,14 @@ class Settings(BaseSettings):
 
     ANALYSIS_MODULE: str = "HYBRID"
 
+    CALENDAR_SYNC_ENABLED: bool = False
+    CALDAV_URL: str = ""
+    CALDAV_USERNAME: str = ""
+    CALDAV_PASSWORD: str = ""
+    CALDAV_CALENDAR: str = ""
+    CALENDAR_DEFAULT_TIMEZONE: str = "Europe/Berlin"
+    CALENDAR_PROCESSED_TAG: str = "Termin bearbeitet"
+
     class Config:
         env_file = ".env"
 
