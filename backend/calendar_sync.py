@@ -14,7 +14,7 @@ from icalendar import Calendar  # type: ignore[import]
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from caldav import DAVClient  # type: ignore[import]
-from caldav.lib.error import AuthorizationError, CaldavError  # type: ignore[import]
+from caldav.lib.error import AuthorizationError, DAVError  # type: ignore[import]
 
 from calendar_settings import load_calendar_settings
 from database import (
@@ -332,7 +332,7 @@ async def import_calendar_event(event_id: int) -> object:
     except AuthorizationError as exc:
         update_calendar_event_status(event.id, "failed", error=str(exc), imported_at=event.last_import_at)
         raise CalendarImportError("CalDAV-Anmeldung fehlgeschlagen. Bitte Zugangsdaten prüfen.") from exc
-    except CaldavError as exc:
+    except DAVError as exc:
         update_calendar_event_status(event.id, "failed", error=str(exc), imported_at=event.last_import_at)
         raise CalendarImportError(f"CalDAV-Fehler: {exc}") from exc
     except Exception as exc:  # pragma: no cover - network interaction
