@@ -64,6 +64,145 @@ export interface PendingOverview {
   limit_active?: boolean
 }
 
+export type CalendarEventStatus = 'pending' | 'imported' | 'failed'
+
+export interface CalendarEvent {
+  id: number
+  message_uid: string
+  folder: string
+  subject?: string | null
+  from_addr?: string | null
+  message_date?: string | null
+  event_uid: string
+  sequence?: number | null
+  summary?: string | null
+  organizer?: string | null
+  location?: string | null
+  starts_at?: string | null
+  ends_at?: string | null
+  local_starts_at?: string | null
+  local_ends_at?: string | null
+  all_day: boolean
+  timezone?: string | null
+  method?: string | null
+  cancellation: boolean
+  status: CalendarEventStatus
+  last_error?: string | null
+  last_import_at?: string | null
+}
+
+export interface CalendarMetrics {
+  scanned_mails: number
+  pending_events: number
+  imported_events: number
+  failed_events: number
+  total_events: number
+}
+
+export interface CalendarOverview {
+  timezone: string
+  events: CalendarEvent[]
+  metrics: CalendarMetrics
+}
+
+export interface CalendarScanSummary {
+  scanned_messages: number
+  processed_events: number
+  created: number
+  updated: number
+  errors: string[]
+}
+
+export interface CalendarAutoScanStatus {
+  active: boolean
+  folders: string[]
+  poll_interval: number | null
+  last_started_at: string | null
+  last_finished_at: string | null
+  last_error: string | null
+  last_summary: CalendarScanSummary | null
+}
+
+export interface CalendarManualScanStatus {
+  active: boolean
+  folders: string[]
+  started_at: string | null
+  finished_at: string | null
+  cancelled: boolean
+  last_error: string | null
+  last_summary: CalendarScanSummary | null
+}
+
+export interface CalendarScanStatus {
+  auto: CalendarAutoScanStatus
+  manual: CalendarManualScanStatus
+}
+
+export interface CalendarScanResponse {
+  overview: CalendarOverview
+  scan: CalendarScanSummary | null
+  cancelled: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarImportResult {
+  event: CalendarEvent
+  metrics: CalendarMetrics
+}
+
+export interface CalendarSettings {
+  enabled: boolean
+  caldav_url: string
+  username: string
+  calendar_name: string
+  timezone: string
+  processed_tag: string
+  source_folders: string[]
+  processed_folder: string
+  has_password: boolean
+}
+
+export interface CalendarSettingsUpdateRequest {
+  enabled: boolean
+  caldav_url: string
+  username: string
+  calendar_name: string
+  timezone: string
+  processed_tag: string
+  source_folders: string[]
+  processed_folder: string
+  password?: string | null
+  clear_password?: boolean
+}
+
+export interface CalendarScanStartResponse {
+  started: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarScanStopResponse {
+  stopped: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarScanCancelResponse {
+  cancelled: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarConnectionTestRequest {
+  caldav_url?: string
+  username?: string
+  password?: string | null
+  calendar_name?: string
+  use_stored_password?: boolean
+}
+
+export interface CalendarConnectionTestResponse {
+  ok: boolean
+  message?: string | null
+}
+
 export interface TagExample {
   message_uid: string
   subject: string
@@ -476,6 +615,71 @@ export async function getKeywordFilters(): Promise<KeywordFilterConfig> {
 export async function updateKeywordFilters(payload: KeywordFilterConfig): Promise<KeywordFilterConfig> {
   return request<KeywordFilterConfig>('/api/filters', {
     method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getCalendarOverview(): Promise<CalendarOverview> {
+  return request<CalendarOverview>('/api/calendar/overview')
+}
+
+export async function getCalendarScanStatus(): Promise<CalendarScanStatus> {
+  return request<CalendarScanStatus>('/api/calendar/scan/status')
+}
+
+export interface CalendarScanOptions {
+  folders?: string[]
+}
+
+export async function startCalendarAutoScan(options?: CalendarScanOptions): Promise<CalendarScanStartResponse> {
+  const payload = options?.folders && options.folders.length > 0 ? { folders: options.folders } : {}
+  return request<CalendarScanStartResponse>('/api/calendar/scan/start', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function stopCalendarAutoScan(): Promise<CalendarScanStopResponse> {
+  return request<CalendarScanStopResponse>('/api/calendar/scan/stop', { method: 'POST' })
+}
+
+export async function cancelCalendarRescan(): Promise<CalendarScanCancelResponse> {
+  return request<CalendarScanCancelResponse>('/api/calendar/scan/cancel', { method: 'POST' })
+}
+
+export async function runCalendarScan(options?: CalendarScanOptions): Promise<CalendarScanResponse> {
+  const payload = options?.folders && options.folders.length > 0 ? { folders: options.folders } : {}
+  return request<CalendarScanResponse>('/api/calendar/scan', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function importCalendarEvent(payload: { event_id: number }): Promise<CalendarImportResult> {
+  return request<CalendarImportResult>('/api/calendar/import', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getCalendarSettings(): Promise<CalendarSettings> {
+  return request<CalendarSettings>('/api/calendar/config')
+}
+
+export async function updateCalendarSettings(
+  payload: CalendarSettingsUpdateRequest,
+): Promise<CalendarSettings> {
+  return request<CalendarSettings>('/api/calendar/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function testCalendarConnection(
+  payload: CalendarConnectionTestRequest,
+): Promise<CalendarConnectionTestResponse> {
+  return request<CalendarConnectionTestResponse>('/api/calendar/config/test', {
+    method: 'POST',
     body: JSON.stringify(payload),
   })
 }

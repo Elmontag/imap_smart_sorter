@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink } from 'react-router-dom'
 import {
   AnalysisModule,
   OllamaModelStatus,
@@ -22,7 +21,6 @@ import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
 import { useOllamaStatus } from '../store/useOllamaStatus'
-import { useDevMode } from '../devtools'
 
 type StatusKind = 'info' | 'success' | 'error'
 
@@ -141,7 +139,6 @@ export default function DashboardPage(): JSX.Element {
   const manualFinishedRef = useRef<string | null>(null)
   const scanStateRef = useRef({ auto: false, manual: false })
   const moduleLabel = moduleLabels[analysisModule]
-  const devMode = useDevMode()
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
@@ -475,19 +472,6 @@ export default function DashboardPage(): JSX.Element {
             {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
-        <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-          {devMode && (
-            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-              Dev-Mode
-            </NavLink>
-          )}
-        </nav>
         <div className="analysis-top">
           <div className="analysis-canvas">
             <div className="analysis-status">

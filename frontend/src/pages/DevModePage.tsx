@@ -1,5 +1,4 @@
 import React, { useMemo } from 'react'
-import { NavLink } from 'react-router-dom'
 import DevtoolsPanel from '../components/DevtoolsPanel'
 import { useAppConfig } from '../store/useAppConfig'
 import { useDevMode } from '../devtools'
@@ -47,17 +46,6 @@ export default function DevModePage(): JSX.Element {
             </p>
           </div>
         </div>
-        <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-          <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dev-Mode
-          </NavLink>
-        </nav>
       </header>
 
       <main className="dev-mode-main">
