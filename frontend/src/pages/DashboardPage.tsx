@@ -20,6 +20,7 @@ import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
+import { useDevMode } from '../devtools'
 
 type StatusKind = 'info' | 'success' | 'error'
 
@@ -52,20 +53,28 @@ const normalizeFolders = (folders: string[]): string[] =>
 
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
-  const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
+  const { data: appConfig, error: configError } = useAppConfig()
+  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
+  const showAutomationCard = analysisModule !== 'LLM_PURE'
+  const showLlMSuggestions = analysisModule !== 'STATIC'
+  const showPendingPanel = showLlMSuggestions
+  const showOllamaCard = analysisModule !== 'STATIC'
+  const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(
+    suggestionScope,
+    showLlMSuggestions,
+  )
   const {
     data: pendingOverview,
     loading: pendingLoading,
     error: pendingError,
     refresh: refreshPendingOverview,
-  } = usePendingOverview()
-  const { data: appConfig, error: configError } = useAppConfig()
+  } = usePendingOverview(showPendingPanel)
   const {
     data: filterActivity,
     loading: filterActivityLoading,
     error: filterActivityError,
     refresh: refreshFilterActivity,
-  } = useFilterActivity()
+  } = useFilterActivity(showAutomationCard)
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
   const [folderDraft, setFolderDraft] = useState<string[]>([])
@@ -78,8 +87,8 @@ export default function DashboardPage(): JSX.Element {
   const lastFinishedRef = useRef<string | null>(null)
   const manualFinishedRef = useRef<string | null>(null)
   const scanStateRef = useRef({ auto: false, manual: false })
-  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
   const moduleLabel = moduleLabels[analysisModule]
+  const devMode = useDevMode()
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
@@ -438,6 +447,11 @@ export default function DashboardPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
+          {devMode && (
+            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              Dev-Mode
+            </NavLink>
+          )}
         </nav>
         <div className="analysis-top">
           <div className="analysis-canvas">
@@ -512,6 +526,14 @@ export default function DashboardPage(): JSX.Element {
 
       {configError && <div className="status-banner error">{configError}</div>}
       {error && <div className="status-banner error">{error}</div>}
+      {analysisModule === 'STATIC' && (
+        <div className="status-banner info" role="status">
+          <span>
+            Modul „Statisch“ aktiv: Es werden ausschließlich Keyword-Regeln ausgeführt, KI-Vorschläge und Pending-Listen bleiben
+            deaktiviert.
+          </span>
+        </div>
+      )}
 
       <div className="app-layout">
         <aside className="app-sidebar">
@@ -524,7 +546,7 @@ export default function DashboardPage(): JSX.Element {
             loading={foldersLoading}
             saving={savingFolders}
           />
-          {ollamaInfo && (
+          {showOllamaCard && ollamaInfo && (
             <div className={`ollama-status-card ${ollamaInfo.reachable ? 'ok' : 'error'}`} title={ollamaInfo.message}>
               <div className="ollama-status-header">
                 <span className="label">Ollama</span>
@@ -543,7 +565,7 @@ export default function DashboardPage(): JSX.Element {
           )}
         </aside>
         <main className="app-main">
-          {analysisModule !== 'LLM_PURE' && (
+          {showAutomationCard && (
             <AutomationSummaryCard
               activity={filterActivity}
               loading={filterActivityLoading}
@@ -552,65 +574,79 @@ export default function DashboardPage(): JSX.Element {
             />
           )}
 
-          <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
+          {showPendingPanel && (
+            <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
+          )}
 
-          <section className="suggestions">
-            <div className="suggestions-header">
-              <h2>{headline}</h2>
-              <div className="suggestions-actions">
-                <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
-                  Aktualisieren
-                </button>
-                <button type="button" className="ghost" onClick={toggleSuggestionScope} disabled={loading}>
+          {showLlMSuggestions ? (
+            <section className="suggestions">
+              <div className="suggestions-header">
+                <h2>{headline}</h2>
+                <div className="suggestions-actions">
+                  <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
+                    Aktualisieren
+                  </button>
+                  <button type="button" className="ghost" onClick={toggleSuggestionScope} disabled={loading}>
+                    {suggestionScope === 'open'
+                      ? 'Alle analysierten Mails bearbeiten'
+                      : 'Nur offene Vorschläge anzeigen'}
+                  </button>
+                </div>
+              </div>
+              {suggestionStats && (
+                <div className="suggestions-metrics">
+                  <div className="suggestion-metric open">
+                    <span className="label">Zu bearbeiten</span>
+                    <strong>{suggestionStats.openCount}</strong>
+                    <span className="muted">offene Nachrichten</span>
+                  </div>
+                  <div className="suggestion-metric processed">
+                    <span className="label">Bereits bearbeitet</span>
+                    <strong>{suggestionStats.decidedCount}</strong>
+                    <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
+                  </div>
+                  <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
+                    <span className="label">Fehler</span>
+                    <strong>{suggestionStats.errorCount}</strong>
+                    <span className="muted">Mails mit Fehlern</span>
+                  </div>
+                </div>
+              )}
+              {loading && <div className="placeholder">Bitte warten…</div>}
+              {!loading && !suggestions.length && (
+                <div className="placeholder">
                   {suggestionScope === 'open'
-                    ? 'Alle analysierten Mails bearbeiten'
-                    : 'Nur offene Vorschläge anzeigen'}
-                </button>
+                    ? 'Super! Alles abgearbeitet.'
+                    : 'Es liegen noch keine analysierten Vorschläge vor.'}
+                </div>
+              )}
+              {!loading && suggestions.length > 0 && (
+                <ul className="suggestion-list">
+                  {suggestions.map((item: Suggestion) => (
+                    <SuggestionCard
+                      key={item.message_uid}
+                      suggestion={item}
+                      onActionComplete={handleSuggestionUpdate}
+                      tagSlots={appConfig?.tag_slots}
+                      availableFolders={availableFolders}
+                      onFolderCreated={handleFolderCreated}
+                      analysisModule={analysisModule}
+                    />
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : (
+            <section className="suggestions">
+              <div className="suggestions-header">
+                <h2>Keine KI-Vorschläge im Statischen Modul</h2>
               </div>
-            </div>
-            {suggestionStats && (
-              <div className="suggestions-metrics">
-                <div className="suggestion-metric open">
-                  <span className="label">Zu bearbeiten</span>
-                  <strong>{suggestionStats.openCount}</strong>
-                  <span className="muted">offene Nachrichten</span>
-                </div>
-                <div className="suggestion-metric processed">
-                  <span className="label">Bereits bearbeitet</span>
-                  <strong>{suggestionStats.decidedCount}</strong>
-                  <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
-                </div>
-                <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
-                  <span className="label">Fehler</span>
-                  <strong>{suggestionStats.errorCount}</strong>
-                  <span className="muted">Mails mit Fehlern</span>
-                </div>
-              </div>
-            )}
-            {loading && <div className="placeholder">Bitte warten…</div>}
-            {!loading && !suggestions.length && (
               <div className="placeholder">
-                {suggestionScope === 'open'
-                  ? 'Super! Alles abgearbeitet.'
-                  : 'Es liegen noch keine analysierten Vorschläge vor.'}
+                Im Modul „Statisch“ werden neue Nachrichten ausschließlich über Keyword-Regeln verarbeitet. Für manuelle
+                Entscheidungen gibt es daher keine Vorschlagsliste.
               </div>
-            )}
-            {!loading && suggestions.length > 0 && (
-              <ul className="suggestion-list">
-                {suggestions.map((item: Suggestion) => (
-                  <SuggestionCard
-                    key={item.message_uid}
-                    suggestion={item}
-                    onActionComplete={handleSuggestionUpdate}
-                    tagSlots={appConfig?.tag_slots}
-                    availableFolders={availableFolders}
-                    onFolderCreated={handleFolderCreated}
-                    analysisModule={analysisModule}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
+            </section>
+          )}
         </main>
       </div>
 

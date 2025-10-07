@@ -109,13 +109,16 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 - `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
 - Der Tab „Betrieb“ in den Einstellungen bündelt Analyse-Modul, Verarbeitungsmodus und IMAP-Tags; das Dashboard zeigt den gewählten Modus weiterhin an. Die Auswahl des Sprachmodells erfolgt im Tab „KI & Tags“.
 - Die Module steuern, welche Informationen sichtbar sind:
-  - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien) werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist.
+  - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien), Pending-Listen und Vorschlagskarten werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist. Der Worker ruft in diesem Modus keine Ollama-Endpunkte auf.
   - **Hybrid** nutzt zuerst die statischen Regeln und analysiert verbleibende Nachrichten per LLM. Alle Kontextinformationen bleiben sichtbar.
   - **LLM Pure** ignoriert die Regeln und verarbeitet jede Mail per LLM. Die Regel-Übersicht im Dashboard blendet sich dabei automatisch aus.
 - `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
-  Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
+  Der Modus schaltet außerdem die Developer-Console unter `#/dev` frei: Dort findest du alle laufzeitrelevanten Parameter
+  (Move-Modus, Analyse-Modul, IMAP-Tags, Pending-Limit, Katalog-Zuschnitt), den aktuellen Ollama-Status inklusive Modellauflistung
+  und die aktiven Frontend-Umgebungswerte (`VITE_API_BASE`, `VITE_DEV_MODE`, Build-Typ, Stream-URL). Optional kann das Frontend
+  per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
 - Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Analyse-Controller. Das Frontend bietet zusätzlich einen Button „Einmalige Analyse“ (via `/api/rescan`), sodass sich eine sofortige Auswertung ohne Daueranalyse starten lässt. Laufende Einmalanalysen lassen sich über „Analyse stoppen“ abbrechen; das Backend verwirft dabei den aktiven Scanauftrag.
 - Laufende Dauer-Analysen blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Analyse starten“ und „Analyse stoppen“ für die kontinuierliche Ausführung verfügbar.
 - Die Ordnerauswahl im Dashboard stellt die überwachten IMAP-Ordner als aufklappbaren Baum dar. Der Filter hebt Treffer farblich hervor und öffnet automatisch die relevanten Äste, sodass komplexe Hierarchien schneller angepasst werden können.
