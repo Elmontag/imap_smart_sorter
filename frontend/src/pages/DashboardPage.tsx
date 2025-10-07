@@ -100,11 +100,12 @@ const modelProgressLabel = (model: OllamaModelStatus) => {
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
   const { data: appConfig, error: configError } = useAppConfig()
-  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
-  const showAutomationCard = analysisModule !== 'LLM_PURE'
-  const showLlMSuggestions = analysisModule !== 'STATIC'
+  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'STATIC'
+  const configLoaded = Boolean(appConfig)
+  const showAutomationCard = configLoaded ? analysisModule !== 'LLM_PURE' : false
+  const showLlMSuggestions = configLoaded ? analysisModule !== 'STATIC' : false
   const showPendingPanel = showLlMSuggestions
-  const showOllamaCard = analysisModule !== 'STATIC'
+  const showOllamaCard = showLlMSuggestions
   const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(
     suggestionScope,
     showLlMSuggestions,
@@ -560,7 +561,7 @@ export default function DashboardPage(): JSX.Element {
 
       {configError && <div className="status-banner error">{configError}</div>}
       {error && <div className="status-banner error">{error}</div>}
-      {analysisModule === 'STATIC' && (
+      {configLoaded && analysisModule === 'STATIC' && (
         <div className="status-banner info" role="status">
           <span>
             Modul „Statisch“ aktiv: Es werden ausschließlich Keyword-Regeln ausgeführt, KI-Vorschläge und Pending-Listen bleiben

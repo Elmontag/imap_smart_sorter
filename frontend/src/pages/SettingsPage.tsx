@@ -278,6 +278,7 @@ export default function SettingsPage(): JSX.Element {
     error: activityError,
     refresh: refreshActivity,
   } = useFilterActivity()
+  const ollamaEnabled = Boolean(appConfig?.analysis_module && appConfig.analysis_module !== 'STATIC')
   const {
     status: ollamaStatus,
     loading: ollamaLoading,
@@ -285,7 +286,7 @@ export default function SettingsPage(): JSX.Element {
     pullBusy: ollamaPullBusy,
     refresh: refreshOllama,
     pullModel,
-  } = useOllamaStatus(true)
+  } = useOllamaStatus(ollamaEnabled)
   const [pullModelDraft, setPullModelDraft] = useState('')
   const [pullPurpose, setPullPurpose] = useState<OllamaModelPurpose>('classifier')
   const [pullFeedback, setPullFeedback] = useState<StatusMessage | null>(null)
@@ -1054,7 +1055,11 @@ export default function SettingsPage(): JSX.Element {
                       </>
                     )}
                     {!ollamaLoading && !ollamaStatus && (
-                      <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
+                      <div className="placeholder">
+                        {ollamaEnabled
+                          ? 'Keine Ollama-Informationen verfügbar.'
+                          : 'Ollama ist für das statische Modul deaktiviert.'}
+                      </div>
                     )}
                     {ollamaError && (
                       <div className="status-banner error inline">Status konnte nicht geladen werden: {ollamaError}</div>

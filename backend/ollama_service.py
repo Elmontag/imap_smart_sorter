@@ -105,6 +105,20 @@ async def _get_progress(normalized: str) -> ModelPullProgress | None:
         return _PULL_PROGRESS.get(normalized)
 
 
+def _failure_status(message: str) -> OllamaStatus:
+    models = [
+        OllamaModelStatus(
+            name=model,
+            normalized_name=_normalise_model_name(model),
+            purpose=purpose,
+            available=False,
+            message=message,
+        )
+        for model, purpose in _models_to_check()
+    ]
+    return OllamaStatus(host=S.OLLAMA_HOST, reachable=False, models=models, message=message)
+
+
 def _normalise_percent(value: float) -> float:
     if value < 0:
         return 0.0
@@ -441,7 +455,11 @@ def _models_to_check() -> List[Tuple[str, str]]:
 
 async def refresh_status(pull_missing: bool = False) -> OllamaStatus:
     async with _STATUS_LOCK:
-        status = await _probe_status(pull_missing)
+        try:
+            status = await _probe_status(pull_missing)
+        except Exception as exc:  # pragma: no cover - defensive network guard
+            logger.exception("Ollama-Statusprüfung fehlgeschlagen", exc_info=True)
+            status = _failure_status(f"Ollama-Status konnte nicht ermittelt werden: {exc}")
         global _STATUS_CACHE
         _STATUS_CACHE = status
         return status
@@ -450,7 +468,11 @@ async def refresh_status(pull_missing: bool = False) -> OllamaStatus:
 async def ensure_ollama_ready() -> OllamaStatus:
     """Ensure the Ollama host is reachable and required models exist."""
 
-    status = await refresh_status(pull_missing=True)
+    try:
+        status = await refresh_status(pull_missing=True)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Initialer Ollama-Check fehlgeschlagen", exc_info=True)
+        status = _failure_status(f"Ollama-Status konnte nicht geladen werden: {exc}")
     if not status.reachable:
         logger.warning("Ollama-Host %s nicht erreichbar", status.host)
     else:

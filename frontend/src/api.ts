@@ -333,10 +333,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const started = performance.now()
-  const response = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      ...init,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    recordDevEvent({
+      type: 'error',
+      label,
+      details: 'Netzwerkfehler',
+      payload: message,
+      durationMs: performance.now() - started,
+    })
+    throw new Error(`API-Anfrage fehlgeschlagen: ${message}`)
+  }
   if (!response.ok) {
     const text = await response.text()
     recordDevEvent({
