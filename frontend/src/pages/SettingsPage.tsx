@@ -73,7 +73,7 @@ const normalizeList = (values: string[]): string[] => {
 
 const parseList = (value: string): string[] => normalizeList(value.split(/[\n,]+/))
 
-type SettingsTab = 'automation' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general'
+type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general'
 
 type RuleDraft = EditableRuleDraft
 type TemplateDraft = EditableRuleDraft
@@ -187,7 +187,7 @@ const modeDescriptions = {
 } as const
 
 export default function SettingsPage(): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('automation')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('staticRules')
   const [ruleDrafts, setRuleDrafts] = useState<RuleDraft[]>([])
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null)
   const [filtersLoading, setFiltersLoading] = useState(true)
@@ -317,6 +317,29 @@ export default function SettingsPage(): JSX.Element {
         .map(model => model.name),
     [appConfig?.ollama?.models],
   )
+
+  const tagSlotOptions = useMemo(() => {
+    if (!appConfig?.tag_slots) {
+      return [] as string[]
+    }
+    const seen = new Set<string>()
+    const options: string[] = []
+    appConfig.tag_slots.forEach(slot => {
+      slot.options.forEach(option => {
+        const trimmed = option.trim()
+        if (!trimmed) {
+          return
+        }
+        const key = trimmed.toLowerCase()
+        if (seen.has(key)) {
+          return
+        }
+        seen.add(key)
+        options.push(trimmed)
+      })
+    })
+    return options.sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }))
+  }, [appConfig?.tag_slots])
 
   const configDirty = useMemo(() => {
     if (!appConfig) {
@@ -575,11 +598,11 @@ export default function SettingsPage(): JSX.Element {
           <button
             type="button"
             role="tab"
-            aria-selected={activeTab === 'automation'}
-            className={`settings-tab ${activeTab === 'automation' ? 'active' : ''}`}
-            onClick={() => setActiveTab('automation')}
+            aria-selected={activeTab === 'staticRules'}
+            className={`settings-tab ${activeTab === 'staticRules' ? 'active' : ''}`}
+            onClick={() => setActiveTab('staticRules')}
           >
-            Automatisierung
+            Statische Regeln
           </button>
           <button
             type="button"
@@ -619,7 +642,7 @@ export default function SettingsPage(): JSX.Element {
           </button>
         </nav>
         <main className="settings-content">
-          {activeTab === 'automation' && (
+          {activeTab === 'staticRules' && (
             <div className="settings-section">
               <AutomationSummaryCard
                 activity={filterActivity}
@@ -747,6 +770,7 @@ export default function SettingsPage(): JSX.Element {
                         fieldOrder={fieldOrder}
                         parseList={parseList}
                         onChange={mutator => updateRule(selectedRule.id, mutator)}
+                        tagOptions={tagSlotOptions}
                       />
                     </div>
                   )}
@@ -786,8 +810,13 @@ export default function SettingsPage(): JSX.Element {
                               }
                               aria-expanded={template.id === expandedTemplateId}
                             >
-                              <span className="template-name">{template.name || 'Unbenannte Vorlage'}</span>
-                              <span className="template-folder">{template.target_folder || 'Kein Zielordner'}</span>
+                              <div className="template-toggle-body">
+                                <span className="template-name">{template.name || 'Unbenannte Vorlage'}</span>
+                                <span className="template-folder">{template.target_folder || 'Kein Zielordner'}</span>
+                              </div>
+                              <span className="template-toggle-icon" aria-hidden="true">
+                                {template.id === expandedTemplateId ? '▾' : '▸'}
+                              </span>
                             </button>
                             <button
                               type="button"
@@ -804,10 +833,11 @@ export default function SettingsPage(): JSX.Element {
                                 fieldOrder={fieldOrder}
                                 parseList={parseList}
                                 onChange={mutator => updateTemplate(template.id, mutator)}
+                                tagOptions={tagSlotOptions}
                               />
                             </div>
                           )}
-                        </article>
+                    </article>
                       ))}
                     </div>
                   )}
@@ -857,6 +887,35 @@ export default function SettingsPage(): JSX.Element {
                 ) : (
                   <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
                 )}
+              </section>
+              <section className="analysis-card">
+                <h2>Analyse-Modell</h2>
+                <label className="mode-select large">
+                  <span>Sprachmodell</span>
+                  <input
+                    type="text"
+                    list="classifier-models"
+                    value={configDraft.classifierModel}
+                    onChange={event => handleConfigChange('classifierModel', event.target.value)}
+                    placeholder="z. B. llama3"
+                    disabled={configSaving}
+                  />
+                  <datalist id="classifier-models">
+                    {classifierOptions.map(option => (
+                      <option key={option} value={option} />
+                    ))}
+                  </datalist>
+                </label>
+                <div className="config-actions secondary">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={handleConfigSave}
+                    disabled={!configDirty || configSaving}
+                  >
+                    {configSaving ? 'Speichere…' : 'Konfiguration speichern'}
+                  </button>
+                </div>
               </section>
               <section className="analysis-card">
                 <h2>Tag-Slots & Kontext</h2>
@@ -910,54 +969,47 @@ export default function SettingsPage(): JSX.Element {
           {activeTab === 'general' && (
             <div className="settings-section">
               <section className="general-card">
-                <h2>Analyse-Module & Modell</h2>
-                <div className="config-grid">
-                  <label className="mode-select large">
-                    <span>Analyse-Modul</span>
-                    <select
-                      value={configDraft.analysisModule}
-                      onChange={event =>
-                        handleConfigChange('analysisModule', event.target.value as AnalysisModule)
-                      }
-                      disabled={configSaving || appConfigLoading}
-                    >
+                <h2>Analyse-Module & Modus</h2>
+                <div className="option-board">
+                  <div className="option-group">
+                    <h3>Analyse-Modul</h3>
+                    <div className="option-grid modules">
                       {moduleOptions.map(option => (
-                        <option key={option} value={option}>
-                          {moduleLabels[option]}
-                        </option>
+                        <button
+                          key={option}
+                          type="button"
+                          className={`option-card${configDraft.analysisModule === option ? ' selected' : ''}`}
+                          onClick={() => handleConfigChange('analysisModule', option)}
+                          disabled={configSaving || appConfigLoading}
+                        >
+                          <div className="option-title">
+                            <strong>{moduleLabels[option]}</strong>
+                            {appConfig?.analysis_module === option && <span className="badge">Aktuell</span>}
+                          </div>
+                          <p>{moduleDescriptions[option]}</p>
+                        </button>
                       ))}
-                    </select>
-                  </label>
-                  <label className="mode-select large">
-                    <span>Verarbeitungsmodus</span>
-                    <select
-                      value={configDraft.mode}
-                      onChange={event => handleConfigChange('mode', event.target.value as MoveMode)}
-                      disabled={configSaving || appConfigLoading}
-                    >
+                    </div>
+                  </div>
+                  <div className="option-group">
+                    <h3>Verarbeitungsmodus</h3>
+                    <div className="option-grid modes">
                       {modeOptions.map(option => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
+                        <button
+                          key={option}
+                          type="button"
+                          className={`option-card${configDraft.mode === option ? ' selected' : ''}`}
+                          onClick={() => handleConfigChange('mode', option)}
+                          disabled={configSaving || appConfigLoading}
+                        >
+                          <div className="option-title">
+                            <strong>{option}</strong>
+                          </div>
+                          <p>{modeDescriptions[option]}</p>
+                        </button>
                       ))}
-                    </select>
-                  </label>
-                  <label className="mode-select large">
-                    <span>Sprachmodell</span>
-                    <input
-                      type="text"
-                      list="classifier-models"
-                      value={configDraft.classifierModel}
-                      onChange={event => handleConfigChange('classifierModel', event.target.value)}
-                      placeholder="z. B. llama3"
-                      disabled={configSaving}
-                    />
-                    <datalist id="classifier-models">
-                      {classifierOptions.map(option => (
-                        <option key={option} value={option} />
-                      ))}
-                    </datalist>
-                  </label>
+                    </div>
+                  </div>
                 </div>
                 <div className="config-actions">
                   <button
@@ -969,25 +1021,6 @@ export default function SettingsPage(): JSX.Element {
                     {configSaving ? 'Speichere…' : 'Konfiguration speichern'}
                   </button>
                 </div>
-                <ul className="module-description-list">
-                  {moduleOptions.map(option => (
-                    <li key={option} className={configDraft.analysisModule === option ? 'active' : ''}>
-                      <div className="module-headline">
-                        <strong>{moduleLabels[option]}</strong>
-                        {appConfig?.analysis_module === option && <span className="badge">Aktuell</span>}
-                      </div>
-                      <span>{moduleDescriptions[option]}</span>
-                    </li>
-                  ))}
-                </ul>
-                <ul className="mode-description-list">
-                  {modeOptions.map(option => (
-                    <li key={option} className={configDraft.mode === option ? 'active' : ''}>
-                      <strong>{option}</strong>
-                      <span>{modeDescriptions[option]}</span>
-                    </li>
-                  ))}
-                </ul>
               </section>
               <section className="general-card">
                 <h2>Postfach-Tags</h2>

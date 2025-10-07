@@ -241,6 +241,7 @@ export interface DecideResponse {
 export interface RescanResponse {
   ok: boolean
   new_suggestions: number
+  cancelled?: boolean
 }
 
 export interface FolderSelectionResponse {
@@ -266,6 +267,13 @@ export interface ScanStatus {
   last_finished_at?: string | null
   last_error?: string | null
   last_result_count?: number | null
+  rescan_active?: boolean
+  rescan_folders?: string[]
+  rescan_started_at?: string | null
+  rescan_finished_at?: string | null
+  rescan_error?: string | null
+  rescan_result_count?: number | null
+  rescan_cancelled?: boolean
 }
 
 export interface ScanStartResponse {
