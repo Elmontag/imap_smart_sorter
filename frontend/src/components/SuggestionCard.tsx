@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Suggestion, TagSlotConfig, createFolder, decide, decideProposal, moveOne } from '../api'
+import { AnalysisModule, Suggestion, TagSlotConfig, createFolder, decide, decideProposal, moveOne } from '../api'
 
 interface Props {
   suggestion: Suggestion
@@ -7,6 +7,7 @@ interface Props {
   tagSlots?: TagSlotConfig[]
   availableFolders?: string[]
   onFolderCreated?: (folder: string) => Promise<void> | void
+  analysisModule: AnalysisModule
 }
 
 type BusyState = 'simulate' | 'accept' | 'reject' | 'proposal-accept' | 'proposal-reject' | null
@@ -37,6 +38,7 @@ export default function SuggestionCard({
   tagSlots,
   availableFolders = [],
   onFolderCreated,
+  analysisModule,
 }: Props): JSX.Element {
   const [target, setTarget] = useState<string>(fallbackTarget(suggestion))
   const [busy, setBusy] = useState<BusyState>(null)
@@ -118,6 +120,7 @@ export default function SuggestionCard({
     return Number.isNaN(parsed.getTime()) ? suggestion.date : parsed.toLocaleString('de-DE')
   }, [suggestion.date])
 
+  const showAiContext = analysisModule !== 'STATIC'
   const topScore = suggestion.ranked?.[0]?.score ?? null
   const topReason = suggestion.ranked?.[0]?.reason ?? null
   const category = suggestion.category ?? null
@@ -269,7 +272,7 @@ export default function SuggestionCard({
         {suggestion.from_addr && <div className="meta">{suggestion.from_addr}</div>}
         {created && <div className="meta">Empfangen: {created}</div>}
         {suggestion.src_folder && <div className="badge">Quelle: {suggestion.src_folder}</div>}
-        {categoryLabel && (
+        {showAiContext && categoryLabel && (
           <div className="category-info">
             <span className="category-label">Überbegriff:</span>
             <strong>{categoryLabel}</strong>
@@ -286,14 +289,14 @@ export default function SuggestionCard({
         <div className={`feedback ${statusInfo.tone === 'error' ? 'error' : 'info'}`}>{statusInfo.detail}</div>
       )}
 
-      {topScore !== null && (
+      {showAiContext && topScore !== null && (
         <div className="score">
           Empfohlener Ordner: {suggestion.ranked?.[0]?.name ?? '–'} (Score {formatScore(topScore)})
           {topReason && <span className="score-reason"> – {topReason}</span>}
         </div>
       )}
 
-      {suggestion.ranked && suggestion.ranked.length > 1 && (
+      {showAiContext && suggestion.ranked && suggestion.ranked.length > 1 && (
         <div className="alternatives" aria-label="Weitere Vorschläge">
           {suggestion.ranked.slice(1).map(item => (
             <span key={item.name} className="alt-badge">
@@ -304,7 +307,7 @@ export default function SuggestionCard({
         </div>
       )}
 
-      {hasTagField && (
+      {showAiContext && hasTagField && (
         <div className="tag-list" aria-label="Erkannte Tag-Kategorien">
           {tagCategories.map(item => (
             <span key={item.label} className={`tag-badge${item.value ? '' : ' empty'}`}>

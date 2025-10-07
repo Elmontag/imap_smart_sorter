@@ -50,6 +50,8 @@ class Settings(BaseSettings):
 
     DEV_MODE: bool = False
 
+    ANALYSIS_MODULE: str = "HYBRID"
+
     class Config:
         env_file = ".env"
 

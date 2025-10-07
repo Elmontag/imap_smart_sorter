@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
+  AnalysisModule,
   Suggestion,
   ScanStatus,
   getFolders,
@@ -40,6 +41,12 @@ const formatTimestamp = (value?: string | null) => {
   return parsed.toLocaleString('de-DE')
 }
 
+const moduleLabels: Record<AnalysisModule, string> = {
+  STATIC: 'Statisch',
+  HYBRID: 'Hybrid',
+  LLM_PURE: 'LLM Pure',
+}
+
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
   const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
@@ -61,6 +68,8 @@ export default function DashboardPage(): JSX.Element {
   const [scanBusy, setScanBusy] = useState(false)
   const [rescanBusy, setRescanBusy] = useState(false)
   const lastFinishedRef = useRef<string | null>(null)
+  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
+  const moduleLabel = moduleLabels[analysisModule]
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
@@ -141,6 +150,7 @@ export default function DashboardPage(): JSX.Element {
     } catch (err) {
       setStatus({ kind: 'error', message: `Analyse konnte nicht gestoppt werden: ${toMessage(err)}` })
     } finally {
+      setRescanBusy(false)
       setScanBusy(false)
     }
   }
@@ -236,8 +246,22 @@ export default function DashboardPage(): JSX.Element {
       const noun = absolute === 1 ? 'neuer Vorschlag' : 'neue Vorschläge'
       resultLabel = `${absolute} ${noun}`
     }
+    const active = Boolean(scanStatus?.active)
+    const hasHistory = Boolean(scanStatus?.last_started_at)
+    let statusLabel = 'Gestoppt'
+    let statusVariant: 'running' | 'paused' | 'stopped' = 'stopped'
+    if (active) {
+      statusLabel = 'Automatik aktiv'
+      statusVariant = 'running'
+    } else if (rescanBusy) {
+      statusLabel = 'Einmalanalyse aktiv'
+      statusVariant = 'running'
+    } else if (hasHistory) {
+      statusLabel = 'Pausiert'
+      statusVariant = 'paused'
+    }
     return {
-      active: Boolean(scanStatus?.active),
+      active,
       folderLabel:
         scanStatus && scanStatus.folders.length > 0
           ? scanStatus.folders.join(', ')
@@ -248,9 +272,10 @@ export default function DashboardPage(): JSX.Element {
       lastResultCount,
       resultLabel,
       error: scanStatus?.last_error ?? null,
-      statusLabel: scanStatus?.active ? 'Analyse aktiv' : 'Analyse pausiert',
+      statusLabel,
+      statusVariant,
     }
-  }, [scanStatus])
+  }, [rescanBusy, scanStatus])
 
   return (
     <div className="app-shell">
@@ -261,7 +286,8 @@ export default function DashboardPage(): JSX.Element {
             <p className="app-subline">Intelligente Unterstützung für sauberes Postfach-Management.</p>
           </div>
           <div className="header-actions">
-            {appConfig?.mode && <span className="mode-badge">Modus: {appConfig.mode}</span>}
+            {appConfig && <span className="mode-badge module">Modul: {moduleLabel}</span>}
+            {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
         <nav className="primary-nav">
@@ -275,8 +301,8 @@ export default function DashboardPage(): JSX.Element {
         <div className="analysis-top">
           <div className="analysis-canvas">
             <div className="analysis-status">
-              <span className={`status-dot ${scanSummary.active ? 'active' : 'idle'}`} aria-hidden="true" />
-              <div>
+              <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
+              <div className="analysis-status-text">
                 <span className="label">Analyse</span>
                 <strong>{scanSummary.statusLabel}</strong>
               </div>
@@ -319,7 +345,7 @@ export default function DashboardPage(): JSX.Element {
               type="button"
               className="primary"
               onClick={handleStartScan}
-              disabled={scanBusy || scanSummary.active}
+              disabled={scanBusy || scanSummary.active || rescanBusy}
             >
               {scanBusy && !scanSummary.active ? 'Starte Analyse…' : 'Analyse starten'}
             </button>
@@ -327,9 +353,9 @@ export default function DashboardPage(): JSX.Element {
               type="button"
               className="ghost"
               onClick={handleStopScan}
-              disabled={scanBusy || !scanSummary.active}
+              disabled={scanBusy || (!scanSummary.active && !rescanBusy)}
             >
-              {scanBusy && scanSummary.active ? 'Stoppe Analyse…' : 'Analyse stoppen'}
+              {scanBusy && (scanSummary.active || rescanBusy) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
             </button>
           </div>
         </div>
@@ -377,12 +403,14 @@ export default function DashboardPage(): JSX.Element {
           )}
         </aside>
         <main className="app-main">
-          <AutomationSummaryCard
-            activity={filterActivity}
-            loading={filterActivityLoading}
-            error={filterActivityError}
-            onReload={refreshFilterActivity}
-          />
+          {analysisModule !== 'LLM_PURE' && (
+            <AutomationSummaryCard
+              activity={filterActivity}
+              loading={filterActivityLoading}
+              error={filterActivityError}
+              onReload={refreshFilterActivity}
+            />
+          )}
 
           <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
 
@@ -437,6 +465,7 @@ export default function DashboardPage(): JSX.Element {
                     tagSlots={appConfig?.tag_slots}
                     availableFolders={availableFolders}
                     onFolderCreated={handleFolderCreated}
+                    analysisModule={analysisModule}
                   />
                 ))}
               </div>
