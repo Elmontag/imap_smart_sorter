@@ -17,6 +17,7 @@ import DevtoolsPanel from '../components/DevtoolsPanel'
 import RuleEditorForm, { EditableRuleDraft } from '../components/RuleEditorForm'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
+import { useDevMode } from '../devtools'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 const fieldOrder: KeywordFilterField[] = ['subject', 'sender', 'body']
@@ -221,6 +222,7 @@ export default function SettingsPage(): JSX.Element {
     error: appConfigError,
     refresh: refreshAppConfig,
   } = useAppConfig()
+  const devMode = useDevMode()
   const {
     data: filterActivity,
     loading: activityLoading,
@@ -590,6 +592,11 @@ export default function SettingsPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
+          {devMode && (
+            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              Dev-Mode
+            </NavLink>
+          )}
         </nav>
       </header>
 

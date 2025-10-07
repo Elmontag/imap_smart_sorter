@@ -115,7 +115,10 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 - `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
-  Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
+  Der Modus schaltet außerdem die Developer-Console unter `#/dev` frei: Dort findest du alle laufzeitrelevanten Parameter
+  (Move-Modus, Analyse-Modul, IMAP-Tags, Pending-Limit, Katalog-Zuschnitt), den aktuellen Ollama-Status inklusive Modellauflistung
+  und die aktiven Frontend-Umgebungswerte (`VITE_API_BASE`, `VITE_DEV_MODE`, Build-Typ, Stream-URL). Optional kann das Frontend
+  per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
 - Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Analyse-Controller. Das Frontend bietet zusätzlich einen Button „Einmalige Analyse“ (via `/api/rescan`), sodass sich eine sofortige Auswertung ohne Daueranalyse starten lässt. Laufende Einmalanalysen lassen sich über „Analyse stoppen“ abbrechen; das Backend verwirft dabei den aktiven Scanauftrag.
 - Laufende Dauer-Analysen blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Analyse starten“ und „Analyse stoppen“ für die kontinuierliche Ausführung verfügbar.
 - Die Ordnerauswahl im Dashboard stellt die überwachten IMAP-Ordner als aufklappbaren Baum dar. Der Filter hebt Treffer farblich hervor und öffnet automatisch die relevanten Äste, sodass komplexe Hierarchien schneller angepasst werden können.
