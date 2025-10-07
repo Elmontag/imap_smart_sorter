@@ -1,6 +1,7 @@
 import React from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import DashboardPage from './pages/DashboardPage'
+import DevModePage from './pages/DevModePage'
 import SettingsPage from './pages/SettingsPage'
 
 export default function App(): JSX.Element {
@@ -8,6 +9,7 @@ export default function App(): JSX.Element {
     <Routes>
       <Route path="/" element={<DashboardPage />} />
       <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/dev" element={<DevModePage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

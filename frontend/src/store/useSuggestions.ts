@@ -17,13 +17,20 @@ export interface SuggestionsState {
   refresh: () => Promise<void>
 }
 
-export function useSuggestions(scope: SuggestionScope = 'open'): SuggestionsState {
+export function useSuggestions(scope: SuggestionScope = 'open', enabled = true): SuggestionsState {
   const [data, setData] = useState<Suggestion[]>([])
   const [stats, setStats] = useState<SuggestionStats | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState<boolean>(enabled)
   const [error, setError] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
+    if (!enabled) {
+      setData([])
+      setStats(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -50,7 +57,7 @@ export function useSuggestions(scope: SuggestionScope = 'open'): SuggestionsStat
     } finally {
       setLoading(false)
     }
-  }, [scope])
+  }, [enabled, scope])
 
   useEffect(() => {
     fetchData()

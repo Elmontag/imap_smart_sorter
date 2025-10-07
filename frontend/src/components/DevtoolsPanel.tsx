@@ -18,11 +18,11 @@ export default function DevtoolsPanel(): JSX.Element | null {
   const devMode = useDevMode()
   const events = useDevEvents()
 
+  const ordered = useMemo(() => [...events].reverse(), [events])
+
   if (!devMode || !isDevMode()) {
     return null
   }
-
-  const ordered = useMemo(() => [...events].reverse(), [events])
 
   return (
     <section className="devtools-panel" aria-live="polite">

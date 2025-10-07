@@ -6,8 +6,8 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
 - **Worker** – Asynchroner Scanner, der per IMAP neue Nachrichten verarbeitet, LLM-basierte Embeddings erzeugt und Vorschläge in der Datenbank ablegt.
 - **Frontend** – Vite/React-Anwendung zur komfortablen Bewertung der Vorschläge, Anzeige des Betriebsmodus und manuellen Aktionen.
   Die Ordnerauswahl präsentiert sich als einklappbare Baumstruktur, neu gefundene Ordner lassen sich direkt aus den Vorschlagskarten anlegen.
-  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick. Offene Vorschläge erscheinen als aufklappbare Listeneinträge mit kompaktem Kopfbereich.
-  Eine Einstellungsseite (`#/settings`) bündelt Statische Regeln, KI-Parameter und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln.
+  Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick. Offene Vorschläge erscheinen als aufklappbare Listeneinträge mit kompaktem Kopfbereich. Die Ollama-Kachel zeigt Host-Erreichbarkeit sowie Pull-Fortschritte der Modelle per Progressbar an.
+  Eine Einstellungsseite (`#/settings`) bündelt Statische Regeln, KI-Parameter und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln. Im Tab „KI & Tags“ lassen sich Modelle direkt über die UI nachladen; der Fortschritt wird wie im Dashboard live visualisiert und alternative Modelle können per Formular mit Zweckauswahl gepullt werden.
   Der Tab „Statische Regeln“ bietet eine zweigeteilte Ansicht mit Regel-Sidebar, Detailformular und Vorlagen für Newsletter-, Bestell-, Event- und Kalendereinladungs-Filter. Tags aus den definierten Tag-Slots lassen sich dort über Chips bequem zu- oder abwählen.
   Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
@@ -56,6 +56,7 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 - Der Worker verbleibt standardmäßig im Idle-Modus. Setze `IMAP_WORKER_AUTOSTART=1`, falls die
   kontinuierliche Analyse weiterhin automatisch beim Start laufen soll – ansonsten steuerst du sowohl
   Einmal- als auch Daueranalyse ausschließlich über das Dashboard.
+- Das Dashboard zeigt laufende Modell-Pulls samt Fortschritt an; über den Einstellungs-Tab „KI & Tags“ lassen sich weitere Modelle per `/api/ollama/pull` direkt aus der Oberfläche nachladen.
 - Über `EMBED_PROMPT_HINT` kannst du zusätzliche Instruktionen (z. B. Projektnamen, Prioritäten)
   setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
@@ -109,13 +110,16 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 - `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
 - Der Tab „Betrieb“ in den Einstellungen bündelt Analyse-Modul, Verarbeitungsmodus und IMAP-Tags; das Dashboard zeigt den gewählten Modus weiterhin an. Die Auswahl des Sprachmodells erfolgt im Tab „KI & Tags“.
 - Die Module steuern, welche Informationen sichtbar sind:
-  - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien) werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist.
+  - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien), Pending-Listen und Vorschlagskarten werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist. Der Worker ruft in diesem Modus keine Ollama-Endpunkte auf.
   - **Hybrid** nutzt zuerst die statischen Regeln und analysiert verbleibende Nachrichten per LLM. Alle Kontextinformationen bleiben sichtbar.
   - **LLM Pure** ignoriert die Regeln und verarbeitet jede Mail per LLM. Die Regel-Übersicht im Dashboard blendet sich dabei automatisch aus.
 - `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
-  Optional kann das Frontend per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
+  Der Modus schaltet außerdem die Developer-Console unter `#/dev` frei: Dort findest du alle laufzeitrelevanten Parameter
+  (Move-Modus, Analyse-Modul, IMAP-Tags, Pending-Limit, Katalog-Zuschnitt), den aktuellen Ollama-Status inklusive Modellauflistung
+  und die aktiven Frontend-Umgebungswerte (`VITE_API_BASE`, `VITE_DEV_MODE`, Build-Typ, Stream-URL). Optional kann das Frontend
+  per `VITE_DEV_MODE=true` (in `frontend/.env`) unabhängig vom Backend gestartet werden.
 - Über `/api/scan/start`, `/api/scan/stop` und `/api/scan/status` steuerst du den kontinuierlichen Analyse-Controller. Das Frontend bietet zusätzlich einen Button „Einmalige Analyse“ (via `/api/rescan`), sodass sich eine sofortige Auswertung ohne Daueranalyse starten lässt. Laufende Einmalanalysen lassen sich über „Analyse stoppen“ abbrechen; das Backend verwirft dabei den aktiven Scanauftrag.
 - Laufende Dauer-Analysen blockieren den Einmal-Modus, bis sie gestoppt sind; parallel bleiben „Analyse starten“ und „Analyse stoppen“ für die kontinuierliche Ausführung verfügbar.
 - Die Ordnerauswahl im Dashboard stellt die überwachten IMAP-Ordner als aufklappbaren Baum dar. Der Filter hebt Treffer farblich hervor und öffnet automatisch die relevanten Äste, sodass komplexe Hierarchien schneller angepasst werden können.
@@ -191,6 +195,7 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 | `PUT`   | `/api/filters`      | Persistiert aktualisierte Keyword-Regeln |
 | `GET`   | `/api/filters/activity` | Statistik zu Filtertreffern (Gesamt, letzte 24 h, letzte Aktionen) |
 | `GET`   | `/api/ollama`       | Aktuelle Erreichbarkeit des Ollama-Hosts und Modellstatus |
+| `POST`  | `/api/ollama/pull`  | Startet das Nachladen eines Modells (JSON: `{ "model": "name", "purpose": "classifier" }`) |
 | `GET`   | `/api/config`       | Liefert Laufzeitkonfiguration (Modus, Modell, Tag-Namen, Listenlimit) |
 | `PUT`   | `/api/config`       | Aktualisiert Modus, Sprachmodell und IMAP-Tags (Teil-Update möglich) |
 | `POST`  | `/api/decide`       | Nimmt Entscheidung für einen Vorschlag entgegen |
