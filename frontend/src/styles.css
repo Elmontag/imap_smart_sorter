@@ -205,8 +205,8 @@ input {
 }
 
 .app-sidebar {
-  flex: 0 0 200px;
-  max-width: 200px;
+  flex: 0 0 260px;
+  max-width: 260px;
   position: sticky;
   top: 24px;
   align-self: flex-start;
@@ -2408,6 +2408,10 @@ button.link.danger:hover {
   transform: rotate(90deg);
 }
 
+.template-toggle.open .template-toggle-icon {
+  transform: rotate(90deg);
+}
+
 .template-card-body {
   margin-top: 14px;
   background: rgba(255, 255, 255, 0.9);
@@ -2620,6 +2624,38 @@ button.link.danger:hover {
   gap: 16px;
 }
 
+.rule-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  background: rgba(248, 250, 252, 0.7);
+}
+
+.rule-section textarea {
+  min-height: 100px;
+}
+
+.rule-section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-section-header h3 {
+  margin: 0;
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.rule-section-header p {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
 .filter-rule-form label span {
   display: block;
   font-size: 12px;
@@ -2657,16 +2693,6 @@ button.link.danger:hover {
   background: rgba(248, 250, 252, 0.9);
 }
 
-.filter-columns {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.filter-columns textarea {
-  min-height: 100px;
-}
-
 .match-options {
   display: flex;
   gap: 24px;
@@ -2697,6 +2723,39 @@ button.link.danger:hover {
   align-items: center;
   font-size: 13px;
   color: #334155;
+}
+
+.tag-slot-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.tag-slot-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed #cbd5e1;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.tag-slot-group-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tag-slot-group-header .slot-name {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.tag-slot-group-header .slot-description {
+  font-size: 12px;
+  color: #64748b;
 }
 
 .analysis-card,

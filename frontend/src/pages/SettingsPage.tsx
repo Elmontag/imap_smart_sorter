@@ -5,6 +5,7 @@ import {
   KeywordFilterConfig,
   KeywordFilterField,
   KeywordFilterRuleConfig,
+  TagSlotConfig,
   MoveMode,
   getKeywordFilters,
   updateKeywordFilters,
@@ -318,27 +319,35 @@ export default function SettingsPage(): JSX.Element {
     [appConfig?.ollama?.models],
   )
 
-  const tagSlotOptions = useMemo(() => {
+  const tagSlotOptions = useMemo<TagSlotConfig[]>(() => {
     if (!appConfig?.tag_slots) {
-      return [] as string[]
+      return []
     }
-    const seen = new Set<string>()
-    const options: string[] = []
-    appConfig.tag_slots.forEach(slot => {
-      slot.options.forEach(option => {
-        const trimmed = option.trim()
-        if (!trimmed) {
-          return
+    return appConfig.tag_slots
+      .map(slot => {
+        const seen = new Set<string>()
+        const options = slot.options
+          .map(option => option.trim())
+          .filter(option => {
+            if (!option) {
+              return false
+            }
+            const key = option.toLowerCase()
+            if (seen.has(key)) {
+              return false
+            }
+            seen.add(key)
+            return true
+          })
+          .sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }))
+        return {
+          name: slot.name,
+          description: slot.description,
+          options,
+          aliases: [...slot.aliases],
         }
-        const key = trimmed.toLowerCase()
-        if (seen.has(key)) {
-          return
-        }
-        seen.add(key)
-        options.push(trimmed)
       })
-    })
-    return options.sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }))
+      .filter(slot => slot.options.length > 0)
   }, [appConfig?.tag_slots])
 
   const configDirty = useMemo(() => {
@@ -770,7 +779,7 @@ export default function SettingsPage(): JSX.Element {
                         fieldOrder={fieldOrder}
                         parseList={parseList}
                         onChange={mutator => updateRule(selectedRule.id, mutator)}
-                        tagOptions={tagSlotOptions}
+                        tagSlots={tagSlotOptions}
                       />
                     </div>
                   )}
@@ -833,7 +842,7 @@ export default function SettingsPage(): JSX.Element {
                                 fieldOrder={fieldOrder}
                                 parseList={parseList}
                                 onChange={mutator => updateTemplate(template.id, mutator)}
-                                tagOptions={tagSlotOptions}
+                                tagSlots={tagSlotOptions}
                               />
                             </div>
                           )}
