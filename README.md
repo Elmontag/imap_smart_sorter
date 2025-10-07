@@ -15,36 +15,29 @@ Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie pa
 
 ## Schnellstart mit Docker Compose
 
-1. Erstelle eine `.env` im Projektwurzelverzeichnis (Beispiel unten).
+1. Kopiere die Vorlage: `cp env.example .env`
 2. Starte alle Services: `docker compose up --build`
 3. Frontend: <http://localhost:5173> – Backend: <http://localhost:8000>
 4. Beende mit `docker compose down`
 
 > **Hinweis:** Der `ollama`-Dienst lädt Modelle beim ersten Start nach. Plane zusätzliche Zeit/Netzwerk ein oder passe `CLASSIFIER_MODEL`/`EMBED_MODEL` an lokal verfügbare Modelle an.
 
-### Beispiel-`.env`
+### Umgebungsvariablen im Überblick
 
-```dotenv
-IMAP_HOST=imap.example.org
-IMAP_USERNAME=demo@example.org
-IMAP_PASSWORD=super-secret
-IMAP_INBOX=INBOX
-PROCESS_ONLY_SEEN=false
-OLLAMA_HOST=http://ollama:11434
-DATABASE_URL=sqlite:///data/app.db
-INIT_RUN=false
-MOVE_MODE=CONFIRM
-SINCE_DAYS=14
-LOG_LEVEL=INFO
-EMBED_PROMPT_HINT=E-Mails zu Rechnungen bitte besonders präzise clustern
-EMBED_PROMPT_MAX_CHARS=6000
-IMAP_PROTECTED_TAG=SmartSorter/Protected
-IMAP_PROCESSED_TAG=SmartSorter/Done
-IMAP_AI_TAG_PREFIX=SmartSorter
-PENDING_LIST_LIMIT=25
-DEV_MODE=false
-MIN_MATCH_SCORE=60
-```
+Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.py`](backend/settings.py). Die Datei [`env.example`](env.example) enthält alle verfügbaren Variablen mit ihren Standardwerten – kopiere sie bei Bedarf als Ausgangspunkt und passe die Werte an.
+
+| Bereich | Relevante Variablen | Beschreibung |
+|--------|---------------------|--------------|
+| IMAP-Anbindung | `IMAP_HOST`, `IMAP_PORT`, `IMAP_USERNAME`, `IMAP_PASSWORD`, `IMAP_USE_SSL`, `IMAP_INBOX`, `PROCESS_ONLY_SEEN`, `SINCE_DAYS` | Steuert Server-Zugriff, Zielordner sowie die Suchlogik (nur gelesene oder alle Mails, Zeitraum). |
+| Worker-Laufzeit | `IMAP_WORKER_AUTOSTART`, `POLL_INTERVAL_SECONDS`, `IDLE_FALLBACK`, `INIT_RUN` | Aktiviert den automatischen Start, definiert den Scanzyklus und setzt optional die Datenbank zurück. |
+| LLM/Ollama | `OLLAMA_HOST`, `CLASSIFIER_*`, `EMBED_MODEL`, `EMBED_PROMPT_HINT`, `EMBED_PROMPT_MAX_CHARS` | Legt Host, Modellwahl und Sampling-Parameter fest. Der Worker prüft beim Start, ob die Modelle verfügbar sind. |
+| Routing & Vorschläge | `MOVE_MODE`, `AUTO_THRESHOLD`, `MAX_SUGGESTIONS`, `MIN_NEW_FOLDER_SCORE`, `MIN_MATCH_SCORE`, `PENDING_LIST_LIMIT` | Default-Einstellungen für Vorschlagsgrenzen, Auto-Moves und Listenbegrenzungen. |
+| Tags | `IMAP_PROTECTED_TAG`, `IMAP_PROCESSED_TAG`, `IMAP_AI_TAG_PREFIX` | Kennzeichnet geschützte Nachrichten, markiert verarbeitete Mails und definiert das Präfix für KI-Tags. |
+| System | `DATABASE_URL`, `LOG_LEVEL`, `DEV_MODE`, `ANALYSIS_MODULE` | Pfad zur Datenbank, Logging-Level sowie Standard für Entwicklungs- bzw. Analyse-Modus. |
+
+> **GUI-Overrides:** Mehrere Defaults lassen sich im Frontend überschreiben und werden danach in der Datenbank gespeichert. Dazu zählen `MOVE_MODE` (Tab „Betrieb“), die Modellwahl (`CLASSIFIER_MODEL` im Tab „KI & Tags“), Mailbox-Tags (`IMAP_PROTECTED_TAG`, `IMAP_PROCESSED_TAG`, `IMAP_AI_TAG_PREFIX`) sowie das Analyse-Modul (`ANALYSIS_MODULE`). Die `.env`-Werte dienen als Startzustand und greifen erneut, wenn gespeicherte Einstellungen zurückgesetzt werden.
+
+> **Frontend-Variablen:** Für Vite kann in `frontend/.env.local` u. a. `VITE_API_BASE` (Backend-URL) und `VITE_DEV_MODE` (Devtools-Overlay) gesetzt werden. Diese Werte beeinflussen ausschließlich das Frontend und sind nicht Teil der `.env` im Projektstamm.
 
 ### Hinweise zur IMAP-Suche
 
