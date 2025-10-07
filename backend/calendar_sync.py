@@ -26,7 +26,7 @@ from database import (
     upsert_calendar_event,
     get_monitored_folders,
 )
-from mailbox import MessageContent, add_message_tag, fetch_recent_messages
+from mailbox import MessageContent, add_message_tag, fetch_recent_messages, move_message
 from models import CalendarEventEntry
 from settings import S
 from utils import message_received_at, subject_from
@@ -237,7 +237,10 @@ def _process_calendar_attachment(
 async def scan_calendar_mailboxes(folders: Sequence[str] | None = None) -> CalendarScanResult:
     configured = [folder for folder in (folders or []) if str(folder).strip()]
     if not configured:
-        configured = get_monitored_folders()
+        settings = load_calendar_settings(include_password=False)
+        configured = [folder for folder in settings.source_folders if folder.strip()]
+        if not configured:
+            configured = get_monitored_folders()
     if not configured:
         configured = [S.IMAP_INBOX]
     payloads = await asyncio.to_thread(fetch_recent_messages, configured)
@@ -346,4 +349,38 @@ async def import_calendar_event(event_id: int) -> object:
             logger.warning(
                 "Tag %s konnte nach dem Import nicht gesetzt werden", settings.processed_tag, exc_info=True
             )
+    if settings.processed_folder:
+        try:
+            move_message(
+                event.message_uid,
+                settings.processed_folder,
+                src_folder=event.folder or S.IMAP_INBOX,
+            )
+        except Exception:  # pragma: no cover - network interaction
+            logger.warning(
+                "Terminmail %s konnte nicht nach %s verschoben werden",
+                event.message_uid,
+                settings.processed_folder,
+                exc_info=True,
+            )
     return updated if updated is not None else get_calendar_event(event.id)
+
+
+async def validate_calendar_connection(
+    *, caldav_url: str, username: str, password: str | None, calendar_name: str
+) -> None:
+    if not caldav_url.strip():
+        raise CalendarImportError("CalDAV-URL fehlt für den Verbindungstest.")
+
+    def _probe() -> None:
+        client = DAVClient(caldav_url, username=username or None, password=password or "")
+        _select_calendar(client, calendar_name)
+
+    try:
+        await asyncio.to_thread(_probe)
+    except AuthorizationError as exc:
+        raise CalendarImportError("CalDAV-Anmeldung fehlgeschlagen. Bitte Zugangsdaten prüfen.") from exc
+    except DAVError as exc:
+        raise CalendarImportError(f"CalDAV-Fehler: {exc}") from exc
+    except Exception as exc:  # pragma: no cover - network interaction
+        raise CalendarImportError(f"Unbekannter Fehler beim Verbindungstest: {exc}") from exc

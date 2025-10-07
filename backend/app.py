@@ -67,13 +67,20 @@ from keyword_filters import get_filter_rules, update_filter_config as store_keyw
 from settings import S
 from calendar_sync import (
     CalendarImportError,
+    CalendarScanResult,
     import_calendar_event as perform_calendar_import,
     load_calendar_overview,
-    scan_calendar_mailboxes,
+    validate_calendar_connection,
 )
 from calendar_settings import (
     load_calendar_settings,
     persist_calendar_settings,
+)
+from calendar_scan_control import CalendarScanStatus as CalendarAutoScanStatus, controller as calendar_scan_controller
+from calendar_rescan_control import (
+    CalendarRescanBusyError,
+    CalendarRescanCancelledError,
+    controller as calendar_rescan_controller,
 )
 from runtime_settings import (
     analysis_module_uses_llm,
@@ -197,6 +204,20 @@ def _parse_datetime(value: str | None) -> Optional[datetime]:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _normalize_calendar_folders(folders: Sequence[str] | None) -> List[str]:
+    if not folders:
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for folder in folders:
+        value = str(folder or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
 
 
 def _keyword_config_response() -> KeywordFilterConfigResponse:
@@ -796,6 +817,8 @@ def _calendar_settings_payload() -> CalendarSettingsResponse:
         calendar_name=sanitized.calendar_name,
         timezone=sanitized.timezone,
         processed_tag=sanitized.processed_tag,
+        source_folders=list(sanitized.source_folders),
+        processed_folder=sanitized.processed_folder,
         has_password=bool(settings.password),
     )
 
@@ -803,7 +826,7 @@ def _calendar_settings_payload() -> CalendarSettingsResponse:
 class CalendarEventResponse(BaseModel):
     id: int
     message_uid: str
-    folder: str
+    folder: Optional[str] = None
     subject: Optional[str] = None
     from_addr: Optional[str] = None
     message_date: Optional[datetime] = None
@@ -830,7 +853,7 @@ class CalendarEventResponse(BaseModel):
         return cls(
             id=entry.id or 0,
             message_uid=entry.message_uid,
-            folder=entry.folder,
+            folder=entry.folder or S.IMAP_INBOX,
             subject=entry.subject,
             from_addr=entry.from_addr,
             message_date=entry.message_date,
@@ -874,10 +897,108 @@ class CalendarScanSummaryResponse(BaseModel):
     updated: int
     errors: List[str]
 
+    @classmethod
+    def from_result(cls, result: CalendarScanResult | None) -> "CalendarScanSummaryResponse | None":
+        if result is None:
+            return None
+        return cls(
+            scanned_messages=result.scanned_messages,
+            processed_events=result.processed_events,
+            created=result.created,
+            updated=result.updated,
+            errors=list(result.errors),
+        )
+
+
+class CalendarAutoScanStatusResponse(BaseModel):
+    active: bool
+    folders: List[str]
+    poll_interval: Optional[float] = None
+    last_started_at: Optional[datetime] = None
+    last_finished_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    last_summary: Optional[CalendarScanSummaryResponse] = None
+
+    @classmethod
+    def from_status(cls, status: CalendarAutoScanStatus) -> "CalendarAutoScanStatusResponse":
+        summary = CalendarScanSummaryResponse.from_result(status.last_summary)
+        return cls(
+            active=bool(status.active),
+            folders=list(status.folders),
+            poll_interval=status.poll_interval,
+            last_started_at=status.last_started_at,
+            last_finished_at=status.last_finished_at,
+            last_error=status.last_error,
+            last_summary=summary,
+        )
+
+
+class CalendarManualScanStatusResponse(BaseModel):
+    active: bool
+    folders: List[str]
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    cancelled: bool = False
+    last_error: Optional[str] = None
+    last_summary: Optional[CalendarScanSummaryResponse] = None
+
+    @classmethod
+    def from_status(cls, status: object) -> "CalendarManualScanStatusResponse":
+        folders = list(getattr(status, "folders", []))
+        summary = CalendarScanSummaryResponse.from_result(getattr(status, "last_summary", None))
+        return cls(
+            active=bool(getattr(status, "active", False)),
+            folders=folders,
+            started_at=getattr(status, "started_at", None),
+            finished_at=getattr(status, "finished_at", None),
+            cancelled=bool(getattr(status, "cancelled", False)),
+            last_error=getattr(status, "last_error", None),
+            last_summary=summary,
+        )
+
+
+class CalendarScanStatusResponse(BaseModel):
+    auto: CalendarAutoScanStatusResponse
+    manual: CalendarManualScanStatusResponse
+
+    @classmethod
+    def from_sources(
+        cls, auto_status: CalendarAutoScanStatus, manual_status: object
+    ) -> "CalendarScanStatusResponse":
+        return cls(
+            auto=CalendarAutoScanStatusResponse.from_status(auto_status),
+            manual=CalendarManualScanStatusResponse.from_status(manual_status),
+        )
+
+
+class CalendarScanStartRequest(BaseModel):
+    folders: Optional[List[str]] = None
+
+
+class CalendarScanRequest(CalendarScanStartRequest):
+    pass
+
+
+class CalendarScanStartResponse(BaseModel):
+    started: bool
+    status: CalendarScanStatusResponse
+
+
+class CalendarScanStopResponse(BaseModel):
+    stopped: bool
+    status: CalendarScanStatusResponse
+
+
+class CalendarScanCancelResponse(BaseModel):
+    cancelled: bool
+    status: CalendarScanStatusResponse
+
 
 class CalendarScanResponse(BaseModel):
     overview: CalendarOverviewResponse
-    scan: CalendarScanSummaryResponse
+    scan: Optional[CalendarScanSummaryResponse] = None
+    cancelled: bool = False
+    status: CalendarScanStatusResponse
 
 
 class CalendarImportRequest(BaseModel):
@@ -896,6 +1017,8 @@ class CalendarSettingsResponse(BaseModel):
     calendar_name: str
     timezone: str
     processed_tag: str
+    source_folders: List[str]
+    processed_folder: str
     has_password: bool
 
 
@@ -906,8 +1029,23 @@ class CalendarSettingsUpdate(BaseModel):
     calendar_name: str = ""
     timezone: str = "Europe/Berlin"
     processed_tag: str = "Termin bearbeitet"
+    source_folders: List[str] = Field(default_factory=list)
+    processed_folder: str = ""
     password: Optional[str] = None
     clear_password: bool = False
+
+
+class CalendarConnectionTestRequest(BaseModel):
+    caldav_url: str = ""
+    username: str = ""
+    password: Optional[str] = None
+    calendar_name: str = ""
+    use_stored_password: bool = False
+
+
+class CalendarConnectionTestResponse(BaseModel):
+    ok: bool
+    message: Optional[str] = None
 
 app = FastAPI(title="IMAP Smart Sorter")
 app.add_middleware(
@@ -1222,18 +1360,63 @@ def api_calendar_overview() -> CalendarOverviewResponse:
     return _calendar_overview_payload()
 
 
-@app.post("/api/calendar/scan", response_model=CalendarScanResponse)
-async def api_calendar_scan() -> CalendarScanResponse:
-    result = await scan_calendar_mailboxes()
-    overview = _calendar_overview_payload()
-    summary = CalendarScanSummaryResponse(
-        scanned_messages=result.scanned_messages,
-        processed_events=result.processed_events,
-        created=result.created,
-        updated=result.updated,
-        errors=result.errors,
+@app.get("/api/calendar/scan/status", response_model=CalendarScanStatusResponse)
+async def api_calendar_scan_status() -> CalendarScanStatusResponse:
+    return CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
     )
-    return CalendarScanResponse(overview=overview, scan=summary)
+
+
+@app.post("/api/calendar/scan/start", response_model=CalendarScanStartResponse)
+async def api_calendar_scan_start(payload: CalendarScanStartRequest | None = Body(default=None)) -> CalendarScanStartResponse:
+    folders = _normalize_calendar_folders(payload.folders if payload else None)
+    started = await calendar_scan_controller.start(folders)
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    return CalendarScanStartResponse(started=started, status=status)
+
+
+@app.post("/api/calendar/scan/stop", response_model=CalendarScanStopResponse)
+async def api_calendar_scan_stop() -> CalendarScanStopResponse:
+    stopped = await calendar_scan_controller.stop()
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    return CalendarScanStopResponse(stopped=stopped, status=status)
+
+
+@app.post("/api/calendar/scan/cancel", response_model=CalendarScanCancelResponse)
+async def api_calendar_scan_cancel() -> CalendarScanCancelResponse:
+    cancelled = await calendar_rescan_controller.stop()
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    return CalendarScanCancelResponse(cancelled=cancelled, status=status)
+
+
+@app.post("/api/calendar/scan", response_model=CalendarScanResponse)
+async def api_calendar_scan(payload: CalendarScanRequest | None = Body(default=None)) -> CalendarScanResponse:
+    folders = _normalize_calendar_folders(payload.folders if payload else None)
+    try:
+        result = await calendar_rescan_controller.run(folders)
+        cancelled = False
+    except CalendarRescanBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except CalendarRescanCancelledError:
+        result = None
+        cancelled = True
+    overview = _calendar_overview_payload()
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    summary = CalendarScanSummaryResponse.from_result(result)
+    return CalendarScanResponse(overview=overview, scan=summary, cancelled=cancelled, status=status)
 
 
 @app.post("/api/calendar/import", response_model=CalendarImportResponse)
@@ -1288,6 +1471,8 @@ def api_update_calendar_config(payload: CalendarSettingsUpdate) -> CalendarSetti
         calendar_name=(payload.calendar_name or "").strip(),
         timezone=timezone_value,
         processed_tag=(payload.processed_tag or "").strip(),
+        source_folders=_normalize_calendar_folders(payload.source_folders),
+        processed_folder=(payload.processed_folder or "").strip(),
         password=password_value,
         clear_password=clear_password,
     )
@@ -1299,8 +1484,37 @@ def api_update_calendar_config(payload: CalendarSettingsUpdate) -> CalendarSetti
         calendar_name=sanitized.calendar_name,
         timezone=sanitized.timezone,
         processed_tag=sanitized.processed_tag,
+        source_folders=list(sanitized.source_folders),
+        processed_folder=sanitized.processed_folder,
         has_password=bool(updated.password),
     )
+
+
+@app.post("/api/calendar/config/test", response_model=CalendarConnectionTestResponse)
+async def api_calendar_config_test(payload: CalendarConnectionTestRequest) -> CalendarConnectionTestResponse:
+    current = load_calendar_settings(include_password=True)
+    caldav_url = (payload.caldav_url or current.caldav_url).strip()
+    username = (payload.username or current.username).strip()
+    calendar_name = (payload.calendar_name or current.calendar_name).strip()
+    if payload.password is not None:
+        password_value = payload.password or None
+    elif payload.use_stored_password:
+        password_value = current.password
+    else:
+        password_value = None
+    try:
+        await validate_calendar_connection(
+            caldav_url=caldav_url,
+            username=username,
+            password=password_value,
+            calendar_name=calendar_name,
+        )
+    except CalendarImportError as exc:
+        return CalendarConnectionTestResponse(ok=False, message=str(exc))
+    except Exception as exc:  # pragma: no cover - network guard
+        logger.exception("Kalender-Verbindungstest fehlgeschlagen", exc_info=True)
+        raise HTTPException(500, "Verbindungstest fehlgeschlagen") from exc
+    return CalendarConnectionTestResponse(ok=True, message="Verbindung erfolgreich getestet.")
 
 
 def _ensure_suggestion(uid: str) -> Suggestion:

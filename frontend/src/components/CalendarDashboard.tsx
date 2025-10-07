@@ -1,7 +1,9 @@
-import React, { useCallback, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { CalendarEvent, CalendarScanSummary, importCalendarEvent } from '../api'
 import { useCalendarOverview } from '../store/useCalendarOverview'
+import { useAppConfig } from '../store/useAppConfig'
+import { useDevMode } from '../devtools'
 
 type CalendarView = 'list' | 'day' | 'week' | 'month' | 'year'
 
@@ -32,6 +34,12 @@ const statusClass: Record<CalendarEvent['status'], string> = {
   pending: 'pending',
   imported: 'imported',
   failed: 'failed',
+}
+
+const moduleLabels: Record<string, string> = {
+  STATIC: 'Statisch',
+  HYBRID: 'Hybrid',
+  LLM_PURE: 'LLM Pure',
 }
 
 const toDateKey = (value: Date): string => {
@@ -103,6 +111,35 @@ const eventSortValue = (event: CalendarEvent): number => {
   return Number.isNaN(parsed.getTime()) ? Number.MAX_SAFE_INTEGER : parsed.getTime()
 }
 
+const formatTimestamp = (value?: string | null) => {
+  if (!value) {
+    return null
+  }
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
+  return parsed.toLocaleString('de-DE')
+}
+
+const summariseScan = (summary?: CalendarScanSummary | null): string | null => {
+  if (!summary) {
+    return null
+  }
+  const parts: string[] = []
+  parts.push(`${summary.processed_events} Termine verarbeitet`)
+  if (summary.created) {
+    parts.push(`${summary.created} neu`)
+  }
+  if (summary.updated) {
+    parts.push(`${summary.updated} aktualisiert`)
+  }
+  if (summary.errors.length > 0) {
+    parts.push(`${summary.errors.length} Fehler`)
+  }
+  return parts.join(' · ')
+}
+
 const formatMonthTitle = (date: Date, timeZone: string) =>
   formatDate(date, { month: 'long', year: 'numeric' }, timeZone)
 
@@ -146,16 +183,140 @@ const eventTitle = (event: CalendarEvent) =>
   event.summary || event.subject || `Einladung ${event.event_uid}`
 
 export default function CalendarDashboard(): JSX.Element {
-  const { overview, loading, error, refreshing, refresh, rescan } = useCalendarOverview(true)
+  const {
+    overview,
+    loading,
+    error,
+    refreshing,
+    status: scanStatus,
+    statusLoading,
+    refresh,
+    refreshStatus,
+    rescan,
+    startAuto,
+    stopAuto,
+    cancelManual,
+  } = useCalendarOverview(true)
   const [view, setView] = useState<CalendarView>('month')
   const [selectedDate, setSelectedDate] = useState<Date>(() => normalizeDate(new Date()))
-  const [status, setStatus] = useState<StatusMessage | null>(null)
-  const [lastScan, setLastScan] = useState<CalendarScanSummary | null>(null)
+  const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null)
+  const [autoBusy, setAutoBusy] = useState(false)
+  const [manualBusy, setManualBusy] = useState(false)
+  const [cancelBusy, setCancelBusy] = useState(false)
   const [importingId, setImportingId] = useState<number | null>(null)
+  const { data: appConfig } = useAppConfig()
+  const devMode = useDevMode()
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refreshStatus()
+    }, 15000)
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [refreshStatus])
+
+  const analysisModule = (appConfig?.analysis_module ?? 'STATIC').toUpperCase()
+  const moduleLabel = moduleLabels[analysisModule] ?? analysisModule
 
   const timezone = overview?.timezone ?? 'Europe/Berlin'
   const events = overview?.events ?? []
   const metrics = overview?.metrics
+  const autoInfo = scanStatus?.auto ?? null
+  const manualInfo = scanStatus?.manual ?? null
+  const autoActive = Boolean(autoInfo?.active)
+  const manualActive = Boolean(manualInfo?.active)
+  const autoSummaryLabel = summariseScan(autoInfo?.last_summary ?? null)
+  const manualSummary = manualInfo?.last_summary ?? null
+  const manualSummaryLabel = summariseScan(manualSummary)
+  const manualErrors = manualSummary?.errors ?? []
+  const autoStatusParts: string[] = []
+  if (autoActive) {
+    autoStatusParts.push('läuft…')
+    if (autoInfo?.folders.length) {
+      autoStatusParts.push(autoInfo.folders.join(', '))
+    }
+  } else {
+    autoStatusParts.push('inaktiv')
+    const finished = formatTimestamp(autoInfo?.last_finished_at ?? null)
+    if (finished) {
+      autoStatusParts.push(`zuletzt: ${finished}`)
+    }
+    if (autoSummaryLabel) {
+      autoStatusParts.push(autoSummaryLabel)
+    }
+  }
+  const autoStatusLabel = autoStatusParts.filter(Boolean).join(' · ') || '–'
+  const autoVariant = autoActive ? 'success' : autoInfo?.last_error ? 'error' : 'muted'
+
+  const manualStatusParts: string[] = []
+  if (manualActive) {
+    manualStatusParts.push('läuft…')
+    if (manualInfo?.folders.length) {
+      manualStatusParts.push(manualInfo.folders.join(', '))
+    }
+  } else {
+    const finished = formatTimestamp(manualInfo?.finished_at ?? null)
+    if (finished) {
+      manualStatusParts.push(`zuletzt: ${finished}`)
+    }
+    if (manualInfo?.cancelled) {
+      manualStatusParts.push('abgebrochen')
+    }
+    if (manualSummaryLabel) {
+      manualStatusParts.push(manualSummaryLabel)
+    }
+  }
+  const manualStatusLabel = manualStatusParts.filter(Boolean).join(' · ') || '–'
+
+  const analysisFootEntries: React.ReactNode[] = []
+  if (autoInfo?.last_started_at) {
+    analysisFootEntries.push(
+      <span key="auto-start">Dauerscan gestartet: {formatTimestamp(autoInfo.last_started_at) ?? '–'}</span>,
+    )
+  }
+  if (!autoActive && autoInfo?.last_finished_at) {
+    analysisFootEntries.push(
+      <span key="auto-finished">Dauerscan beendet: {formatTimestamp(autoInfo.last_finished_at) ?? '–'}</span>,
+    )
+  }
+  if (!autoActive && autoSummaryLabel) {
+    analysisFootEntries.push(<span key="auto-summary">Letzter Dauerscan: {autoSummaryLabel}</span>)
+  }
+  if (autoInfo?.last_error) {
+    analysisFootEntries.push(
+      <span key="auto-error" className="analysis-error">
+        Dauerscan-Fehler: {autoInfo.last_error}
+      </span>,
+    )
+  }
+  if (manualInfo?.started_at) {
+    const folders = manualInfo.folders.length ? ` · ${manualInfo.folders.join(', ')}` : ''
+    analysisFootEntries.push(
+      <span key="manual-start">
+        Einzelscan gestartet: {formatTimestamp(manualInfo.started_at) ?? '–'}
+        {folders}
+      </span>,
+    )
+  }
+  if (!manualActive && manualInfo?.finished_at) {
+    analysisFootEntries.push(
+      <span key="manual-finished">
+        Einzelscan beendet: {formatTimestamp(manualInfo.finished_at) ?? '–'}
+        {manualInfo.cancelled ? ' (abgebrochen)' : ''}
+      </span>,
+    )
+  }
+  if (!manualActive && manualSummaryLabel) {
+    analysisFootEntries.push(<span key="manual-summary">Letzter Einzelscan: {manualSummaryLabel}</span>)
+  }
+  if (manualInfo?.last_error) {
+    analysisFootEntries.push(
+      <span key="manual-error" className="analysis-error">
+        Einzelscan-Fehler: {manualInfo.last_error}
+      </span>,
+    )
+  }
 
   const sortedEvents = useMemo(() => {
     const list = [...events]
@@ -207,7 +368,7 @@ export default function CalendarDashboard(): JSX.Element {
 
   const showDetailPanel = view === 'week' || view === 'month'
 
-  const dismissStatus = useCallback(() => setStatus(null), [])
+  const dismissStatus = useCallback(() => setStatusMessage(null), [])
 
   const handleViewChange = useCallback((next: CalendarView) => {
     setView(next)
@@ -241,33 +402,77 @@ export default function CalendarDashboard(): JSX.Element {
   )
 
   const handleRefresh = useCallback(async () => {
-    setStatus(null)
+    setStatusMessage(null)
     await refresh()
   }, [refresh])
 
   const handleRescan = useCallback(async () => {
-    setStatus(null)
+    setManualBusy(true)
+    setStatusMessage(null)
     const result = await rescan()
     if (result) {
-      setLastScan(result.scan)
-      setStatus({
-        kind: 'success',
-        message: `Kalender neu gescannt – ${result.scan.processed_events} ICS-Dateien geprüft, ${result.scan.created} neu erfasst, ${result.scan.updated} aktualisiert.`,
+      if (result.cancelled) {
+        setStatusMessage({ kind: 'info', message: 'Einzelscan abgebrochen.' })
+      } else if (result.scan) {
+        const label = summariseScan(result.scan)
+        setStatusMessage({
+          kind: 'success',
+          message: label ? `Einzelscan abgeschlossen – ${label}.` : 'Einzelscan abgeschlossen.',
+        })
+      } else {
+        setStatusMessage({ kind: 'success', message: 'Einzelscan abgeschlossen.' })
+      }
+    }
+    setManualBusy(false)
+  }, [rescan])
+
+  const handleStartAuto = useCallback(async () => {
+    setAutoBusy(true)
+    setStatusMessage(null)
+    const response = await startAuto()
+    if (response) {
+      setStatusMessage({
+        kind: response.started ? 'success' : 'info',
+        message: response.started ? 'Dauerscan gestartet.' : 'Dauerscan läuft bereits.',
       })
     }
-  }, [rescan])
+    setAutoBusy(false)
+  }, [startAuto])
+
+  const handleStopAuto = useCallback(async () => {
+    setAutoBusy(true)
+    setStatusMessage(null)
+    const response = await stopAuto()
+    if (response) {
+      setStatusMessage({
+        kind: response.stopped ? 'success' : 'info',
+        message: response.stopped ? 'Dauerscan gestoppt.' : 'Es war kein Dauerscan aktiv.',
+      })
+    }
+    setAutoBusy(false)
+  }, [stopAuto])
+
+  const handleCancelManual = useCallback(async () => {
+    setCancelBusy(true)
+    setStatusMessage(null)
+    const cancelled = await cancelManual()
+    if (cancelled) {
+      setStatusMessage({ kind: 'info', message: 'Einzelscan abgebrochen.' })
+    }
+    setCancelBusy(false)
+  }, [cancelManual])
 
   const handleImport = useCallback(
     async (event: CalendarEvent) => {
       setImportingId(event.id)
-      setStatus(null)
+      setStatusMessage(null)
       try {
         await importCalendarEvent({ event_id: event.id })
         await refresh()
-        setStatus({ kind: 'success', message: `Termin „${eventTitle(event)}“ wurde importiert.` })
+        setStatusMessage({ kind: 'success', message: `Termin „${eventTitle(event)}“ wurde importiert.` })
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Import fehlgeschlagen.'
-        setStatus({ kind: 'error', message })
+        setStatusMessage({ kind: 'error', message })
       } finally {
         setImportingId(null)
       }
@@ -307,78 +512,143 @@ export default function CalendarDashboard(): JSX.Element {
   )
 
   return (
-    <div className="calendar-dashboard">
-      <header className="calendar-header">
-        <div>
-          <h2>Kalenderübersicht</h2>
-          <p className="calendar-subline">
-            Finde Termineinladungen, Absagen und Aktualisierungen aus dem Posteingang und übernimm sie in deinen CalDAV-Kalender.
-          </p>
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="header-top">
+          <div>
+            <h1>IMAP Smart Sorter</h1>
+            <p className="app-subline">Kalenderinhalte aus deinem Postfach analysieren und synchronisieren.</p>
+          </div>
+          <div className="header-actions">
+            {appConfig && <span className="mode-badge module">Modul: {moduleLabel}</span>}
+            {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
+          </div>
         </div>
-        <div className="calendar-header-actions">
-          <button type="button" className="secondary" onClick={handleRefresh} disabled={loading || refreshing}>
-            Aktualisieren
-          </button>
-          <button type="button" className="primary" onClick={handleRescan} disabled={refreshing || loading}>
-            Neu scannen
-          </button>
+        <nav className="primary-nav">
+          <NavLink to="/mail" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            E-Mail-Dashboard
+          </NavLink>
+          <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Kalenderdashboard
+          </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Einstellungen
+          </NavLink>
+          {devMode && (
+            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              Dev-Mode
+            </NavLink>
+          )}
+        </nav>
+        <div className="analysis-top">
+          <div className="analysis-canvas">
+            <div className="analysis-status">
+              <span className={`status-indicator ${autoVariant}`} aria-hidden="true" />
+              <div className="analysis-status-text">
+                <strong>Kalender-Dauerscan</strong>
+                <span>{statusLoading ? 'Status wird geladen…' : autoStatusLabel}</span>
+              </div>
+            </div>
+            <div className="analysis-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleStartAuto}
+                disabled={autoBusy || statusLoading || autoActive}
+              >
+                Dauerscan starten
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleStopAuto}
+                disabled={autoBusy || statusLoading || (!autoActive && !autoInfo)}
+              >
+                Dauerscan stoppen
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={handleRescan}
+                disabled={manualBusy || refreshing || statusLoading}
+              >
+                Einzelscan starten
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleCancelManual}
+                disabled={cancelBusy || statusLoading || !manualActive}
+              >
+                Einzelscan abbrechen
+              </button>
+              <button type="button" className="secondary" onClick={handleRefresh} disabled={loading || refreshing}>
+                Aktualisieren
+              </button>
+            </div>
+          </div>
+          <div className="analysis-meta">
+            <span>Einzelscan: {statusLoading ? 'Status wird geladen…' : manualStatusLabel}</span>
+            {analysisFootEntries}
+          </div>
         </div>
       </header>
 
-      <div className="calendar-meta">
-        <div className="calendar-metrics">
-          <div className="metric-card">
-            <span>Gescannte Mails</span>
-            <strong>{metrics?.scanned_mails ?? 0}</strong>
+      <main className="calendar-dashboard">
+        <div className="calendar-meta">
+          <div className="calendar-metrics">
+            <div className="metric-card">
+              <span>Gescannte Mails</span>
+              <strong>{metrics?.scanned_mails ?? 0}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Ausstehende Termine</span>
+              <strong>{metrics?.pending_events ?? 0}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Importierte Termine</span>
+              <strong>{metrics?.imported_events ?? 0}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Fehler beim Import</span>
+              <strong>{metrics?.failed_events ?? 0}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Termine gesamt</span>
+              <strong>{metrics?.total_events ?? 0}</strong>
+            </div>
           </div>
-          <div className="metric-card">
-            <span>Ausstehende Termine</span>
-            <strong>{metrics?.pending_events ?? 0}</strong>
-          </div>
-          <div className="metric-card">
-            <span>Importierte Termine</span>
-            <strong>{metrics?.imported_events ?? 0}</strong>
-          </div>
-          <div className="metric-card">
-            <span>Fehler beim Import</span>
-            <strong>{metrics?.failed_events ?? 0}</strong>
-          </div>
-          <div className="metric-card">
-            <span>Termine gesamt</span>
-            <strong>{metrics?.total_events ?? 0}</strong>
+          <div className="calendar-meta-info">
+            <span className="calendar-timezone">Zeitzone: {timezone}</span>
+            <NavLink to="/settings?tab=calendar" className="link">
+              Kalender-Einstellungen anpassen
+            </NavLink>
           </div>
         </div>
-        <div className="calendar-meta-info">
-          <span className="calendar-timezone">Zeitzone: {timezone}</span>
-          <NavLink to="/settings?tab=calendar" className="link">
-            Kalender-Einstellungen anpassen
-          </NavLink>
-        </div>
-      </div>
 
-      {status && (
-        <div className={`status-banner ${status.kind}`} role="status">
-          <span>{status.message}</span>
-          <button className="link" type="button" onClick={dismissStatus}>
-            Schließen
-          </button>
-        </div>
-      )}
+        {statusMessage && (
+          <div className={`status-banner ${statusMessage.kind}`} role="status">
+            <span>{statusMessage.message}</span>
+            <button className="link" type="button" onClick={dismissStatus}>
+              Schließen
+            </button>
+          </div>
+        )}
 
-      {error && <div className="status-banner error">{error}</div>}
+        {error && <div className="status-banner error">{error}</div>}
 
-      {lastScan && lastScan.errors.length > 0 && (
-        <div className="status-banner warning">
-          <strong>Fehler beim letzten Scan:</strong>
-          <ul>
-            {lastScan.errors.map(item => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+        {!manualActive && manualErrors.length > 0 && (
+          <div className="status-banner warning">
+            <strong>Fehler beim letzten Einzelscan:</strong>
+            <ul>
+              {manualErrors.map(item => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-      <div className="calendar-view-toggle" role="tablist" aria-label="Kalenderansichten">
+        <div className="calendar-view-toggle" role="tablist" aria-label="Kalenderansichten">
         {(['list', 'day', 'week', 'month', 'year'] as CalendarView[]).map(mode => (
           <button
             key={mode}
@@ -646,6 +916,7 @@ export default function CalendarDashboard(): JSX.Element {
           )}
         </div>
       )}
-    </div>
-  )
+    </main>
+  </div>
+)
 }

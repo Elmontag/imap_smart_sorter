@@ -15,6 +15,8 @@ import {
   updateCalendarSettings,
   CalendarSettings,
   CalendarSettingsUpdateRequest,
+  CalendarConnectionTestRequest,
+  testCalendarConnection,
 } from '../api'
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
 import CatalogEditor from '../components/CatalogEditor'
@@ -85,6 +87,13 @@ const normalizeList = (values: string[]): string[] => {
 
 const parseList = (value: string): string[] => normalizeList(value.split(/[\n,]+/))
 
+const sameStringLists = (a: string[], b: string[]): boolean => {
+  if (a.length !== b.length) {
+    return false
+  }
+  return a.every((value, index) => value === b[index])
+}
+
 type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general' | 'calendar'
 
 const settingsTabs: SettingsTab[] = [
@@ -125,6 +134,8 @@ interface CalendarDraft {
   calendar_name: string
   timezone: string
   processed_tag: string
+  source_folders: string
+  processed_folder: string
   password: string
   clear_password: boolean
 }
@@ -305,6 +316,8 @@ export default function SettingsPage(): JSX.Element {
     calendar_name: '',
     timezone: 'Europe/Berlin',
     processed_tag: 'Termin bearbeitet',
+    source_folders: '',
+    processed_folder: '',
     password: '',
     clear_password: false,
   })
@@ -312,6 +325,8 @@ export default function SettingsPage(): JSX.Element {
   const [calendarSaving, setCalendarSaving] = useState(false)
   const [calendarError, setCalendarError] = useState<string | null>(null)
   const [calendarHasPassword, setCalendarHasPassword] = useState(false)
+  const [calendarTesting, setCalendarTesting] = useState(false)
+  const [calendarTestStatus, setCalendarTestStatus] = useState<StatusMessage | null>(null)
   const templateMenuRef = useRef<HTMLDivElement | null>(null)
 
   const {
@@ -385,10 +400,13 @@ export default function SettingsPage(): JSX.Element {
         calendar_name: settings.calendar_name ?? '',
         timezone: settings.timezone ?? 'Europe/Berlin',
         processed_tag: settings.processed_tag ?? 'Termin bearbeitet',
+        source_folders: settings.source_folders?.join('\n') ?? '',
+        processed_folder: settings.processed_folder ?? '',
         password: '',
         clear_password: false,
       })
       setCalendarError(null)
+      setCalendarTestStatus(null)
     } catch (err) {
       setCalendarError(
         err instanceof Error ? err.message : 'Kalenderkonfiguration konnte nicht geladen werden.',
@@ -556,6 +574,16 @@ export default function SettingsPage(): JSX.Element {
       return true
     }
     if (calendarDraft.processed_tag.trim() !== (calendarConfig.processed_tag ?? '').trim()) {
+      return true
+    }
+    const draftFolders = parseList(calendarDraft.source_folders)
+    const storedFolders = normalizeList(
+      (calendarConfig.source_folders ?? []).map(folder => folder.trim()),
+    )
+    if (!sameStringLists(draftFolders, storedFolders)) {
+      return true
+    }
+    if (calendarDraft.processed_folder.trim() !== (calendarConfig.processed_folder ?? '').trim()) {
       return true
     }
     if (calendarDraft.password.trim().length > 0 || calendarDraft.clear_password) {
@@ -861,6 +889,8 @@ export default function SettingsPage(): JSX.Element {
       setStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
       return
     }
+    const sourceFolders = parseList(calendarDraft.source_folders)
+    const processedFolder = calendarDraft.processed_folder.trim()
     setCalendarSaving(true)
     try {
       const payload: CalendarSettingsUpdateRequest = {
@@ -870,6 +900,8 @@ export default function SettingsPage(): JSX.Element {
         calendar_name: calendarDraft.calendar_name.trim(),
         timezone: trimmedTimezone,
         processed_tag: trimmedProcessedTag,
+        source_folders: sourceFolders,
+        processed_folder: processedFolder,
       }
       const trimmedPassword = calendarDraft.password.trim()
       if (trimmedPassword && !calendarDraft.clear_password) {
@@ -888,11 +920,14 @@ export default function SettingsPage(): JSX.Element {
         calendar_name: updated.calendar_name ?? '',
         timezone: updated.timezone ?? 'Europe/Berlin',
         processed_tag: updated.processed_tag ?? 'Termin bearbeitet',
+        source_folders: updated.source_folders?.join('\n') ?? '',
+        processed_folder: updated.processed_folder ?? '',
         password: '',
         clear_password: false,
       })
       setStatus({ kind: 'success', message: 'Kalenderkonfiguration gespeichert.' })
       setCalendarError(null)
+      setCalendarTestStatus(null)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Kalenderkonfiguration konnte nicht gespeichert werden.'
@@ -902,6 +937,69 @@ export default function SettingsPage(): JSX.Element {
       setCalendarSaving(false)
     }
   }, [calendarDraft])
+
+  const handleCalendarTest = useCallback(async () => {
+    const trimmedUrl = calendarDraft.caldav_url.trim()
+    const trimmedUser = calendarDraft.username.trim()
+    const trimmedCalendar = calendarDraft.calendar_name.trim()
+    const trimmedPassword = calendarDraft.password.trim()
+    const missing: string[] = []
+    if (!trimmedUrl) {
+      missing.push('CalDAV-URL')
+    }
+    if (!trimmedUser) {
+      missing.push('Benutzername')
+    }
+    if (!trimmedCalendar) {
+      missing.push('Kalendername')
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte fülle folgende Felder aus: ' : 'Bitte fülle folgendes Feld aus: '
+      setCalendarTestStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    setCalendarTestStatus(null)
+    setCalendarTesting(true)
+    try {
+      const payload: CalendarConnectionTestRequest = {
+        caldav_url: trimmedUrl,
+        username: trimmedUser,
+        calendar_name: trimmedCalendar,
+      }
+      if (trimmedPassword && !calendarDraft.clear_password) {
+        payload.password = trimmedPassword
+      } else if (calendarHasPassword && !calendarDraft.clear_password) {
+        payload.use_stored_password = true
+      }
+      const response = await testCalendarConnection(payload)
+      const message =
+        response.message ??
+        (response.ok ? 'Verbindung erfolgreich getestet.' : 'Verbindungstest fehlgeschlagen.')
+      setCalendarTestStatus({ kind: response.ok ? 'success' : 'error', message })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Verbindungstest fehlgeschlagen.'
+      setCalendarTestStatus({ kind: 'error', message })
+    } finally {
+      setCalendarTesting(false)
+    }
+  }, [
+    calendarDraft.caldav_url,
+    calendarDraft.username,
+    calendarDraft.calendar_name,
+    calendarDraft.password,
+    calendarDraft.clear_password,
+    calendarHasPassword,
+  ])
+
+  useEffect(() => {
+    setCalendarTestStatus(null)
+  }, [
+    calendarDraft.caldav_url,
+    calendarDraft.username,
+    calendarDraft.calendar_name,
+    calendarDraft.password,
+    calendarDraft.clear_password,
+  ])
 
   return (
     <div className="app-shell">
@@ -913,8 +1011,11 @@ export default function SettingsPage(): JSX.Element {
           </div>
         </div>
         <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
+          <NavLink to="/mail" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            E-Mail-Dashboard
+          </NavLink>
+          <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Kalenderdashboard
           </NavLink>
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
@@ -1518,6 +1619,36 @@ export default function SettingsPage(): JSX.Element {
                     />
                   </label>
                   <label>
+                    <span>IMAP-Ordner für Kalenderscan</span>
+                    <textarea
+                      value={calendarDraft.source_folders}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, source_folders: event.target.value }))
+                      }
+                      placeholder={'INBOX/Kalender\nINBOX/Termine'}
+                      rows={3}
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      Ein Ordner pro Zeile. Leer lassen, um die überwachten Ordner zu verwenden.
+                    </small>
+                  </label>
+                  <label>
+                    <span>Ordner für bearbeitete Termine</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.processed_folder}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, processed_folder: event.target.value }))
+                      }
+                      placeholder="z. B. Archiv/Kalender"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      Nach dem Import verschobene Terminmails landen in diesem Ordner. Leer lassen, um sie nicht zu bewegen.
+                    </small>
+                  </label>
+                  <label>
                     <span>Passwort</span>
                     <input
                       type="password"
@@ -1553,6 +1684,19 @@ export default function SettingsPage(): JSX.Element {
                   </label>
                 </div>
                 <div className="config-actions">
+                  {calendarTestStatus && (
+                    <div className={`status-banner ${calendarTestStatus.kind} inline`}>
+                      {calendarTestStatus.message}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleCalendarTest()}
+                    disabled={calendarLoading || calendarSaving || calendarTesting}
+                  >
+                    {calendarTesting ? 'Teste Verbindung…' : 'Verbindung testen'}
+                  </button>
                   <button
                     type="button"
                     className="ghost"

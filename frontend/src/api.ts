@@ -113,9 +113,36 @@ export interface CalendarScanSummary {
   errors: string[]
 }
 
-export interface CalendarScanResult {
+export interface CalendarAutoScanStatus {
+  active: boolean
+  folders: string[]
+  poll_interval: number | null
+  last_started_at: string | null
+  last_finished_at: string | null
+  last_error: string | null
+  last_summary: CalendarScanSummary | null
+}
+
+export interface CalendarManualScanStatus {
+  active: boolean
+  folders: string[]
+  started_at: string | null
+  finished_at: string | null
+  cancelled: boolean
+  last_error: string | null
+  last_summary: CalendarScanSummary | null
+}
+
+export interface CalendarScanStatus {
+  auto: CalendarAutoScanStatus
+  manual: CalendarManualScanStatus
+}
+
+export interface CalendarScanResponse {
   overview: CalendarOverview
-  scan: CalendarScanSummary
+  scan: CalendarScanSummary | null
+  cancelled: boolean
+  status: CalendarScanStatus
 }
 
 export interface CalendarImportResult {
@@ -130,6 +157,8 @@ export interface CalendarSettings {
   calendar_name: string
   timezone: string
   processed_tag: string
+  source_folders: string[]
+  processed_folder: string
   has_password: boolean
 }
 
@@ -140,8 +169,38 @@ export interface CalendarSettingsUpdateRequest {
   calendar_name: string
   timezone: string
   processed_tag: string
+  source_folders: string[]
+  processed_folder: string
   password?: string | null
   clear_password?: boolean
+}
+
+export interface CalendarScanStartResponse {
+  started: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarScanStopResponse {
+  stopped: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarScanCancelResponse {
+  cancelled: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarConnectionTestRequest {
+  caldav_url?: string
+  username?: string
+  password?: string | null
+  calendar_name?: string
+  use_stored_password?: boolean
+}
+
+export interface CalendarConnectionTestResponse {
+  ok: boolean
+  message?: string | null
 }
 
 export interface TagExample {
@@ -564,8 +623,36 @@ export async function getCalendarOverview(): Promise<CalendarOverview> {
   return request<CalendarOverview>('/api/calendar/overview')
 }
 
-export async function scanCalendarMailbox(): Promise<CalendarScanResult> {
-  return request<CalendarScanResult>('/api/calendar/scan', { method: 'POST' })
+export async function getCalendarScanStatus(): Promise<CalendarScanStatus> {
+  return request<CalendarScanStatus>('/api/calendar/scan/status')
+}
+
+export interface CalendarScanOptions {
+  folders?: string[]
+}
+
+export async function startCalendarAutoScan(options?: CalendarScanOptions): Promise<CalendarScanStartResponse> {
+  const payload = options?.folders && options.folders.length > 0 ? { folders: options.folders } : {}
+  return request<CalendarScanStartResponse>('/api/calendar/scan/start', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function stopCalendarAutoScan(): Promise<CalendarScanStopResponse> {
+  return request<CalendarScanStopResponse>('/api/calendar/scan/stop', { method: 'POST' })
+}
+
+export async function cancelCalendarRescan(): Promise<CalendarScanCancelResponse> {
+  return request<CalendarScanCancelResponse>('/api/calendar/scan/cancel', { method: 'POST' })
+}
+
+export async function runCalendarScan(options?: CalendarScanOptions): Promise<CalendarScanResponse> {
+  const payload = options?.folders && options.folders.length > 0 ? { folders: options.folders } : {}
+  return request<CalendarScanResponse>('/api/calendar/scan', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function importCalendarEvent(payload: { event_id: number }): Promise<CalendarImportResult> {
@@ -584,6 +671,15 @@ export async function updateCalendarSettings(
 ): Promise<CalendarSettings> {
   return request<CalendarSettings>('/api/calendar/config', {
     method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function testCalendarConnection(
+  payload: CalendarConnectionTestRequest,
+): Promise<CalendarConnectionTestResponse> {
+  return request<CalendarConnectionTestResponse>('/api/calendar/config/test', {
+    method: 'POST',
     body: JSON.stringify(payload),
   })
 }
