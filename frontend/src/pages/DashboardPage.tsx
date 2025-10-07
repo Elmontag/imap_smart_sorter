@@ -476,66 +476,68 @@ export default function DashboardPage(): JSX.Element {
             {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
-        <div className="analysis-top">
-          <div className="analysis-canvas">
+        <div className="analysis-bar">
+          <div className="analysis-bar-main">
             <div className="analysis-status">
               <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
               <div className="analysis-status-text">
                 <span className="label">Analyse</span>
                 <strong>{scanSummary.statusLabel}</strong>
               </div>
-              <dl className="analysis-meta">
-                <div>
-                  <dt>Ordner</dt>
-                  <dd>{scanSummary.folderLabel}</dd>
-                </div>
-                <div>
-                  <dt>Intervall</dt>
-                  <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
-                </div>
-                <div>
-                  <dt>Einmalanalyse</dt>
-                  <dd>{manualMetaLabel}</dd>
-                </div>
-                <div>
-                  <dt>Letzter Abschluss</dt>
-                  <dd>{scanSummary.lastFinished ?? '–'}</dd>
-                </div>
-                <div>
-                  <dt>Ergebnis</dt>
-                  <dd>{scanSummary.resultLabel ?? '–'}</dd>
-                </div>
-              </dl>
-              {analysisFootEntries.length > 0 && <div className="analysis-foot">{analysisFootEntries}</div>}
             </div>
-            <div className="analysis-actions">
-              <button
-                type="button"
-                className="ghost"
-                onClick={handleRescan}
-                disabled={manualActive || autoActive || scanBusy}
-              >
-                {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={handleStartScan}
-                disabled={scanBusy || autoActive || manualActive}
-              >
-                {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={handleStopScan}
-                disabled={scanBusy || (!autoActive && !manualActive)}
-              >
-                {scanBusy && (autoActive || manualActive) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
-              </button>
-            </div>
+            <dl className="analysis-bar-meta">
+              <div>
+                <dt>Ordner</dt>
+                <dd>{scanSummary.folderLabel}</dd>
+              </div>
+              <div>
+                <dt>Intervall</dt>
+                <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
+              </div>
+              <div>
+                <dt>Einmalanalyse</dt>
+                <dd>{manualMetaLabel}</dd>
+              </div>
+              <div>
+                <dt>Letzter Abschluss</dt>
+                <dd>{scanSummary.lastFinished ?? '–'}</dd>
+              </div>
+              <div>
+                <dt>Ergebnis</dt>
+                <dd>{scanSummary.resultLabel ?? '–'}</dd>
+              </div>
+            </dl>
+            {analysisFootEntries.length > 0 && (
+              <div className="analysis-bar-foot">{analysisFootEntries}</div>
+            )}
           </div>
-        )}
+          <div className="analysis-bar-actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleRescan}
+              disabled={manualActive || autoActive || scanBusy}
+            >
+              {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={handleStartScan}
+              disabled={scanBusy || autoActive || manualActive}
+            >
+              {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleStopScan}
+              disabled={scanBusy || (!autoActive && !manualActive)}
+            >
+              {scanBusy && (autoActive || manualActive) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
+            </button>
+          </div>
+        </div>
       </header>
       {dashboardView === 'mail' ? (
         <>
@@ -667,59 +669,59 @@ export default function DashboardPage(): JSX.Element {
                   {suggestionStats && (
                     <div className="suggestions-metrics">
                       <div className="suggestion-metric open">
-                    <span className="label">Zu bearbeiten</span>
-                    <strong>{suggestionStats.openCount}</strong>
-                    <span className="muted">offene Nachrichten</span>
+                        <span className="label">Zu bearbeiten</span>
+                        <strong>{suggestionStats.openCount}</strong>
+                        <span className="muted">offene Nachrichten</span>
+                      </div>
+                      <div className="suggestion-metric processed">
+                        <span className="label">Bereits bearbeitet</span>
+                        <strong>{suggestionStats.decidedCount}</strong>
+                        <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
+                      </div>
+                      <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
+                        <span className="label">Fehler</span>
+                        <strong>{suggestionStats.errorCount}</strong>
+                        <span className="muted">Mails mit Fehlern</span>
+                      </div>
+                    </div>
+                  )}
+                  {loading && <div className="placeholder">Bitte warten…</div>}
+                  {!loading && !suggestions.length && (
+                    <div className="placeholder">
+                      {suggestionScope === 'open'
+                        ? 'Super! Alles abgearbeitet.'
+                        : 'Es liegen noch keine analysierten Vorschläge vor.'}
+                    </div>
+                  )}
+                  {!loading && suggestions.length > 0 && (
+                    <ul className="suggestion-list">
+                      {suggestions.map((item: Suggestion) => (
+                        <SuggestionCard
+                          key={item.message_uid}
+                          suggestion={item}
+                          onActionComplete={handleSuggestionUpdate}
+                          tagSlots={appConfig?.tag_slots}
+                          availableFolders={availableFolders}
+                          onFolderCreated={handleFolderCreated}
+                          analysisModule={analysisModule}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              ) : (
+                <section className="suggestions">
+                  <div className="suggestions-header">
+                    <h2>Keine KI-Vorschläge im Statischen Modul</h2>
                   </div>
-                  <div className="suggestion-metric processed">
-                    <span className="label">Bereits bearbeitet</span>
-                    <strong>{suggestionStats.decidedCount}</strong>
-                    <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
+                  <div className="placeholder">
+                    Im Modul „Statisch“ werden neue Nachrichten ausschließlich über Keyword-Regeln verarbeitet. Für manuelle
+                    Entscheidungen gibt es daher keine Vorschlagsliste.
                   </div>
-                  <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
-                    <span className="label">Fehler</span>
-                    <strong>{suggestionStats.errorCount}</strong>
-                    <span className="muted">Mails mit Fehlern</span>
-                  </div>
-                </div>
+                </section>
               )}
-              {loading && <div className="placeholder">Bitte warten…</div>}
-              {!loading && !suggestions.length && (
-                <div className="placeholder">
-                  {suggestionScope === 'open'
-                    ? 'Super! Alles abgearbeitet.'
-                    : 'Es liegen noch keine analysierten Vorschläge vor.'}
-                </div>
-              )}
-              {!loading && suggestions.length > 0 && (
-                <ul className="suggestion-list">
-                  {suggestions.map((item: Suggestion) => (
-                    <SuggestionCard
-                      key={item.message_uid}
-                      suggestion={item}
-                      onActionComplete={handleSuggestionUpdate}
-                      tagSlots={appConfig?.tag_slots}
-                      availableFolders={availableFolders}
-                      onFolderCreated={handleFolderCreated}
-                      analysisModule={analysisModule}
-                    />
-                  ))}
-                </ul>
-              )}
-            </section>
-          ) : (
-            <section className="suggestions">
-              <div className="suggestions-header">
-                <h2>Keine KI-Vorschläge im Statischen Modul</h2>
-              </div>
-              <div className="placeholder">
-                Im Modul „Statisch“ werden neue Nachrichten ausschließlich über Keyword-Regeln verarbeitet. Für manuelle
-                Entscheidungen gibt es daher keine Vorschlagsliste.
-              </div>
-            </section>
-          )}
-        </main>
-      </div>
+            </main>
+          </div>
         </>
       ) : (
         <CalendarDashboard />
