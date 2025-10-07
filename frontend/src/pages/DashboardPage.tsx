@@ -476,8 +476,11 @@ export default function DashboardPage(): JSX.Element {
           </div>
         </div>
         <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
+          <NavLink to="/mail" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            E-Mail-Dashboard
+          </NavLink>
+          <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Kalenderdashboard
           </NavLink>
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen

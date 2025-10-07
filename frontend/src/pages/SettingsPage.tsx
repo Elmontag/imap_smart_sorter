@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   AnalysisModule,
   KeywordFilterConfig,
@@ -9,8 +9,14 @@ import {
   MoveMode,
   OllamaModelPurpose,
   getKeywordFilters,
+  getCalendarSettings,
   updateKeywordFilters,
   updateAppConfig,
+  updateCalendarSettings,
+  CalendarSettings,
+  CalendarSettingsUpdateRequest,
+  CalendarConnectionTestRequest,
+  testCalendarConnection,
 } from '../api'
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
 import CatalogEditor from '../components/CatalogEditor'
@@ -81,7 +87,26 @@ const normalizeList = (values: string[]): string[] => {
 
 const parseList = (value: string): string[] => normalizeList(value.split(/[\n,]+/))
 
-type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general'
+const sameStringLists = (a: string[], b: string[]): boolean => {
+  if (a.length !== b.length) {
+    return false
+  }
+  return a.every((value, index) => value === b[index])
+}
+
+type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general' | 'calendar'
+
+const settingsTabs: SettingsTab[] = [
+  'staticRules',
+  'catalogFolders',
+  'catalogTags',
+  'analysis',
+  'general',
+  'calendar',
+]
+
+const isSettingsTab = (value: string | null): value is SettingsTab =>
+  Boolean(value) && (settingsTabs as readonly string[]).includes(value)
 
 type RuleDraft = EditableRuleDraft
 type TemplateDraft = EditableRuleDraft
@@ -100,6 +125,19 @@ interface ConfigDraft {
   protectedTag: string
   processedTag: string
   aiTagPrefix: string
+}
+
+interface CalendarDraft {
+  enabled: boolean
+  caldav_url: string
+  username: string
+  calendar_name: string
+  timezone: string
+  processed_tag: string
+  source_folders: string
+  processed_folder: string
+  password: string
+  clear_password: boolean
 }
 const defaultTemplateConfigs: KeywordFilterRuleConfig[] = [
   {
@@ -240,7 +278,14 @@ const modelProgressLabel = (
 }
 
 export default function SettingsPage(): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('staticRules')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const tabFromQuery = useMemo<SettingsTab>(() => {
+    const params = new URLSearchParams(location.search)
+    const requested = params.get('tab')
+    return isSettingsTab(requested) ? requested : 'staticRules'
+  }, [location.search])
+  const [activeTab, setActiveTab] = useState<SettingsTab>(tabFromQuery)
   const [ruleDrafts, setRuleDrafts] = useState<RuleDraft[]>([])
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null)
   const [filtersLoading, setFiltersLoading] = useState(true)
@@ -263,6 +308,25 @@ export default function SettingsPage(): JSX.Element {
   })
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
+  const [calendarConfig, setCalendarConfig] = useState<CalendarSettings | null>(null)
+  const [calendarDraft, setCalendarDraft] = useState<CalendarDraft>({
+    enabled: false,
+    caldav_url: '',
+    username: '',
+    calendar_name: '',
+    timezone: 'Europe/Berlin',
+    processed_tag: 'Termin bearbeitet',
+    source_folders: '',
+    processed_folder: '',
+    password: '',
+    clear_password: false,
+  })
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [calendarSaving, setCalendarSaving] = useState(false)
+  const [calendarError, setCalendarError] = useState<string | null>(null)
+  const [calendarHasPassword, setCalendarHasPassword] = useState(false)
+  const [calendarTesting, setCalendarTesting] = useState(false)
+  const [calendarTestStatus, setCalendarTestStatus] = useState<StatusMessage | null>(null)
   const templateMenuRef = useRef<HTMLDivElement | null>(null)
 
   const {
@@ -292,6 +356,22 @@ export default function SettingsPage(): JSX.Element {
   const [pullPurpose, setPullPurpose] = useState<OllamaModelPurpose>('classifier')
   const [modelActionFeedback, setModelActionFeedback] = useState<StatusMessage | null>(null)
 
+  useEffect(() => {
+    if (tabFromQuery !== activeTab) {
+      setActiveTab(tabFromQuery)
+    }
+  }, [tabFromQuery, activeTab])
+
+  const handleTabChange = useCallback(
+    (next: SettingsTab) => {
+      setActiveTab(next)
+      const params = new URLSearchParams(location.search)
+      params.set('tab', next)
+      navigate({ pathname: location.pathname, search: params.toString() }, { replace: true })
+    },
+    [location.pathname, location.search, navigate],
+  )
+
   const loadFilters = useCallback(async () => {
     setFiltersLoading(true)
     try {
@@ -307,9 +387,39 @@ export default function SettingsPage(): JSX.Element {
     }
   }, [])
 
+  const loadCalendarConfig = useCallback(async () => {
+    setCalendarLoading(true)
+    try {
+      const settings = await getCalendarSettings()
+      setCalendarConfig(settings)
+      setCalendarHasPassword(Boolean(settings.has_password))
+      setCalendarDraft({
+        enabled: settings.enabled,
+        caldav_url: settings.caldav_url ?? '',
+        username: settings.username ?? '',
+        calendar_name: settings.calendar_name ?? '',
+        timezone: settings.timezone ?? 'Europe/Berlin',
+        processed_tag: settings.processed_tag ?? 'Termin bearbeitet',
+        source_folders: settings.source_folders?.join('\n') ?? '',
+        processed_folder: settings.processed_folder ?? '',
+        password: '',
+        clear_password: false,
+      })
+      setCalendarError(null)
+      setCalendarTestStatus(null)
+    } catch (err) {
+      setCalendarError(
+        err instanceof Error ? err.message : 'Kalenderkonfiguration konnte nicht geladen werden.',
+      )
+    } finally {
+      setCalendarLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     void loadFilters()
-  }, [loadFilters])
+    void loadCalendarConfig()
+  }, [loadFilters, loadCalendarConfig])
 
   useEffect(() => {
     setTemplateMenuOpen(false)
@@ -443,6 +553,44 @@ export default function SettingsPage(): JSX.Element {
       configDraft.aiTagPrefix.trim() !== (appConfig.ai_tag_prefix ?? '').trim()
     )
   }, [appConfig, configDraft])
+
+  const calendarDirty = useMemo(() => {
+    if (!calendarConfig) {
+      return false
+    }
+    if (calendarDraft.enabled !== calendarConfig.enabled) {
+      return true
+    }
+    if (calendarDraft.caldav_url.trim() !== (calendarConfig.caldav_url ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.username.trim() !== (calendarConfig.username ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.calendar_name.trim() !== (calendarConfig.calendar_name ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.timezone.trim() !== (calendarConfig.timezone ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.processed_tag.trim() !== (calendarConfig.processed_tag ?? '').trim()) {
+      return true
+    }
+    const draftFolders = parseList(calendarDraft.source_folders)
+    const storedFolders = normalizeList(
+      (calendarConfig.source_folders ?? []).map(folder => folder.trim()),
+    )
+    if (!sameStringLists(draftFolders, storedFolders)) {
+      return true
+    }
+    if (calendarDraft.processed_folder.trim() !== (calendarConfig.processed_folder ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.password.trim().length > 0 || calendarDraft.clear_password) {
+      return true
+    }
+    return false
+  }, [calendarConfig, calendarDraft])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
@@ -713,6 +861,146 @@ export default function SettingsPage(): JSX.Element {
     }
   }, [configDraft, refreshAppConfig])
 
+  const handleCalendarSave = useCallback(async () => {
+    const trimmedTimezone = calendarDraft.timezone.trim()
+    const trimmedProcessedTag = calendarDraft.processed_tag.trim()
+    if (!trimmedTimezone) {
+      setStatus({ kind: 'error', message: 'Die Zeitzone darf nicht leer sein.' })
+      return
+    }
+    if (!trimmedProcessedTag) {
+      setStatus({ kind: 'error', message: 'Bitte gib einen Tag für importierte Termine an.' })
+      return
+    }
+    const missing: string[] = []
+    if (calendarDraft.enabled) {
+      if (!calendarDraft.caldav_url.trim()) {
+        missing.push('CalDAV-URL')
+      }
+      if (!calendarDraft.username.trim()) {
+        missing.push('Benutzername')
+      }
+      if (!calendarDraft.calendar_name.trim()) {
+        missing.push('Kalendername')
+      }
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte fülle folgende Felder aus: ' : 'Bitte fülle folgendes Feld aus: '
+      setStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    const sourceFolders = parseList(calendarDraft.source_folders)
+    const processedFolder = calendarDraft.processed_folder.trim()
+    setCalendarSaving(true)
+    try {
+      const payload: CalendarSettingsUpdateRequest = {
+        enabled: calendarDraft.enabled,
+        caldav_url: calendarDraft.caldav_url.trim(),
+        username: calendarDraft.username.trim(),
+        calendar_name: calendarDraft.calendar_name.trim(),
+        timezone: trimmedTimezone,
+        processed_tag: trimmedProcessedTag,
+        source_folders: sourceFolders,
+        processed_folder: processedFolder,
+      }
+      const trimmedPassword = calendarDraft.password.trim()
+      if (trimmedPassword && !calendarDraft.clear_password) {
+        payload.password = trimmedPassword
+      }
+      if (calendarDraft.clear_password) {
+        payload.clear_password = true
+      }
+      const updated = await updateCalendarSettings(payload)
+      setCalendarConfig(updated)
+      setCalendarHasPassword(Boolean(updated.has_password))
+      setCalendarDraft({
+        enabled: updated.enabled,
+        caldav_url: updated.caldav_url ?? '',
+        username: updated.username ?? '',
+        calendar_name: updated.calendar_name ?? '',
+        timezone: updated.timezone ?? 'Europe/Berlin',
+        processed_tag: updated.processed_tag ?? 'Termin bearbeitet',
+        source_folders: updated.source_folders?.join('\n') ?? '',
+        processed_folder: updated.processed_folder ?? '',
+        password: '',
+        clear_password: false,
+      })
+      setStatus({ kind: 'success', message: 'Kalenderkonfiguration gespeichert.' })
+      setCalendarError(null)
+      setCalendarTestStatus(null)
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Kalenderkonfiguration konnte nicht gespeichert werden.'
+      setStatus({ kind: 'error', message })
+      setCalendarError(message)
+    } finally {
+      setCalendarSaving(false)
+    }
+  }, [calendarDraft])
+
+  const handleCalendarTest = useCallback(async () => {
+    const trimmedUrl = calendarDraft.caldav_url.trim()
+    const trimmedUser = calendarDraft.username.trim()
+    const trimmedCalendar = calendarDraft.calendar_name.trim()
+    const trimmedPassword = calendarDraft.password.trim()
+    const missing: string[] = []
+    if (!trimmedUrl) {
+      missing.push('CalDAV-URL')
+    }
+    if (!trimmedUser) {
+      missing.push('Benutzername')
+    }
+    if (!trimmedCalendar) {
+      missing.push('Kalendername')
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte fülle folgende Felder aus: ' : 'Bitte fülle folgendes Feld aus: '
+      setCalendarTestStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    setCalendarTestStatus(null)
+    setCalendarTesting(true)
+    try {
+      const payload: CalendarConnectionTestRequest = {
+        caldav_url: trimmedUrl,
+        username: trimmedUser,
+        calendar_name: trimmedCalendar,
+      }
+      if (trimmedPassword && !calendarDraft.clear_password) {
+        payload.password = trimmedPassword
+      } else if (calendarHasPassword && !calendarDraft.clear_password) {
+        payload.use_stored_password = true
+      }
+      const response = await testCalendarConnection(payload)
+      const message =
+        response.message ??
+        (response.ok ? 'Verbindung erfolgreich getestet.' : 'Verbindungstest fehlgeschlagen.')
+      setCalendarTestStatus({ kind: response.ok ? 'success' : 'error', message })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Verbindungstest fehlgeschlagen.'
+      setCalendarTestStatus({ kind: 'error', message })
+    } finally {
+      setCalendarTesting(false)
+    }
+  }, [
+    calendarDraft.caldav_url,
+    calendarDraft.username,
+    calendarDraft.calendar_name,
+    calendarDraft.password,
+    calendarDraft.clear_password,
+    calendarHasPassword,
+  ])
+
+  useEffect(() => {
+    setCalendarTestStatus(null)
+  }, [
+    calendarDraft.caldav_url,
+    calendarDraft.username,
+    calendarDraft.calendar_name,
+    calendarDraft.password,
+    calendarDraft.clear_password,
+  ])
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -723,8 +1011,11 @@ export default function SettingsPage(): JSX.Element {
           </div>
         </div>
         <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
+          <NavLink to="/mail" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            E-Mail-Dashboard
+          </NavLink>
+          <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Kalenderdashboard
           </NavLink>
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
@@ -756,7 +1047,7 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'staticRules'}
             className={`settings-tab ${activeTab === 'staticRules' ? 'active' : ''}`}
-            onClick={() => setActiveTab('staticRules')}
+            onClick={() => handleTabChange('staticRules')}
           >
             Statische Regeln
           </button>
@@ -765,7 +1056,7 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'catalogFolders'}
             className={`settings-tab ${activeTab === 'catalogFolders' ? 'active' : ''}`}
-            onClick={() => setActiveTab('catalogFolders')}
+            onClick={() => handleTabChange('catalogFolders')}
           >
             Ordnerkatalog
           </button>
@@ -774,7 +1065,7 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'catalogTags'}
             className={`settings-tab ${activeTab === 'catalogTags' ? 'active' : ''}`}
-            onClick={() => setActiveTab('catalogTags')}
+            onClick={() => handleTabChange('catalogTags')}
           >
             Tag-Slots
           </button>
@@ -783,16 +1074,25 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'analysis'}
             className={`settings-tab ${activeTab === 'analysis' ? 'active' : ''}`}
-            onClick={() => setActiveTab('analysis')}
+            onClick={() => handleTabChange('analysis')}
           >
             KI & Tags
           </button>
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === 'calendar'}
+            className={`settings-tab ${activeTab === 'calendar' ? 'active' : ''}`}
+            onClick={() => handleTabChange('calendar')}
+          >
+            Kalender
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === 'general'}
             className={`settings-tab ${activeTab === 'general' ? 'active' : ''}`}
-            onClick={() => setActiveTab('general')}
+            onClick={() => handleTabChange('general')}
           >
             Betrieb
           </button>
@@ -1231,6 +1531,189 @@ export default function SettingsPage(): JSX.Element {
                 ) : (
                   <div className="placeholder">Konfiguration wird geladen…</div>
                 )}
+              </section>
+          </div>
+        )}
+
+          {activeTab === 'calendar' && (
+            <div className="settings-section">
+              <section className="general-card">
+                <h2>CalDAV-Synchronisation</h2>
+                <p className="muted">
+                  Hinterlege Verbindungsdaten für den CalDAV-Kalender und definiere den IMAP-Tag, der nach dem Import gesetzt
+                  wird.
+                </p>
+                {calendarError && <div className="status-banner error">{calendarError}</div>}
+                <div className="config-grid">
+                  <label className="toggle-field">
+                    <span>Synchronisation aktiv</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={calendarDraft.enabled}
+                        onChange={event =>
+                          setCalendarDraft(current => ({ ...current, enabled: event.target.checked }))
+                        }
+                        disabled={calendarLoading || calendarSaving}
+                      />
+                      <span>{calendarDraft.enabled ? 'Aktiv' : 'Inaktiv'}</span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>CalDAV-URL</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.caldav_url}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, caldav_url: event.target.value }))
+                      }
+                      placeholder="https://cloud.example.org/remote.php/dav/calendars/user/termine/"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Benutzername</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.username}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, username: event.target.value }))
+                      }
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Kalendername / Pfad</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.calendar_name}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, calendar_name: event.target.value }))
+                      }
+                      placeholder="z. B. Termine"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Standard-Zeitzone</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.timezone}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, timezone: event.target.value }))
+                      }
+                      placeholder="Europe/Berlin"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>IMAP-Tag nach Import</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.processed_tag}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, processed_tag: event.target.value }))
+                      }
+                      placeholder="Termin bearbeitet"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>IMAP-Ordner für Kalenderscan</span>
+                    <textarea
+                      value={calendarDraft.source_folders}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, source_folders: event.target.value }))
+                      }
+                      placeholder={'INBOX/Kalender\nINBOX/Termine'}
+                      rows={3}
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      Ein Ordner pro Zeile. Leer lassen, um die überwachten Ordner zu verwenden.
+                    </small>
+                  </label>
+                  <label>
+                    <span>Ordner für bearbeitete Termine</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.processed_folder}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, processed_folder: event.target.value }))
+                      }
+                      placeholder="z. B. Archiv/Kalender"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      Nach dem Import verschobene Terminmails landen in diesem Ordner. Leer lassen, um sie nicht zu bewegen.
+                    </small>
+                  </label>
+                  <label>
+                    <span>Passwort</span>
+                    <input
+                      type="password"
+                      value={calendarDraft.password}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, password: event.target.value }))
+                      }
+                      placeholder={calendarHasPassword ? 'Passwort beibehalten' : 'Neues Passwort'}
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      {calendarHasPassword
+                        ? 'Leer lassen, um das vorhandene Passwort weiter zu nutzen.'
+                        : 'Trage hier das Passwort für den CalDAV-Zugang ein.'}
+                    </small>
+                  </label>
+                  <label className="toggle-field">
+                    <span>Passwort löschen</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={calendarDraft.clear_password}
+                        onChange={event =>
+                          setCalendarDraft(current => ({ ...current, clear_password: event.target.checked }))
+                        }
+                        disabled={calendarLoading || calendarSaving}
+                      />
+                      <span>{calendarDraft.clear_password ? 'Wird entfernt' : 'Beibehalten'}</span>
+                    </div>
+                    <small className="muted">
+                      Aktiviere diese Option, wenn du das gespeicherte Passwort zurücksetzen möchtest.
+                    </small>
+                  </label>
+                </div>
+                <div className="config-actions">
+                  {calendarTestStatus && (
+                    <div className={`status-banner ${calendarTestStatus.kind} inline`}>
+                      {calendarTestStatus.message}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleCalendarTest()}
+                    disabled={calendarLoading || calendarSaving || calendarTesting}
+                  >
+                    {calendarTesting ? 'Teste Verbindung…' : 'Verbindung testen'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void loadCalendarConfig()}
+                    disabled={calendarLoading || calendarSaving}
+                  >
+                    {calendarLoading ? 'Lade…' : 'Neu laden'}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={handleCalendarSave}
+                    disabled={!calendarDirty || calendarSaving}
+                  >
+                    {calendarSaving ? 'Speichere…' : 'Kalender speichern'}
+                  </button>
+                </div>
               </section>
             </div>
           )}
