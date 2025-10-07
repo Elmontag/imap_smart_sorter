@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Tuple
 
 from settings import S
-from database import get_classifier_model, get_mailbox_tags, get_mode_override
+from database import (
+    get_analysis_module_override,
+    get_classifier_model,
+    get_mailbox_tags,
+    get_mode_override,
+)
 
 
 def resolve_move_mode() -> str:
@@ -34,3 +39,12 @@ def resolve_mailbox_tags() -> Tuple[str | None, str | None, str | None]:
     processed = stored_processed if stored_processed is not None else (S.IMAP_PROCESSED_TAG or None)
     prefix = stored_prefix if stored_prefix is not None else (S.IMAP_AI_TAG_PREFIX or None)
     return protected, processed, prefix
+
+
+def resolve_analysis_module() -> str:
+    """Return the selected analysis module with persisted overrides."""
+
+    override = get_analysis_module_override()
+    if override:
+        return override
+    return S.ANALYSIS_MODULE

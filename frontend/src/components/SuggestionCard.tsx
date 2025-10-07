@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Suggestion, TagSlotConfig, createFolder, decide, decideProposal, moveOne } from '../api'
+import { AnalysisModule, Suggestion, TagSlotConfig, createFolder, decide, decideProposal, moveOne } from '../api'
 
 interface Props {
   suggestion: Suggestion
@@ -7,6 +7,7 @@ interface Props {
   tagSlots?: TagSlotConfig[]
   availableFolders?: string[]
   onFolderCreated?: (folder: string) => Promise<void> | void
+  analysisModule: AnalysisModule
 }
 
 type BusyState = 'simulate' | 'accept' | 'reject' | 'proposal-accept' | 'proposal-reject' | null
@@ -37,15 +38,8 @@ export default function SuggestionCard({
   tagSlots,
   availableFolders = [],
   onFolderCreated,
+  analysisModule,
 }: Props): JSX.Element {
-  const [target, setTarget] = useState<string>(fallbackTarget(suggestion))
-  const [busy, setBusy] = useState<BusyState>(null)
-  const [feedback, setFeedback] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [proposal, setProposal] = useState(suggestion.proposal ?? null)
-  const [creatingFolder, setCreatingFolder] = useState(false)
-  const [recentlyCreated, setRecentlyCreated] = useState<string[]>([])
-
   const statusInfo = useMemo((): { label: string; tone: StatusTone; detail: string | null } => {
     const baseStatus = (suggestion.status ?? 'open').toLowerCase()
     const moveStatus = (suggestion.move_status ?? '').toLowerCase()
@@ -89,11 +83,24 @@ export default function SuggestionCard({
     return { label: 'Offen', tone: 'open', detail: null }
   }, [suggestion.status, suggestion.move_status, suggestion.move_error])
 
+  const [target, setTarget] = useState<string>(fallbackTarget(suggestion))
+  const [busy, setBusy] = useState<BusyState>(null)
+  const [feedback, setFeedback] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [proposal, setProposal] = useState(suggestion.proposal ?? null)
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [recentlyCreated, setRecentlyCreated] = useState<string[]>([])
+  const [expanded, setExpanded] = useState(statusInfo.tone !== 'open')
+
   useEffect(() => {
     setTarget(fallbackTarget(suggestion))
     setProposal(suggestion.proposal ?? null)
     setRecentlyCreated([])
   }, [suggestion.message_uid, suggestion.proposal])
+
+  useEffect(() => {
+    setExpanded(statusInfo.tone !== 'open')
+  }, [suggestion.message_uid, statusInfo.tone])
 
   const effectiveFolders = useMemo(() => {
     const combined = [...availableFolders, ...recentlyCreated]
@@ -118,6 +125,7 @@ export default function SuggestionCard({
     return Number.isNaN(parsed.getTime()) ? suggestion.date : parsed.toLocaleString('de-DE')
   }, [suggestion.date])
 
+  const showAiContext = analysisModule !== 'STATIC'
   const topScore = suggestion.ranked?.[0]?.score ?? null
   const topReason = suggestion.ranked?.[0]?.reason ?? null
   const category = suggestion.category ?? null
@@ -145,6 +153,7 @@ export default function SuggestionCard({
   const hasAnyTagValues = tagCategories.some(item => item.value) || extraTags.length > 0
 
   const handleSimulate = async () => {
+    setExpanded(true)
     if (!target) {
       setError('Bitte zuerst einen Zielordner angeben.')
       return
@@ -168,6 +177,7 @@ export default function SuggestionCard({
   }
 
   const handleDecision = async (decision: 'accept' | 'reject') => {
+    setExpanded(true)
     if (!target && decision === 'accept') {
       setError('Zum Bestätigen wird ein Zielordner benötigt.')
       return
@@ -190,6 +200,7 @@ export default function SuggestionCard({
     if (!proposal) {
       return
     }
+    setExpanded(true)
     setBusy(accept ? 'proposal-accept' : 'proposal-reject')
     setFeedback(null)
     setError(null)
@@ -226,6 +237,7 @@ export default function SuggestionCard({
   }
 
   const handleCreateFolder = async () => {
+    setExpanded(true)
     const path = normalizedTarget
     if (!path) {
       setError('Bitte zuerst einen Zielordner angeben.')
@@ -255,141 +267,169 @@ export default function SuggestionCard({
     }
   }
 
-  const cardClass = statusInfo.tone === 'open' ? 'suggestion-card' : `suggestion-card state-${statusInfo.tone}`
+  const summarySubject = suggestion.subject || '(kein Betreff)'
+  const summaryMetaItems = [suggestion.from_addr, created].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  )
+  const sourceFolderLabel = suggestion.src_folder ? `Quelle: ${suggestion.src_folder}` : null
+  const itemClass = `suggestion-item tone-${statusInfo.tone}${expanded ? ' open' : ''}`
+  const toggleLabel = expanded ? 'Vorschlagsdetails ausblenden' : 'Vorschlagsdetails anzeigen'
 
   return (
-    <article className={cardClass}>
-      <header>
-        <div className="subject-row">
-          <div className="subject" title={suggestion.subject ?? undefined}>
-            {suggestion.subject || '(kein Betreff)'}
-          </div>
-          <span className={`suggestion-status ${statusInfo.tone}`}>{statusInfo.label}</span>
-        </div>
-        {suggestion.from_addr && <div className="meta">{suggestion.from_addr}</div>}
-        {created && <div className="meta">Empfangen: {created}</div>}
-        {suggestion.src_folder && <div className="badge">Quelle: {suggestion.src_folder}</div>}
-        {categoryLabel && (
-          <div className="category-info">
-            <span className="category-label">Überbegriff:</span>
-            <strong>{categoryLabel}</strong>
-            {categoryConfidence !== null && (
-              <span className="category-confidence">· {(categoryConfidence * 100).toFixed(0)}%</span>
-            )}
-            {categoryMatch && <span className="category-match">→ {categoryMatch}</span>}
-            {categoryReason && <div className="category-reason">{categoryReason}</div>}
-          </div>
-        )}
-      </header>
-
-      {statusInfo.detail && (
-        <div className={`feedback ${statusInfo.tone === 'error' ? 'error' : 'info'}`}>{statusInfo.detail}</div>
-      )}
-
-      {topScore !== null && (
-        <div className="score">
-          Empfohlener Ordner: {suggestion.ranked?.[0]?.name ?? '–'} (Score {formatScore(topScore)})
-          {topReason && <span className="score-reason"> – {topReason}</span>}
-        </div>
-      )}
-
-      {suggestion.ranked && suggestion.ranked.length > 1 && (
-        <div className="alternatives" aria-label="Weitere Vorschläge">
-          {suggestion.ranked.slice(1).map(item => (
-            <span key={item.name} className="alt-badge">
-              {item.name} · {formatScore(item.score)}
-              {item.reason ? ` – ${item.reason}` : ''}
+    <li className={itemClass}>
+      <div className="suggestion-summary">
+        <button
+          type="button"
+          className="summary-toggle"
+          onClick={() => setExpanded(current => !current)}
+          aria-expanded={expanded}
+          aria-label={toggleLabel}
+        >
+          <div className="summary-main">
+            <span className="summary-subject" title={suggestion.subject ?? undefined}>
+              {summarySubject}
             </span>
-          ))}
-        </div>
-      )}
-
-      {hasTagField && (
-        <div className="tag-list" aria-label="Erkannte Tag-Kategorien">
-          {tagCategories.map(item => (
-            <span key={item.label} className={`tag-badge${item.value ? '' : ' empty'}`}>
-              <span className="tag-label">{item.label}</span>
-              <strong>{item.value ?? '–'}</strong>
-            </span>
-          ))}
-          {extraTags.length > 0 && (
-            <div className="tag-extras" aria-label="Zusätzliche Kontext-Tags">
-              {extraTags.map(tag => (
-                <span key={tag} className="tag-extra">{tag}</span>
+            <span className={`suggestion-status ${statusInfo.tone}`}>{statusInfo.label}</span>
+          </div>
+          {(summaryMetaItems.length > 0 || sourceFolderLabel) && (
+            <div className="summary-meta">
+              {summaryMetaItems.map(item => (
+                <span key={item} className="summary-meta-item">
+                  {item}
+                </span>
               ))}
+              {sourceFolderLabel && <span className="summary-meta-item badge">{sourceFolderLabel}</span>}
             </div>
           )}
-          {!hasAnyTagValues && <span className="tag-hint">Noch keine konkreten Tags ermittelt.</span>}
-        </div>
-      )}
-
-      {proposal && (
-        <div className="proposal">
-          <div className="proposal-text">
-            Neuer Ordner-Vorschlag: <code>{proposal.full_path ?? `${proposal.parent}/${proposal.name}`}</code>
-            {proposal.reason ? ` · ${proposal.reason}` : ''}
-          </div>
-          {proposal.status === 'pending' && (
-            <div className="proposal-actions">
-              <button
-                type="button"
-                className="primary"
-                onClick={() => handleProposalDecision(true)}
-                disabled={busy !== null}
-              >
-                {busy === 'proposal-accept' ? 'Lege an…' : 'Ordner anlegen'}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => handleProposalDecision(false)}
-                disabled={busy !== null}
-              >
-                {busy === 'proposal-reject' ? 'Verwerfe…' : 'Vorschlag ablehnen'}
-              </button>
-            </div>
-          )}
-          {proposal.status && proposal.status !== 'pending' && (
-            <div className={`proposal-status ${proposal.status}`}>
-              {proposal.status === 'accepted' ? 'Ordner wurde angelegt.' : 'Vorschlag verworfen.'}
-            </div>
-          )}
-        </div>
-      )}
-
-      <label className={`target-input${targetExists ? '' : ' missing'}`}>
-        <span>Zielordner</span>
-        <input value={target} onChange={event => setTarget(event.target.value)} placeholder="Ordnerpfad" />
-      </label>
-
-      {!targetExists && (
-        <div className="target-warning" role="status">
-          <span>Dieser Ordner existiert noch nicht.</span>
-          <button
-            type="button"
-            className="ghost"
-            onClick={handleCreateFolder}
-            disabled={creatingFolder || !normalizedTarget}
-          >
-            {creatingFolder ? 'Lege an…' : 'Ordner erstellen'}
-          </button>
-        </div>
-      )}
-
-      <div className="actions">
-        <button type="button" onClick={handleSimulate} disabled={busy !== null}>
-          {busy === 'simulate' ? 'Prüfe…' : 'Simulation'}
-        </button>
-        <button type="button" className="primary" onClick={() => handleDecision('accept')} disabled={busy !== null}>
-          {busy === 'accept' ? 'Übernehme…' : 'Bestätigen'}
-        </button>
-        <button type="button" className="ghost" onClick={() => handleDecision('reject')} disabled={busy !== null}>
-          {busy === 'reject' ? 'Verwerfe…' : 'Ablehnen'}
         </button>
       </div>
 
-      {feedback && <div className="feedback success">{feedback}</div>}
-      {error && <div className="feedback error">{error}</div>}
-    </article>
+      {expanded && (
+        <div className="suggestion-details">
+          {statusInfo.detail && (
+            <div className={`status-hint ${statusInfo.tone === 'error' ? 'error' : 'info'}`}>
+              {statusInfo.detail}
+            </div>
+          )}
+
+          {showAiContext && categoryLabel && (
+            <div className="category-info">
+              <span className="category-label">Überbegriff:</span>
+              <strong>{categoryLabel}</strong>
+              {categoryConfidence !== null && (
+                <span className="category-confidence">· {(categoryConfidence * 100).toFixed(0)}%</span>
+              )}
+              {categoryMatch && <span className="category-match">→ {categoryMatch}</span>}
+              {categoryReason && <div className="category-reason">{categoryReason}</div>}
+            </div>
+          )}
+
+          {showAiContext && topScore !== null && (
+            <div className="score">
+              Empfohlener Ordner: {suggestion.ranked?.[0]?.name ?? '–'} (Score {formatScore(topScore)})
+              {topReason && <span className="score-reason"> – {topReason}</span>}
+            </div>
+          )}
+
+          {showAiContext && suggestion.ranked && suggestion.ranked.length > 1 && (
+            <div className="alternatives" aria-label="Weitere Vorschläge">
+              {suggestion.ranked.slice(1).map(item => (
+                <span key={item.name} className="alt-badge">
+                  {item.name} · {formatScore(item.score)}
+                  {item.reason ? ` – ${item.reason}` : ''}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {showAiContext && hasTagField && (
+            <div className="tag-list" aria-label="Erkannte Tag-Kategorien">
+              {tagCategories.map(item => (
+                <span key={item.label} className={`tag-badge${item.value ? '' : ' empty'}`}>
+                  <span className="tag-label">{item.label}</span>
+                  <strong>{item.value ?? '–'}</strong>
+                </span>
+              ))}
+              {extraTags.length > 0 && (
+                <div className="tag-extras" aria-label="Zusätzliche Kontext-Tags">
+                  {extraTags.map(tag => (
+                    <span key={tag} className="tag-extra">{tag}</span>
+                  ))}
+                </div>
+              )}
+              {!hasAnyTagValues && <span className="tag-hint">Noch keine konkreten Tags ermittelt.</span>}
+            </div>
+          )}
+
+          {proposal && (
+            <div className="proposal">
+              <div className="proposal-text">
+                Neuer Ordner-Vorschlag: <code>{proposal.full_path ?? `${proposal.parent}/${proposal.name}`}</code>
+                {proposal.reason ? ` · ${proposal.reason}` : ''}
+              </div>
+              {proposal.status === 'pending' && (
+                <div className="proposal-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => handleProposalDecision(true)}
+                    disabled={busy !== null}
+                  >
+                    {busy === 'proposal-accept' ? 'Lege an…' : 'Ordner anlegen'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => handleProposalDecision(false)}
+                    disabled={busy !== null}
+                  >
+                    {busy === 'proposal-reject' ? 'Verwerfe…' : 'Vorschlag ablehnen'}
+                  </button>
+                </div>
+              )}
+              {proposal.status && proposal.status !== 'pending' && (
+                <div className={`proposal-status ${proposal.status}`}>
+                  {proposal.status === 'accepted' ? 'Ordner wurde angelegt.' : 'Vorschlag verworfen.'}
+                </div>
+              )}
+            </div>
+          )}
+
+          <label className={`target-input${targetExists ? '' : ' missing'}`}>
+            <span>Zielordner</span>
+            <input value={target} onChange={event => setTarget(event.target.value)} placeholder="Ordnerpfad" />
+          </label>
+
+          {!targetExists && (
+            <div className="target-warning" role="status">
+              <span>Dieser Ordner existiert noch nicht.</span>
+              <button
+                type="button"
+                className="ghost"
+                onClick={handleCreateFolder}
+                disabled={creatingFolder || !normalizedTarget}
+              >
+                {creatingFolder ? 'Lege an…' : 'Ordner erstellen'}
+              </button>
+            </div>
+          )}
+
+          <div className="actions">
+            <button type="button" onClick={handleSimulate} disabled={busy !== null}>
+              {busy === 'simulate' ? 'Prüfe…' : 'Simulation'}
+            </button>
+            <button type="button" className="primary" onClick={() => handleDecision('accept')} disabled={busy !== null}>
+              {busy === 'accept' ? 'Übernehme…' : 'Bestätigen'}
+            </button>
+            <button type="button" className="ghost" onClick={() => handleDecision('reject')} disabled={busy !== null}>
+              {busy === 'reject' ? 'Verwerfe…' : 'Ablehnen'}
+            </button>
+          </div>
+
+          {feedback && <div className="feedback success">{feedback}</div>}
+          {error && <div className="feedback error">{error}</div>}
+        </div>
+      )}
+    </li>
   )
 }

@@ -38,6 +38,7 @@ class KeywordFilterRule:
     date_after: date | None
     date_before: date | None
     include_future_dates: bool
+    tag_future_dates: bool
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class KeywordMatchResult:
 
     rule: KeywordFilterRule
     matched_terms: tuple[str, ...]
+    content_dates: tuple[date, ...]
 
 
 def _load_raw_config() -> dict:
@@ -148,6 +150,7 @@ def get_filter_rules() -> tuple[KeywordFilterRule, ...]:
                 date_after=after,
                 date_before=before,
                 include_future_dates=include_future,
+                tag_future_dates=bool(entry.get("tag_future_dates")),
             )
         )
     return tuple(rules)
@@ -251,14 +254,15 @@ def evaluate_filters(
 ) -> KeywordMatchResult | None:
     """Return the first matching keyword filter or ``None`` if no rule applies."""
 
-    future_dates: tuple[date, ...] | None = None
+    extracted_dates: tuple[date, ...] | None = None
     for rule in get_filter_rules():
         if not rule.enabled:
             continue
-        if rule.include_future_dates:
-            if future_dates is None:
-                future_dates = _extract_dates(body)
-            content_dates = future_dates
+        use_dates = rule.include_future_dates or rule.tag_future_dates
+        if use_dates:
+            if extracted_dates is None:
+                extracted_dates = _extract_dates(body)
+            content_dates = extracted_dates
         else:
             content_dates = tuple()
         if not _date_in_range(rule, received, content_dates):
@@ -276,7 +280,7 @@ def evaluate_filters(
             if rule.match.mode == "any" and not matches:
                 continue
         result_terms = tuple(matches if matches else terms)
-        return KeywordMatchResult(rule=rule, matched_terms=result_terms)
+        return KeywordMatchResult(rule=rule, matched_terms=result_terms, content_dates=content_dates)
     return None
 
 

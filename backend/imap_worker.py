@@ -185,14 +185,30 @@ async def handle_message(
         processed_value = (processed_tag or "").strip()
         if processed_value:
             await asyncio.to_thread(add_message_tag, uid, target_folder, processed_value)
-        for tag in match.rule.tags:
+        extra_tags: list[str] = []
+        if match.rule.tag_future_dates and received_at:
+            base_date = received_at.date()
+            future_dates = sorted({candidate for candidate in match.content_dates if candidate > base_date})
+            extra_tags = [f"datum-{candidate.isoformat()}" for candidate in future_dates]
+        combined_tags: list[str] = []
+        seen_tags: set[str] = set()
+        for tag in [*match.rule.tags, *extra_tags]:
+            cleaned = tag.strip()
+            if not cleaned:
+                continue
+            key = cleaned.casefold()
+            if key in seen_tags:
+                continue
+            seen_tags.add(key)
+            combined_tags.append(cleaned)
+        for tag in combined_tags:
             await asyncio.to_thread(add_message_tag, uid, target_folder, tag)
         record_filter_hit(
             message_uid=uid,
             rule_name=match.rule.name,
             src_folder=src_folder,
             target_folder=target_folder,
-            applied_tags=match.rule.tags,
+            applied_tags=combined_tags,
             matched_terms=match.matched_terms,
             message_date=received_at,
         )
