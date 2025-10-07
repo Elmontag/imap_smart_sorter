@@ -47,10 +47,18 @@ const moduleLabels: Record<AnalysisModule, string> = {
   LLM_PURE: 'LLM Pure',
 }
 
+const normalizeFolders = (folders: string[]): string[] =>
+  Array.from(new Set(folders.map(folder => folder.trim()).filter(folder => folder.length > 0)))
+
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
   const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
-  const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
+  const {
+    data: pendingOverview,
+    loading: pendingLoading,
+    error: pendingError,
+    refresh: refreshPendingOverview,
+  } = usePendingOverview()
   const { data: appConfig, error: configError } = useAppConfig()
   const {
     data: filterActivity,
@@ -76,9 +84,10 @@ export default function DashboardPage(): JSX.Element {
     setFoldersLoading(true)
     try {
       const result = await getFolders()
+      const normalizedSelected = normalizeFolders(result.selected)
       setAvailableFolders([...result.available])
-      setSelectedFolders([...result.selected])
-      setFolderDraft([...result.selected])
+      setSelectedFolders([...normalizedSelected])
+      setFolderDraft([...normalizedSelected])
     } catch (err) {
       setStatus({ kind: 'error', message: `Ordnerliste konnte nicht geladen werden: ${toMessage(err)}` })
     } finally {
@@ -140,8 +149,8 @@ export default function DashboardPage(): JSX.Element {
   const handleStartScan = async () => {
     setScanBusy(true)
     try {
-      const folders = selectedFolders.length ? selectedFolders : undefined
-      const response = await startScan(folders)
+      const normalizedSelection = normalizeFolders(selectedFolders)
+      const response = await startScan(normalizedSelection.length ? normalizedSelection : undefined)
       setScanStatus(response.status)
       setStatus({
         kind: response.started ? 'success' : 'info',
@@ -152,6 +161,7 @@ export default function DashboardPage(): JSX.Element {
       setStatus({ kind: 'error', message: `Analyse konnte nicht gestartet werden: ${toMessage(err)}` })
     } finally {
       setScanBusy(false)
+      void refreshPendingOverview().catch(() => undefined)
     }
   }
 
@@ -179,14 +189,15 @@ export default function DashboardPage(): JSX.Element {
     } finally {
       setRescanBusy(false)
       setScanBusy(false)
+      void refreshPendingOverview().catch(() => undefined)
     }
   }
 
   const handleRescan = useCallback(async () => {
     setRescanBusy(true)
     try {
-      const folders = selectedFolders.length ? selectedFolders : undefined
-      const response = await rescan(folders)
+      const normalizedSelection = normalizeFolders(selectedFolders)
+      const response = await rescan(normalizedSelection.length ? normalizedSelection : undefined)
       if (!response.ok && response.cancelled) {
         setStatus({ kind: 'info', message: 'Einmalanalyse abgebrochen.' })
       } else if (!response.ok) {
@@ -204,25 +215,29 @@ export default function DashboardPage(): JSX.Element {
     } finally {
       setRescanBusy(false)
       await loadScanStatus()
+      void refreshPendingOverview().catch(() => undefined)
     }
-  }, [loadScanStatus, refresh, selectedFolders])
+  }, [loadScanStatus, refresh, refreshPendingOverview, selectedFolders])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
   const handleFolderSave = useCallback(async () => {
     setSavingFolders(true)
     try {
-      const response = await updateFolderSelection(folderDraft)
+      const normalizedDraft = normalizeFolders(folderDraft)
+      const response = await updateFolderSelection(normalizedDraft)
+      const normalizedSelected = normalizeFolders(response.selected)
       setAvailableFolders([...response.available])
-      setSelectedFolders([...response.selected])
-      setFolderDraft([...response.selected])
+      setSelectedFolders([...normalizedSelected])
+      setFolderDraft([...normalizedSelected])
       setStatus({ kind: 'success', message: 'Ordnerauswahl gespeichert.' })
+      void refreshPendingOverview().catch(() => undefined)
     } catch (err) {
       setStatus({ kind: 'error', message: `Ordnerauswahl konnte nicht gespeichert werden: ${toMessage(err)}` })
     } finally {
       setSavingFolders(false)
     }
-  }, [folderDraft])
+  }, [folderDraft, refreshPendingOverview])
 
   const handleFolderCreated = useCallback(
     async (folder: string) => {
@@ -545,17 +560,17 @@ export default function DashboardPage(): JSX.Element {
                 <div className="suggestion-metric open">
                   <span className="label">Zu bearbeiten</span>
                   <strong>{suggestionStats.openCount}</strong>
-                  <span className="muted">offene Vorschläge</span>
+                  <span className="muted">offene Nachrichten</span>
                 </div>
                 <div className="suggestion-metric processed">
                   <span className="label">Bereits bearbeitet</span>
                   <strong>{suggestionStats.decidedCount}</strong>
-                  <span className="muted">von {suggestionStats.totalCount}</span>
+                  <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
                 </div>
                 <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
                   <span className="label">Fehler</span>
                   <strong>{suggestionStats.errorCount}</strong>
-                  <span className="muted">benötigen Prüfung</span>
+                  <span className="muted">Mails mit Fehlern</span>
                 </div>
               </div>
             )}

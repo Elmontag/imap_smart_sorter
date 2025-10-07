@@ -205,8 +205,8 @@ input {
 }
 
 .app-sidebar {
-  flex: 0 0 280px;
-  max-width: 280px;
+  flex: 0 0 320px;
+  max-width: 320px;
   position: sticky;
   top: 24px;
   align-self: flex-start;
@@ -2415,6 +2415,10 @@ button.link.danger:hover {
 .template-toggle:hover .template-folder,
 .template-toggle.open .template-folder {
   color: #1d4ed8;
+}
+
+.template-toggle.open .template-toggle-icon {
+  transform: rotate(90deg);
 }
 
 .template-toggle.open .template-toggle-icon {
