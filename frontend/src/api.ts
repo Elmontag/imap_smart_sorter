@@ -299,6 +299,9 @@ const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
 const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
 const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
 
+export const API_BASE_URL = BASE
+export const STREAM_WEBSOCKET_URL = STREAM_URL
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
   const label = `${method} ${path}`

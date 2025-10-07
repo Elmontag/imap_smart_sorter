@@ -20,6 +20,7 @@ import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
+import { useDevMode } from '../devtools'
 
 type StatusKind = 'info' | 'success' | 'error'
 
@@ -80,6 +81,7 @@ export default function DashboardPage(): JSX.Element {
   const scanStateRef = useRef({ auto: false, manual: false })
   const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
   const moduleLabel = moduleLabels[analysisModule]
+  const devMode = useDevMode()
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
@@ -438,6 +440,11 @@ export default function DashboardPage(): JSX.Element {
           <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             Einstellungen
           </NavLink>
+          {devMode && (
+            <NavLink to="/dev" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              Dev-Mode
+            </NavLink>
+          )}
         </nav>
         <div className="analysis-top">
           <div className="analysis-canvas">
