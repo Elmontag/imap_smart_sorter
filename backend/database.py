@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Set
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from models import AppConfig, FilterHit, FolderProfile, Processed, Suggestion
+from models import AppConfig, CalendarEventEntry, FilterHit, FolderProfile, Processed, Suggestion
 from settings import S
 
 
@@ -216,6 +216,119 @@ def get_classifier_model() -> Optional[str]:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def get_calendar_settings_entry() -> Dict[str, Any]:
+    raw = _get_config_value("CALENDAR_SETTINGS")
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Persistierte Kalenderkonfiguration konnte nicht geparst werden.")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def set_calendar_settings_entry(values: Dict[str, Any]) -> None:
+    payload = json.dumps(values, ensure_ascii=False)
+    _set_config_value("CALENDAR_SETTINGS", payload)
+
+
+def calendar_event_by_uid(message_uid: str, event_uid: str) -> Optional[CalendarEventEntry]:
+    with get_session() as ses:
+        return ses.exec(
+            select(CalendarEventEntry)
+            .where(CalendarEventEntry.message_uid == message_uid)
+            .where(CalendarEventEntry.event_uid == event_uid)
+        ).first()
+
+
+def get_calendar_event(event_id: int) -> Optional[CalendarEventEntry]:
+    with get_session() as ses:
+        return ses.get(CalendarEventEntry, event_id)
+
+
+def upsert_calendar_event(entry: CalendarEventEntry) -> CalendarEventEntry:
+    with get_session() as ses:
+        existing = ses.exec(
+            select(CalendarEventEntry)
+            .where(CalendarEventEntry.message_uid == entry.message_uid)
+            .where(CalendarEventEntry.event_uid == entry.event_uid)
+        ).first()
+        payload = entry.dict(exclude_unset=True)
+        payload.pop("id", None)
+        timestamp = datetime.utcnow()
+        if existing:
+            for key, value in payload.items():
+                setattr(existing, key, value)
+            existing.updated_at = timestamp
+            ses.add(existing)
+            ses.commit()
+            ses.refresh(existing)
+            return existing
+        entry.updated_at = timestamp
+        entry.created_at = timestamp
+        ses.add(entry)
+        ses.commit()
+        ses.refresh(entry)
+        return entry
+
+
+def list_calendar_events() -> List[CalendarEventEntry]:
+    with get_session() as ses:
+        stmt = select(CalendarEventEntry).order_by(
+            CalendarEventEntry.starts_at,
+            CalendarEventEntry.summary,
+        )
+        return ses.exec(stmt).all()
+
+
+def update_calendar_event_status(
+    event_id: int,
+    status: str,
+    *,
+    error: Optional[str] = None,
+    imported_at: Optional[datetime] = None,
+) -> Optional[CalendarEventEntry]:
+    with get_session() as ses:
+        row = ses.get(CalendarEventEntry, event_id)
+        if not row:
+            return None
+        row.status = status
+        row.last_error = error
+        row.last_import_at = imported_at
+        row.updated_at = datetime.utcnow()
+        ses.add(row)
+        ses.commit()
+        ses.refresh(row)
+        return row
+
+
+def calendar_event_metrics() -> Dict[str, int]:
+    with get_session() as ses:
+        total = ses.exec(select(func.count(CalendarEventEntry.id))).scalar_one()
+        pending = ses.exec(
+            select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "pending")
+        ).scalar_one()
+        imported = ses.exec(
+            select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "imported")
+        ).scalar_one()
+        failed = ses.exec(
+            select(func.count(CalendarEventEntry.id)).where(CalendarEventEntry.status == "failed")
+        ).scalar_one()
+        scanned_messages = ses.exec(
+            select(func.count(func.distinct(CalendarEventEntry.message_uid)))
+        ).scalar_one()
+    return {
+        "total": int(total or 0),
+        "pending": int(pending or 0),
+        "imported": int(imported or 0),
+        "failed": int(failed or 0),
+        "scanned_messages": int(scanned_messages or 0),
+    }
 
 
 def set_analysis_module(module: str) -> None:
