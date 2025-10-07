@@ -17,6 +17,7 @@ import PendingOverviewPanel from '../components/PendingOverviewPanel'
 import FolderSelectionPanel from '../components/FolderSelectionPanel'
 import DevtoolsPanel from '../components/DevtoolsPanel'
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
+import CalendarDashboard from '../components/CalendarDashboard'
 import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
@@ -30,6 +31,8 @@ interface StatusMessage {
   kind: StatusKind
   message: string
 }
+
+type DashboardView = 'mail' | 'calendar'
 
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
@@ -134,6 +137,7 @@ export default function DashboardPage(): JSX.Element {
   const [foldersLoading, setFoldersLoading] = useState(true)
   const [savingFolders, setSavingFolders] = useState(false)
   const [status, setStatus] = useState<StatusMessage | null>(null)
+  const [dashboardView, setDashboardView] = useState<DashboardView>('mail')
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
   const [scanBusy, setScanBusy] = useState(false)
   const [rescanBusy, setRescanBusy] = useState(false)
@@ -488,196 +492,219 @@ export default function DashboardPage(): JSX.Element {
             </NavLink>
           )}
         </nav>
-        <div className="analysis-top">
-          <div className="analysis-canvas">
-            <div className="analysis-status">
-              <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
-              <div className="analysis-status-text">
-                <span className="label">Analyse</span>
-                <strong>{scanSummary.statusLabel}</strong>
-              </div>
-            </div>
-            <dl className="analysis-meta">
-              <div>
-                <dt>Ordner</dt>
-                <dd>{scanSummary.folderLabel}</dd>
-              </div>
-              <div>
-                <dt>Intervall</dt>
-                <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
-              </div>
-              <div>
-                <dt>Einmalanalyse</dt>
-                <dd>{manualMetaLabel}</dd>
-              </div>
-              <div>
-                <dt>Letzter Abschluss</dt>
-                <dd>{scanSummary.lastFinished ?? '–'}</dd>
-              </div>
-              <div>
-                <dt>Ergebnis</dt>
-                <dd>{scanSummary.resultLabel ?? '–'}</dd>
-              </div>
-            </dl>
-            {analysisFootEntries.length > 0 && <div className="analysis-foot">{analysisFootEntries}</div>}
-          </div>
-          <div className="analysis-actions">
-            <button
-              type="button"
-              className="ghost"
-              onClick={handleRescan}
-              disabled={manualActive || autoActive || scanBusy}
-            >
-              {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={handleStartScan}
-              disabled={scanBusy || autoActive || manualActive}
-            >
-              {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={handleStopScan}
-              disabled={scanBusy || (!autoActive && !manualActive)}
-            >
-              {scanBusy && (autoActive || manualActive) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {status && (
-        <div className={`status-banner ${status.kind}`} role="status">
-          <span>{status.message}</span>
-          <button className="link" type="button" onClick={dismissStatus}>
-            Schließen
+        <div className="dashboard-view-toggle" role="tablist" aria-label="Dashboard-Ansicht">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={dashboardView === 'mail'}
+            className={`dashboard-view-button${dashboardView === 'mail' ? ' active' : ''}`}
+            onClick={() => setDashboardView('mail')}
+          >
+            E-Mail-Dashboard
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={dashboardView === 'calendar'}
+            className={`dashboard-view-button${dashboardView === 'calendar' ? ' active' : ''}`}
+            onClick={() => setDashboardView('calendar')}
+          >
+            Kalender
           </button>
         </div>
-      )}
-
-      {configError && <div className="status-banner error">{configError}</div>}
-      {error && <div className="status-banner error">{error}</div>}
-      {configLoaded && analysisModule === 'STATIC' && (
-        <div className="status-banner info" role="status">
-          <span>
-            Modul „Statisch“ aktiv: Es werden ausschließlich Keyword-Regeln ausgeführt, KI-Vorschläge und Pending-Listen bleiben
-            deaktiviert.
-          </span>
-        </div>
-      )}
-      {showOllamaCard && ollamaError && (
-        <div className="status-banner error">Ollama-Status konnte nicht geladen werden: {ollamaError}</div>
-      )}
-
-      <div className="app-layout">
-        <aside className="app-sidebar">
-          <FolderSelectionPanel
-            available={availableFolders}
-            draft={folderDraft}
-            onDraftChange={setFolderDraft}
-            onSave={handleFolderSave}
-            onReload={loadFolders}
-            loading={foldersLoading}
-            saving={savingFolders}
-          />
-          {showOllamaCard && (
-            <div className={`ollama-status-card ${ollamaStatus?.reachable ? 'ok' : 'error'}`}>
-              <div className="ollama-status-header">
-                <span className="label">Ollama</span>
-                <span className={`indicator ${ollamaStatus?.reachable ? 'online' : 'offline'}`}>
-                  {ollamaStatus?.reachable ? 'verbunden' : 'nicht verbunden'}
-                </span>
-              </div>
-              <div className="ollama-status-body">
-                {ollamaLoading && <div className="placeholder">Lade Status…</div>}
-                {!ollamaLoading && ollamaStatus && (
-                  <>
-                    <div className="host">{ollamaStatus.host}</div>
-                    <div className="models">
-                      {ollamaStatus.models.length === 0 && <span>Keine Modelle bekannt.</span>}
-                      {ollamaStatus.models.map(model => {
-                        const progressValue = Math.max(0, Math.min(100, Math.round((model.progress ?? 0) * 100)))
-                        return (
-                          <div key={model.normalized_name} className="ollama-model">
-                            <div className="ollama-model-header">
-                              <span className="model-name">
-                                {modelLabel(model)}: {model.name}
-                              </span>
-                              <span className={`model-state ${model.available ? 'available' : 'missing'}`}>
-                                {model.available ? 'bereit' : model.pulling ? 'lädt…' : 'fehlt'}
-                              </span>
-                            </div>
-                            {model.pulling && (
-                              <div
-                                className="ollama-progress-bar"
-                                role="progressbar"
-                                aria-valuemin={0}
-                                aria-valuemax={100}
-                                aria-valuenow={progressValue}
-                              >
-                                <div className="ollama-progress-indicator" style={{ width: `${progressValue}%` }} />
-                              </div>
-                            )}
-                            <div className="ollama-model-meta">
-                              {model.pulling && <span>{modelProgressLabel(model)}</span>}
-                              {!model.pulling && model.message && <span>{model.message}</span>}
-                              {model.error && <span className="error">{model.error}</span>}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    {ollamaStatus.message && <div className="ollama-note">{ollamaStatus.message}</div>}
-                  </>
-                )}
-                {!ollamaLoading && !ollamaStatus && (
-                  <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
-                )}
-              </div>
-              <div className="ollama-status-actions">
-                <button type="button" className="link" onClick={() => refreshOllama()} disabled={ollamaLoading}>
-                  Status aktualisieren
-                </button>
-              </div>
-            </div>
-          )}
-        </aside>
-        <main className="app-main">
-          {showAutomationCard && (
-            <AutomationSummaryCard
-              activity={filterActivity}
-              loading={filterActivityLoading}
-              error={filterActivityError}
-              onReload={refreshFilterActivity}
-            />
-          )}
-
-          {showPendingPanel && (
-            <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
-          )}
-
-          {showLlMSuggestions ? (
-            <section className="suggestions">
-              <div className="suggestions-header">
-                <h2>{headline}</h2>
-                <div className="suggestions-actions">
-                  <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
-                    Aktualisieren
-                  </button>
-                  <button type="button" className="ghost" onClick={toggleSuggestionScope} disabled={loading}>
-                    {suggestionScope === 'open'
-                      ? 'Alle analysierten Mails bearbeiten'
-                      : 'Nur offene Vorschläge anzeigen'}
-                  </button>
+        {dashboardView === 'mail' && (
+          <div className="analysis-top">
+            <div className="analysis-canvas">
+              <div className="analysis-status">
+                <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
+                <div className="analysis-status-text">
+                  <span className="label">Analyse</span>
+                  <strong>{scanSummary.statusLabel}</strong>
                 </div>
               </div>
-              {suggestionStats && (
-                <div className="suggestions-metrics">
-                  <div className="suggestion-metric open">
+              <dl className="analysis-meta">
+                <div>
+                  <dt>Ordner</dt>
+                  <dd>{scanSummary.folderLabel}</dd>
+                </div>
+                <div>
+                  <dt>Intervall</dt>
+                  <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
+                </div>
+                <div>
+                  <dt>Einmalanalyse</dt>
+                  <dd>{manualMetaLabel}</dd>
+                </div>
+                <div>
+                  <dt>Letzter Abschluss</dt>
+                  <dd>{scanSummary.lastFinished ?? '–'}</dd>
+                </div>
+                <div>
+                  <dt>Ergebnis</dt>
+                  <dd>{scanSummary.resultLabel ?? '–'}</dd>
+                </div>
+              </dl>
+              {analysisFootEntries.length > 0 && <div className="analysis-foot">{analysisFootEntries}</div>}
+            </div>
+            <div className="analysis-actions">
+              <button
+                type="button"
+                className="ghost"
+                onClick={handleRescan}
+                disabled={manualActive || autoActive || scanBusy}
+              >
+                {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={handleStartScan}
+                disabled={scanBusy || autoActive || manualActive}
+              >
+                {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={handleStopScan}
+                disabled={scanBusy || (!autoActive && !manualActive)}
+              >
+                {scanBusy && (autoActive || manualActive) ? 'Stoppe Analyse…' : 'Analyse stoppen'}
+              </button>
+            </div>
+          </div>
+        )}
+      </header>
+      {dashboardView === 'mail' ? (
+        <>
+          {status && (
+            <div className={`status-banner ${status.kind}`} role="status">
+              <span>{status.message}</span>
+              <button className="link" type="button" onClick={dismissStatus}>
+                Schließen
+              </button>
+            </div>
+          )}
+
+          {configError && <div className="status-banner error">{configError}</div>}
+          {error && <div className="status-banner error">{error}</div>}
+          {configLoaded && analysisModule === 'STATIC' && (
+            <div className="status-banner info" role="status">
+              <span>
+                Modul „Statisch“ aktiv: Es werden ausschließlich Keyword-Regeln ausgeführt, KI-Vorschläge und Pending-Listen
+                bleiben deaktiviert.
+              </span>
+            </div>
+          )}
+          {showOllamaCard && ollamaError && (
+            <div className="status-banner error">Ollama-Status konnte nicht geladen werden: {ollamaError}</div>
+          )}
+
+          <div className="app-layout">
+            <aside className="app-sidebar">
+              <FolderSelectionPanel
+                available={availableFolders}
+                draft={folderDraft}
+                onDraftChange={setFolderDraft}
+                onSave={handleFolderSave}
+                onReload={loadFolders}
+                loading={foldersLoading}
+                saving={savingFolders}
+              />
+              {showOllamaCard && (
+                <div className={`ollama-status-card ${ollamaStatus?.reachable ? 'ok' : 'error'}`}>
+                  <div className="ollama-status-header">
+                    <span className="label">Ollama</span>
+                    <span className={`indicator ${ollamaStatus?.reachable ? 'online' : 'offline'}`}>
+                      {ollamaStatus?.reachable ? 'verbunden' : 'nicht verbunden'}
+                    </span>
+                  </div>
+                  <div className="ollama-status-body">
+                    {ollamaLoading && <div className="placeholder">Lade Status…</div>}
+                    {!ollamaLoading && ollamaStatus && (
+                      <>
+                        <div className="host">{ollamaStatus.host}</div>
+                        <div className="models">
+                          {ollamaStatus.models.length === 0 && <span>Keine Modelle bekannt.</span>}
+                          {ollamaStatus.models.map(model => {
+                            const progressValue = Math.max(0, Math.min(100, Math.round((model.progress ?? 0) * 100)))
+                            return (
+                              <div key={model.normalized_name} className="ollama-model">
+                                <div className="ollama-model-header">
+                                  <span className="model-name">
+                                    {modelLabel(model)}: {model.name}
+                                  </span>
+                                  <span className={`model-state ${model.available ? 'available' : 'missing'}`}>
+                                    {model.available ? 'bereit' : model.pulling ? 'lädt…' : 'fehlt'}
+                                  </span>
+                                </div>
+                                {model.pulling && (
+                                  <div
+                                    className="ollama-progress-bar"
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={progressValue}
+                                  >
+                                    <div className="ollama-progress-indicator" style={{ width: `${progressValue}%` }} />
+                                  </div>
+                                )}
+                                <div className="ollama-model-meta">
+                                  {model.pulling && <span>{modelProgressLabel(model)}</span>}
+                                  {!model.pulling && model.message && <span>{model.message}</span>}
+                                  {model.error && <span className="error">{model.error}</span>}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {ollamaStatus.message && <div className="ollama-note">{ollamaStatus.message}</div>}
+                      </>
+                    )}
+                    {!ollamaLoading && !ollamaStatus && (
+                      <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
+                    )}
+                  </div>
+                  <div className="ollama-status-actions">
+                    <button type="button" className="link" onClick={() => refreshOllama()} disabled={ollamaLoading}>
+                      Status aktualisieren
+                    </button>
+                  </div>
+                </div>
+              )}
+            </aside>
+            <main className="app-main">
+              {showAutomationCard && (
+                <AutomationSummaryCard
+                  activity={filterActivity}
+                  loading={filterActivityLoading}
+                  error={filterActivityError}
+                  onReload={refreshFilterActivity}
+                />
+              )}
+
+              {showPendingPanel && (
+                <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
+              )}
+
+              {showLlMSuggestions ? (
+                <section className="suggestions">
+                  <div className="suggestions-header">
+                    <h2>{headline}</h2>
+                    <div className="suggestions-actions">
+                      <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
+                        Aktualisieren
+                      </button>
+                      <button type="button" className="ghost" onClick={toggleSuggestionScope} disabled={loading}>
+                        {suggestionScope === 'open'
+                          ? 'Alle analysierten Mails bearbeiten'
+                          : 'Nur offene Vorschläge anzeigen'}
+                      </button>
+                    </div>
+                  </div>
+                  {suggestionStats && (
+                    <div className="suggestions-metrics">
+                      <div className="suggestion-metric open">
                     <span className="label">Zu bearbeiten</span>
                     <strong>{suggestionStats.openCount}</strong>
                     <span className="muted">offene Nachrichten</span>
@@ -731,6 +758,10 @@ export default function DashboardPage(): JSX.Element {
           )}
         </main>
       </div>
+        </>
+      ) : (
+        <CalendarDashboard />
+      )}
 
       <DevtoolsPanel />
     </div>
