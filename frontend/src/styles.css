@@ -697,6 +697,12 @@ button.primary {
   color: white;
 }
 
+button.secondary {
+  background: linear-gradient(135deg, #e2e8f0, #cbd5f5);
+  color: #1f2933;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+}
+
 button.ghost {
   background: transparent;
   border: 1px solid #d5deeb;

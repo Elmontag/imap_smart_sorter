@@ -222,6 +222,29 @@ export default function DashboardPage(): JSX.Element {
     scanStateRef.current = { auto: autoActive, manual: manualActive }
   }, [scanStatus?.active, scanStatus?.rescan_active, rescanBusy, refreshPendingOverview])
 
+  const refreshDashboardIndicators = useCallback(async () => {
+    const tasks: Promise<unknown>[] = []
+    if (showLlMSuggestions) {
+      tasks.push(refresh())
+    }
+    if (showPendingPanel) {
+      tasks.push(refreshPendingOverview())
+    }
+    if (showAutomationCard) {
+      tasks.push(refreshFilterActivity())
+    }
+    if (tasks.length > 0) {
+      await Promise.allSettled(tasks)
+    }
+  }, [
+    refresh,
+    refreshFilterActivity,
+    refreshPendingOverview,
+    showAutomationCard,
+    showLlMSuggestions,
+    showPendingPanel,
+  ])
+
   const handleStartScan = async () => {
     setScanBusy(true)
     try {
@@ -230,14 +253,14 @@ export default function DashboardPage(): JSX.Element {
       setScanStatus(response.status)
       setStatus({
         kind: response.started ? 'success' : 'info',
-        message: response.started ? 'Analyse gestartet.' : 'Analyse läuft bereits.',
+        message: response.started ? 'Daueranalyse gestartet.' : 'Daueranalyse läuft bereits.',
       })
       await loadScanStatus()
     } catch (err) {
       setStatus({ kind: 'error', message: `Analyse konnte nicht gestartet werden: ${toMessage(err)}` })
     } finally {
       setScanBusy(false)
-      void refreshPendingOverview().catch(() => undefined)
+      await refreshDashboardIndicators()
     }
   }
 
@@ -253,8 +276,8 @@ export default function DashboardPage(): JSX.Element {
         message = 'Es war keine Analyse aktiv.'
       } else if (nextStatus.rescan_cancelled && !nextStatus.rescan_active) {
         message = nextStatus.active
-          ? 'Einmalanalyse gestoppt, Automatik läuft weiter.'
-          : 'Einmalanalyse gestoppt.'
+          ? 'Einzelanalyse gestoppt, Daueranalyse läuft weiter.'
+          : 'Einzelanalyse gestoppt.'
       } else if (!nextStatus.active) {
         message = 'Analyse gestoppt.'
       }
@@ -265,7 +288,7 @@ export default function DashboardPage(): JSX.Element {
     } finally {
       setRescanBusy(false)
       setScanBusy(false)
-      void refreshPendingOverview().catch(() => undefined)
+      await refreshDashboardIndicators()
     }
   }
 
@@ -275,25 +298,25 @@ export default function DashboardPage(): JSX.Element {
       const normalizedSelection = normalizeFolders(selectedFolders)
       const response = await rescan(normalizedSelection.length ? normalizedSelection : undefined)
       if (!response.ok && response.cancelled) {
-        setStatus({ kind: 'info', message: 'Einmalanalyse abgebrochen.' })
+        setStatus({ kind: 'info', message: 'Einzelanalyse abgebrochen.' })
       } else if (!response.ok) {
-        setStatus({ kind: 'error', message: 'Einmalanalyse konnte nicht abgeschlossen werden.' })
+        setStatus({ kind: 'error', message: 'Einzelanalyse konnte nicht abgeschlossen werden.' })
       } else {
         const noun = response.new_suggestions === 1 ? 'Vorschlag' : 'Vorschläge'
         setStatus({
           kind: 'success',
-          message: `Einmalanalyse abgeschlossen (${response.new_suggestions} ${noun}).`,
+          message: `Einzelanalyse abgeschlossen (${response.new_suggestions} ${noun}).`,
         })
       }
       void refresh()
     } catch (err) {
-      setStatus({ kind: 'error', message: `Einmalanalyse fehlgeschlagen: ${toMessage(err)}` })
+      setStatus({ kind: 'error', message: `Einzelanalyse fehlgeschlagen: ${toMessage(err)}` })
     } finally {
       setRescanBusy(false)
       await loadScanStatus()
-      void refreshPendingOverview().catch(() => undefined)
+      await refreshDashboardIndicators()
     }
-  }, [loadScanStatus, refresh, refreshPendingOverview, selectedFolders])
+  }, [loadScanStatus, refresh, refreshDashboardIndicators, selectedFolders])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
@@ -307,13 +330,13 @@ export default function DashboardPage(): JSX.Element {
       setSelectedFolders([...normalizedSelected])
       setFolderDraft([...normalizedSelected])
       setStatus({ kind: 'success', message: 'Ordnerauswahl gespeichert.' })
-      void refreshPendingOverview().catch(() => undefined)
+      await refreshDashboardIndicators()
     } catch (err) {
       setStatus({ kind: 'error', message: `Ordnerauswahl konnte nicht gespeichert werden: ${toMessage(err)}` })
     } finally {
       setSavingFolders(false)
     }
-  }, [folderDraft, refreshPendingOverview])
+  }, [folderDraft, refreshDashboardIndicators])
 
   const handleFolderCreated = useCallback(
     async (folder: string) => {
@@ -369,10 +392,10 @@ export default function DashboardPage(): JSX.Element {
     let statusLabel = 'Gestoppt'
     let statusVariant: 'running' | 'paused' | 'stopped' = 'stopped'
     if (autoActive) {
-      statusLabel = 'Automatik aktiv'
+      statusLabel = 'Daueranalyse aktiv'
       statusVariant = 'running'
     } else if (manualActive) {
-      statusLabel = 'Einmalanalyse aktiv'
+      statusLabel = 'Einzelanalyse aktiv'
       statusVariant = 'running'
     } else if (hasHistory) {
       statusLabel = 'Pausiert'
@@ -442,7 +465,7 @@ export default function DashboardPage(): JSX.Element {
     const cancelSuffix = !manualInfo.active && manualInfo.cancelled ? ' (abgebrochen)' : ''
     analysisFootEntries.push(
       <span key="manual-start">
-        Einmalanalyse: {manualInfo.started}
+        Einzelanalyse: {manualInfo.started}
         {folderSuffix}
         {cancelSuffix}
       </span>,
@@ -458,10 +481,37 @@ export default function DashboardPage(): JSX.Element {
   if (manualInfo.error) {
     analysisFootEntries.push(
       <span key="manual-error" className="analysis-error">
-        Einmalanalyse-Fehler: {manualInfo.error}
+        Einzelanalyse-Fehler: {manualInfo.error}
       </span>,
     )
   }
+
+  useEffect(() => {
+    if (dashboardView !== 'mail') {
+      return
+    }
+    if (!scanSummary.autoActive && !scanSummary.manualActive) {
+      return
+    }
+    if (!showAutomationCard && !showPendingPanel && !showLlMSuggestions) {
+      return
+    }
+    void refreshDashboardIndicators()
+    const interval = window.setInterval(() => {
+      void refreshDashboardIndicators()
+    }, 5000)
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [
+    dashboardView,
+    refreshDashboardIndicators,
+    scanSummary.autoActive,
+    scanSummary.manualActive,
+    showAutomationCard,
+    showLlMSuggestions,
+    showPendingPanel,
+  ])
 
   return (
     <div className="app-shell">
@@ -495,7 +545,7 @@ export default function DashboardPage(): JSX.Element {
                 <dd>{scanSummary.pollInterval ? `alle ${Math.round(scanSummary.pollInterval)} s` : '–'}</dd>
               </div>
               <div>
-                <dt>Einmalanalyse</dt>
+                <dt>Einzelanalyse</dt>
                 <dd>{manualMetaLabel}</dd>
               </div>
               <div>
@@ -514,23 +564,23 @@ export default function DashboardPage(): JSX.Element {
           <div className="analysis-bar-actions">
             <button
               type="button"
-              className="ghost"
+              className="primary"
               onClick={handleRescan}
               disabled={manualActive || autoActive || scanBusy}
             >
-              {rescanBusy ? 'Analysiere…' : 'Einmalige Analyse'}
+              {rescanBusy ? 'Einzelanalyse läuft…' : 'Einzelanalyse starten'}
             </button>
             <button
               type="button"
-              className="primary"
+              className="secondary"
               onClick={handleStartScan}
               disabled={scanBusy || autoActive || manualActive}
             >
-              {scanBusy && !autoActive ? 'Starte Analyse…' : 'Analyse starten'}
+              {scanBusy && !autoActive ? 'Starte Daueranalyse…' : 'Daueranalyse starten'}
             </button>
             <button
               type="button"
-              className="ghost"
+              className="secondary"
               onClick={handleStopScan}
               disabled={scanBusy || (!autoActive && !manualActive)}
             >
