@@ -37,7 +37,7 @@ export function usePendingOverview(enabled = true): PendingOverviewState {
       }
       setLoading(true)
       try {
-        const snapshot = await getPendingOverview()
+        const snapshot = await getPendingOverview(reason !== 'initial')
         if (!activeRef.current) {
           return
         }

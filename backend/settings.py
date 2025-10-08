@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     IMAP_AI_TAG_PREFIX: str = "SmartSorter"
 
     PENDING_LIST_LIMIT: int = 25
+    PENDING_FETCH_LIMIT: int = 200
+    PENDING_CACHE_SECONDS: int = 6
 
     DEV_MODE: bool = False
 

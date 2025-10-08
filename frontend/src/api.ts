@@ -633,8 +633,9 @@ export async function getSuggestions(scope: SuggestionScope = 'open'): Promise<S
   return request<SuggestionsResponse>(`/api/suggestions${query}`)
 }
 
-export async function getPendingOverview(): Promise<PendingOverview> {
-  return request<PendingOverview>('/api/pending')
+export async function getPendingOverview(forceRefresh = false): Promise<PendingOverview> {
+  const query = forceRefresh ? '?force=1' : ''
+  return request<PendingOverview>(`/api/pending${query}`)
 }
 
 export async function getTagSuggestions(): Promise<TagSuggestion[]> {

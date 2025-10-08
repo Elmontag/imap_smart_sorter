@@ -54,7 +54,12 @@ from rescan_control import (
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from scan_control import ScanStatus, controller as scan_controller
 from models import CalendarEventEntry, Suggestion
-from pending import PendingMail, PendingOverview, load_pending_overview
+from pending import (
+    PendingMail,
+    PendingOverview,
+    invalidate_pending_cache,
+    load_pending_overview,
+)
 from tags import TagSuggestion, load_tag_suggestions
 from ollama_service import (
     OllamaModelStatus,
@@ -1168,6 +1173,7 @@ def api_update_folders(payload: FolderSelectionUpdate) -> FolderSelectionRespons
     set_monitored_folders(payload.folders)
     available = list_folders()
     selected = get_monitored_folders()
+    invalidate_pending_cache()
     return FolderSelectionResponse(available=available, selected=selected)
 
 
@@ -1443,14 +1449,16 @@ async def api_ollama_delete(payload: OllamaDeleteRequest) -> OllamaStatusRespons
     return OllamaStatusResponse.model_validate(status_as_dict(status))
 
 
-async def _pending_overview() -> PendingOverviewResponse:
-    overview = await load_pending_overview(get_monitored_folders())
+async def _pending_overview(*, force_refresh: bool = False) -> PendingOverviewResponse:
+    overview = await load_pending_overview(
+        get_monitored_folders(), force_refresh=force_refresh
+    )
     return PendingOverviewResponse.from_domain(overview)
 
 
 @app.get("/api/pending", response_model=PendingOverviewResponse)
-async def api_pending() -> PendingOverviewResponse:
-    return await _pending_overview()
+async def api_pending(force: bool = Query(False)) -> PendingOverviewResponse:
+    return await _pending_overview(force_refresh=force)
 
 
 @app.get("/api/tags", response_model=List[TagSuggestionResponse])
@@ -1734,6 +1742,7 @@ def _perform_move(uid: str, target: str, src_folder: str | None) -> None:
     mark_moved(uid)
     origin = (src_folder or "").strip() or resolve_mailbox_inbox()
     mark_processed(origin, uid)
+    invalidate_pending_cache()
 
 
 @app.post("/api/move")
