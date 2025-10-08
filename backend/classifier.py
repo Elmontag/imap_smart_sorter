@@ -175,27 +175,39 @@ def _extract_embedding(data: Dict[str, Any]) -> List[float]:
 
 
 async def embed(prompt: str) -> List[float]:
-    payload = {
-        "model": S.EMBED_MODEL,
-        "input": [prompt[: S.EMBED_PROMPT_MAX_CHARS]],
-    }
     endpoints = [
-        f"{S.OLLAMA_HOST}/api/embeddings",
-        f"{S.OLLAMA_HOST}/api/embed",
+        (
+            f"{S.OLLAMA_HOST}/api/embeddings",
+            {
+                "model": S.EMBED_MODEL,
+                "prompt": prompt[: S.EMBED_PROMPT_MAX_CHARS],
+            },
+        ),
+        (
+            f"{S.OLLAMA_HOST}/api/embed",
+            {
+                "model": S.EMBED_MODEL,
+                "input": [prompt[: S.EMBED_PROMPT_MAX_CHARS]],
+            },
+        ),
     ]
     last_error: Exception | None = None
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            for endpoint in endpoints:
+            for endpoint, payload in endpoints:
                 try:
                     response = await client.post(endpoint, json=payload)
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 404 and endpoint.endswith("/api/embeddings"):
+                    if (
+                        exc.response.status_code in {400, 404}
+                        and endpoint.endswith("/api/embeddings")
+                    ):
                         logger.debug(
-                            "Ollama-Endpoint %s nicht verfügbar (404) – verwende Fallback.",
+                            "Ollama-Endpoint %s nicht verfügbar (%s) – verwende Fallback.",
                             endpoint,
+                            exc.response.status_code,
                         )
                         last_error = exc
                         continue
