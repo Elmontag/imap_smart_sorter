@@ -52,6 +52,7 @@ class _EmbeddingProbe:
     label: str
     path: str
     payload_kind: Literal["prompt", "input_list", "input", "text", "openai"]
+    encodings: tuple[Literal["json", "json_bytes", "json_text", "form"], ...] = ("json",)
 
     def endpoint(self, base_url: str) -> str:
         return build_ollama_url(self.path, host=base_url)
@@ -68,6 +69,45 @@ class _EmbeddingProbe:
         if self.payload_kind == "openai":
             return {"model": model, "input": prompt_text}
         raise ValueError(f"Unknown payload kind: {self.payload_kind}")
+
+    def _form_payload(self, payload: Dict[str, Any]) -> Dict[str, str]:
+        encoded: Dict[str, str] = {}
+        for key, value in payload.items():
+            if isinstance(value, (dict, list)):
+                encoded[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                encoded[key] = str(value)
+        return encoded
+
+    def request_variants(self, model: str, prompt_text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        payload = self.payload(model, prompt_text)
+        variants: List[Tuple[str, Dict[str, Any]]] = []
+        for encoding in self.encodings:
+            if encoding == "json":
+                variants.append((f"{self.label}-json", {"json": payload}))
+            elif encoding == "json_bytes":
+                variants.append(
+                    (
+                        f"{self.label}-json-bytes",
+                        {
+                            "content": json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                            "headers": {"Content-Type": "application/json"},
+                        },
+                    )
+                )
+            elif encoding == "json_text":
+                variants.append(
+                    (
+                        f"{self.label}-json-text",
+                        {
+                            "data": json.dumps(payload, ensure_ascii=False),
+                            "headers": {"Content-Type": "application/json"},
+                        },
+                    )
+                )
+            elif encoding == "form":
+                variants.append((f"{self.label}-form", {"data": self._form_payload(payload)}))
+        return variants
 
 
 _EMBED_STRATEGY_CACHE: Dict[str, _EmbeddingProbe] = {}
@@ -241,15 +281,60 @@ def _normalise_error_detail(response: httpx.Response | None) -> str:
 
 def _embedding_probe_list(cached: Optional[_EmbeddingProbe]) -> List[_EmbeddingProbe]:
     probes = [
-        _EmbeddingProbe("embeddings-prompt", "/api/embeddings", "prompt"),
-        _EmbeddingProbe("embeddings-text", "/api/embeddings", "text"),
-        _EmbeddingProbe("embeddings-input-list", "/api/embeddings", "input_list"),
-        _EmbeddingProbe("embeddings-input", "/api/embeddings", "input"),
-        _EmbeddingProbe("openai-embeddings", "/v1/embeddings", "openai"),
-        _EmbeddingProbe("legacy-embed-input-list", "/api/embed", "input_list"),
-        _EmbeddingProbe("legacy-embed-input", "/api/embed", "input"),
-        _EmbeddingProbe("legacy-embed-prompt", "/api/embed", "prompt"),
-        _EmbeddingProbe("legacy-embed-text", "/api/embed", "text"),
+        _EmbeddingProbe(
+            "embeddings-prompt",
+            "/api/embeddings",
+            "prompt",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "embeddings-text",
+            "/api/embeddings",
+            "text",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "embeddings-input-list",
+            "/api/embeddings",
+            "input_list",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "embeddings-input",
+            "/api/embeddings",
+            "input",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "openai-embeddings",
+            "/v1/embeddings",
+            "openai",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-input-list",
+            "/api/embed",
+            "input_list",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-input",
+            "/api/embed",
+            "input",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-prompt",
+            "/api/embed",
+            "prompt",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-text",
+            "/api/embed",
+            "text",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
     ]
     if cached is None:
         return probes
@@ -291,72 +376,81 @@ async def embed(prompt: str) -> List[float]:
         async with httpx.AsyncClient(timeout=60) as client:
             while index < len(probes):
                 probe = probes[index]
-                label = probe.label
                 endpoint = probe.endpoint(base_url)
-                payload = probe.payload(S.EMBED_MODEL, prompt_text)
-                try:
-                    response = await client.post(endpoint, json=payload)
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    detail = _normalise_error_detail(exc.response)
-                    attempts.append(f"{label}:{exc.response.status_code}:{detail or 'no-detail'}")
-                    last_error = exc
-                    status = exc.response.status_code
-                    retry_current = False
-                    if (
-                        status in {400, 404, 422}
-                        and not attempted_refresh
-                        and detail
-                        and _looks_like_missing_model(detail)
-                    ):
-                        attempted_refresh = True
-                        try:
-                            await ensure_ollama_ready()
-                        except Exception as refresh_exc:  # pragma: no cover - defensive log
-                            logger.warning(
-                                "Ollama-Statusaktualisierung nach Modellfehler fehlgeschlagen: %s",
-                                refresh_exc,
+                variants = probe.request_variants(S.EMBED_MODEL, prompt_text)
+                variant_index = 0
+                fatal_error = False
+                while variant_index < len(variants):
+                    label, request_kwargs = variants[variant_index]
+                    try:
+                        response = await client.post(endpoint, **request_kwargs)
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        detail = _normalise_error_detail(exc.response)
+                        attempts.append(
+                            f"{label}:{exc.response.status_code}:{detail or 'no-detail'}"
+                        )
+                        last_error = exc
+                        status = exc.response.status_code
+                        retry_current = False
+                        if (
+                            status in {400, 404, 422}
+                            and not attempted_refresh
+                            and detail
+                            and _looks_like_missing_model(detail)
+                        ):
+                            attempted_refresh = True
+                            try:
+                                await ensure_ollama_ready()
+                            except Exception as refresh_exc:  # pragma: no cover - defensive log
+                                logger.warning(
+                                    "Ollama-Statusaktualisierung nach Modellfehler fehlgeschlagen: %s",
+                                    refresh_exc,
+                                )
+                            else:
+                                retry_current = True
+                        if retry_current:
+                            continue
+                        if status in {400, 404, 422}:
+                            logger.debug(
+                                "Ollama-Embedding fehlgeschlagen (%s %s %s): %s",
+                                label,
+                                endpoint,
+                                status,
+                                detail,
                             )
-                        else:
-                            retry_current = True
-                    if retry_current:
-                        continue
-                    if status in {400, 404, 422}:
-                        # Try the next strategy – Ollama versions differ in payloads/endpoints.
-                        logger.debug(
-                            "Ollama-Embedding fehlgeschlagen (%s %s %s): %s",
-                            label,
-                            endpoint,
-                            status,
-                            detail,
-                        )
-                        index += 1
-                        continue
-                    break
-                except httpx.HTTPError as exc:  # pragma: no cover - network interaction
-                    attempts.append(f"{label}:network:{exc}")
-                    last_error = exc
-                    break
+                            variant_index += 1
+                            continue
+                        fatal_error = True
+                        break
+                    except httpx.HTTPError as exc:  # pragma: no cover - network interaction
+                        attempts.append(f"{label}:network:{exc}")
+                        last_error = exc
+                        fatal_error = True
+                        break
 
-                try:
-                    data = response.json()
-                except ValueError:
-                    attempts.append(f"{label}:invalid-json")
-                    last_error = ValueError("invalid JSON payload")
-                    index += 1
-                    continue
-                embedding = _extract_embedding(data)
-                if embedding:
-                    if attempts:
-                        logger.debug(
-                            "Ollama-Embedding erfolgreich nach vorherigen Versuchen: %s",
-                            ";".join(attempts),
-                        )
-                    async with _EMBED_STRATEGY_LOCK:
-                        _EMBED_STRATEGY_CACHE[base_url] = probe
-                    return embedding
-                attempts.append(f"{label}:invalid-payload")
-                last_error = ValueError("embedding payload missing")
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        attempts.append(f"{label}:invalid-json")
+                        last_error = ValueError("invalid JSON payload")
+                        variant_index += 1
+                        continue
+                    embedding = _extract_embedding(data)
+                    if embedding:
+                        if attempts:
+                            logger.debug(
+                                "Ollama-Embedding erfolgreich nach vorherigen Versuchen: %s",
+                                ";".join(attempts),
+                            )
+                        async with _EMBED_STRATEGY_LOCK:
+                            _EMBED_STRATEGY_CACHE[base_url] = probe
+                        return embedding
+                    attempts.append(f"{label}:invalid-payload")
+                    last_error = ValueError("embedding payload missing")
+                    variant_index += 1
+                if fatal_error:
+                    break
                 index += 1
     except httpx.HTTPError as exc:  # pragma: no cover - network interaction
         attempts.append(f"client:{exc}")
