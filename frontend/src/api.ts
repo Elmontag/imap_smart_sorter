@@ -967,8 +967,9 @@ export async function stopScan(): Promise<ScanStopResponse> {
 }
 
 export function openStream(onEvent: (event: StreamEvent) => void): WebSocket {
-  const socket = new WebSocket(STREAM_URL)
-  recordDevEvent({ type: 'info', label: 'WebSocket verbinden', details: STREAM_URL })
+  const streamUrl = STREAM_WEBSOCKET_URL
+  const socket = new WebSocket(streamUrl)
+  recordDevEvent({ type: 'info', label: 'WebSocket verbinden', details: streamUrl })
   socket.onmessage = rawEvent => {
     try {
       const parsed = JSON.parse(rawEvent.data) as StreamEvent
