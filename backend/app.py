@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from dataclasses import replace
 from datetime import datetime, date, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Sequence
@@ -1393,7 +1394,12 @@ async def api_ollama_pull(payload: OllamaPullRequest) -> OllamaStatusResponse:
         await start_model_pull(model, purpose)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("Start des Ollama-Pulls fehlgeschlagen", exc_info=True)
-        status = _fallback_ollama_status(f"Modell-Download konnte nicht gestartet werden: {exc}")
+        try:
+            status = await _load_ollama_status(force_refresh=False)
+        except Exception:  # pragma: no cover - defensive guard
+            status = _fallback_ollama_status(f"Modell-Download konnte nicht gestartet werden: {exc}")
+        else:
+            status = replace(status, message=f"Modell-Download konnte nicht gestartet werden: {exc}")
         return OllamaStatusResponse.model_validate(status_as_dict(status))
     status = await _load_ollama_status(force_refresh=True)
     return OllamaStatusResponse.model_validate(status_as_dict(status))
@@ -1408,7 +1414,12 @@ async def api_ollama_delete(payload: OllamaDeleteRequest) -> OllamaStatusRespons
         await delete_model(model)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("Löschen des Ollama-Modells fehlgeschlagen", exc_info=True)
-        status = _fallback_ollama_status(f"Modell konnte nicht gelöscht werden: {exc}")
+        try:
+            status = await _load_ollama_status(force_refresh=False)
+        except Exception:  # pragma: no cover - defensive guard
+            status = _fallback_ollama_status(f"Modell konnte nicht gelöscht werden: {exc}")
+        else:
+            status = replace(status, message=f"Modell konnte nicht gelöscht werden: {exc}")
         return OllamaStatusResponse.model_validate(status_as_dict(status))
     status = await _load_ollama_status(force_refresh=True)
     return OllamaStatusResponse.model_validate(status_as_dict(status))

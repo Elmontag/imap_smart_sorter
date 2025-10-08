@@ -555,7 +555,7 @@ export default function SettingsPage(): JSX.Element {
     const seen = new Set<string>()
     const names: string[] = []
     models.forEach(model => {
-      if (model.purpose !== 'classifier') {
+      if (!['classifier', 'custom'].includes(model.purpose)) {
         return
       }
       const trimmed = (model.name || '').trim()
