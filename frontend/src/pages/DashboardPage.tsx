@@ -367,6 +367,22 @@ export default function DashboardPage(): JSX.Element {
     await refresh()
   }, [refresh])
 
+  const refreshIndicators = useCallback(async () => {
+    const tasks: Promise<unknown>[] = []
+    if (showLlMSuggestions) {
+      tasks.push(refresh())
+    }
+    if (showPendingPanel) {
+      tasks.push(refreshPendingOverview())
+    }
+    if (showAutomationCard) {
+      tasks.push(refreshFilterActivity())
+    }
+    if (tasks.length > 0) {
+      await Promise.allSettled(tasks)
+    }
+  }, [refresh, refreshFilterActivity, refreshPendingOverview, showAutomationCard, showLlMSuggestions, showPendingPanel])
+
   const scanSummary = useMemo(() => {
     const autoActive = Boolean(scanStatus?.active)
     const manualRemoteActive = Boolean(scanStatus?.rescan_active)
