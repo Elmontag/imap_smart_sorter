@@ -489,160 +489,134 @@ export type StreamEvent =
   | { type: 'pending_error'; error: string }
 
 const explicitEnvBase = ((import.meta.env.VITE_API_BASE as string | undefined) ?? '').trim()
-const rawEnvBase =
-  explicitEnvBase || (import.meta.env.DEV ? 'http://localhost:8000' : '')
-
-const trimTrailingSlash = (value: string): string => {
-  if (!value || value === '/') {
-    return value
-  }
-  return value.replace(/\/$/, '')
-}
-
-const ensureLeadingSlash = (value: string): string => {
-  if (!value) {
-    return ''
-  }
-  return value.startsWith('/') ? value : `/${value}`
-}
-
-const splitPath = (value: string): { pathname: string; search: string } => {
-  const raw = value.trim()
-  if (!raw) {
-    return { pathname: '/', search: '' }
-  }
-
-  const queryIndex = raw.indexOf('?')
-  const hashIndex = raw.indexOf('#')
-
-  let cutIndex = -1
-  if (queryIndex >= 0 && hashIndex >= 0) {
-    cutIndex = Math.min(queryIndex, hashIndex)
-  } else {
-    cutIndex = Math.max(queryIndex, hashIndex)
-  }
-
-  const pathPart = cutIndex >= 0 ? raw.slice(0, cutIndex) : raw
-
-  let suffix = ''
-  if (queryIndex >= 0) {
-    suffix = raw.slice(queryIndex)
-  } else if (hashIndex >= 0) {
-    suffix = raw.slice(hashIndex)
-  }
-
-  const cleaned = pathPart.replace(/\/+$/, '')
-  const pathname = cleaned ? ensureLeadingSlash(cleaned) || '/' : '/'
-
-  return { pathname, search: suffix }
-}
-
-const joinBasePath = (basePath: string, targetPath: string): string => {
-  const base = trimTrailingSlash(ensureLeadingSlash(basePath))
-  const { pathname, search } = splitPath(targetPath)
-  const normalisedTarget = pathname === '' ? '/' : pathname
-
-  if (!base || base === '/') {
-    return `${normalisedTarget}${search}`
-  }
-
-  if (normalisedTarget === base || normalisedTarget.startsWith(`${base}/`)) {
-    return `${normalisedTarget}${search}`
-  }
-
-  const baseSegments = base.split('/').filter(Boolean)
-  const targetSegments = normalisedTarget.split('/').filter(Boolean)
-
-  if (targetSegments.length === 0) {
-    return `${base}${search}`
-  }
-
-  let overlap = 0
-  const maxOverlap = Math.min(baseSegments.length, targetSegments.length)
-  for (let size = maxOverlap; size > 0; size -= 1) {
-    let matches = true
-    for (let index = 0; index < size; index += 1) {
-      const baseValue = baseSegments[baseSegments.length - size + index]
-      const targetValue = targetSegments[index]
-      if (baseValue !== targetValue) {
-        matches = false
-        break
-      }
-    }
-    if (matches) {
-      overlap = size
-      break
-    }
-  }
-
-  const combinedSegments = baseSegments.concat(targetSegments.slice(overlap))
-  const combinedPath = `/${combinedSegments.join('/')}`
-  return `${combinedPath}${search}`
-}
 
 const runtimeOrigin =
   typeof window !== 'undefined' && typeof window.location?.origin === 'string'
     ? window.location.origin
-    : null
-const fallbackOrigin = runtimeOrigin ?? 'http://localhost:8000'
+    : ''
+const devDefaultOrigin = import.meta.env.DEV ? 'http://localhost:8000' : ''
+const fallbackOrigin = runtimeOrigin || devDefaultOrigin || 'http://localhost:8000'
 
-const baseIsAbsolute = /^https?:\/\//i.test(rawEnvBase)
+const normalizeBasePath = (value: string): string => {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === '/') {
+    return ''
+  }
+  return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`
+}
 
-let originBase: string | null = null
+const normalizeTargetPath = (value: string): string => {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return '/'
+  }
+  const cleaned = trimmed.replace(/\/+$/, '')
+  if (!cleaned) {
+    return '/'
+  }
+  return cleaned.startsWith('/') ? cleaned : `/${cleaned}`
+}
+
+const splitTargetPath = (value: string): { pathname: string; suffix: string } => {
+  const raw = value.trim()
+  if (!raw) {
+    return { pathname: '/', suffix: '' }
+  }
+  const queryIndex = raw.indexOf('?')
+  const hashIndex = raw.indexOf('#')
+  let cutIndex = raw.length
+  if (queryIndex >= 0 && hashIndex >= 0) {
+    cutIndex = Math.min(queryIndex, hashIndex)
+  } else if (queryIndex >= 0) {
+    cutIndex = queryIndex
+  } else if (hashIndex >= 0) {
+    cutIndex = hashIndex
+  }
+  const pathname = raw.slice(0, cutIndex) || '/'
+  const suffix = raw.slice(cutIndex)
+  return { pathname, suffix }
+}
+
+const joinBaseWithTarget = (basePath: string, targetPath: string): string => {
+  const base = normalizeBasePath(basePath)
+  const target = normalizeTargetPath(targetPath)
+  if (!base) {
+    return target
+  }
+  if (target === '/') {
+    return base || '/'
+  }
+  if (target === base || target.startsWith(`${base}/`)) {
+    return target
+  }
+  return `${base}${target}`
+}
+
+let originBase = ''
 let pathBase = ''
 
-if (rawEnvBase) {
-  if (baseIsAbsolute) {
+if (explicitEnvBase) {
+  if (/^https?:\/\//i.test(explicitEnvBase)) {
     try {
-      const parsed = new URL(rawEnvBase)
+      const parsed = new URL(explicitEnvBase)
       originBase = `${parsed.protocol}//${parsed.host}`
-      pathBase = trimTrailingSlash(ensureLeadingSlash(parsed.pathname))
-      if (pathBase === '/') {
-        pathBase = ''
-      }
+      pathBase = parsed.pathname
     } catch (error) {
-      originBase = null
-      pathBase = ''
+      originBase = fallbackOrigin
+      pathBase = explicitEnvBase
     }
   } else {
-    originBase = null
-    pathBase = trimTrailingSlash(ensureLeadingSlash(rawEnvBase))
-    if (pathBase === '/') {
-      pathBase = ''
-    }
+    originBase = runtimeOrigin
+    pathBase = explicitEnvBase
   }
+} else {
+  originBase = devDefaultOrigin || runtimeOrigin
+  pathBase = ''
+}
+
+if (!originBase) {
+  originBase = fallbackOrigin
+}
+
+pathBase = normalizeBasePath(pathBase)
+
+const buildAbsoluteUrl = (origin: string, pathname: string, suffix = ''): string => {
+  const url = new URL(origin || fallbackOrigin)
+  url.pathname = pathname
+  url.search = ''
+  url.hash = ''
+  const base = url.toString().replace(/\/$/, '')
+  return `${base}${suffix}`
 }
 
 const resolveRequestUrl = (path: string): string => {
   if (/^https?:\/\//i.test(path)) {
     return path
   }
-  const combinedPath = joinBasePath(pathBase, path || '/')
+  const { pathname, suffix } = splitTargetPath(path || '/')
+  const combinedPath = joinBaseWithTarget(pathBase, pathname)
   if (originBase) {
-    return new URL(combinedPath, originBase).toString()
+    return buildAbsoluteUrl(originBase, combinedPath, suffix)
   }
-  return combinedPath
+  return `${combinedPath}${suffix}`
 }
 
 const resolveStreamUrl = (): string => {
-  const wsOriginCandidate = originBase ?? fallbackOrigin
   let wsOrigin: URL
   try {
-    wsOrigin = new URL(wsOriginCandidate)
+    wsOrigin = new URL(originBase || fallbackOrigin)
   } catch (error) {
     wsOrigin = new URL('http://localhost:8000')
   }
   wsOrigin.protocol = wsOrigin.protocol === 'https:' ? 'wss:' : 'ws:'
-  const combinedPath = joinBasePath(pathBase, '/ws/stream')
-  const url = new URL(combinedPath, wsOrigin)
-  url.search = ''
-  url.hash = ''
-  return url.toString().replace(/\/$/, '')
+  const streamPath = joinBaseWithTarget(pathBase, '/ws/stream')
+  wsOrigin.pathname = streamPath
+  wsOrigin.search = ''
+  wsOrigin.hash = ''
+  return wsOrigin.toString().replace(/\/$/, '')
 }
 
-export const API_BASE_URL = originBase
-  ? `${originBase}${pathBase || ''}`
-  : pathBase || '/'
+export const API_BASE_URL = originBase ? `${originBase}${pathBase || ''}` : pathBase || '/'
 export const STREAM_WEBSOCKET_URL = resolveStreamUrl()
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
