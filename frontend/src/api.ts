@@ -525,13 +525,43 @@ const joinBasePath = (basePath: string, targetPath: string): string => {
   const base = trimTrailingSlash(ensureLeadingSlash(basePath))
   const { pathname, search } = splitPath(targetPath)
   const normalisedTarget = pathname === '' ? '/' : pathname
+
   if (!base || base === '/') {
     return `${normalisedTarget}${search}`
   }
+
   if (normalisedTarget === base || normalisedTarget.startsWith(`${base}/`)) {
     return `${normalisedTarget}${search}`
   }
-  return `${base}${normalisedTarget}${search}`
+
+  const baseSegments = base.split('/').filter(Boolean)
+  const targetSegments = normalisedTarget.split('/').filter(Boolean)
+
+  if (targetSegments.length === 0) {
+    return `${base}${search}`
+  }
+
+  let overlap = 0
+  const maxOverlap = Math.min(baseSegments.length, targetSegments.length)
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    let matches = true
+    for (let index = 0; index < size; index += 1) {
+      const baseValue = baseSegments[baseSegments.length - size + index]
+      const targetValue = targetSegments[index]
+      if (baseValue !== targetValue) {
+        matches = false
+        break
+      }
+    }
+    if (matches) {
+      overlap = size
+      break
+    }
+  }
+
+  const combinedSegments = baseSegments.concat(targetSegments.slice(overlap))
+  const combinedPath = `/${combinedSegments.join('/')}`
+  return `${combinedPath}${search}`
 }
 
 const fallbackOrigin =
@@ -645,23 +675,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(text || `${response.status} ${response.statusText}`)
   }
   const clone = response.clone()
-  const data = (await response.json()) as T
+  let data: T
   try {
-    const payload = await clone.json()
+    data = (await response.json()) as T
+  } catch (error) {
+    let payload = '[unlesbare Antwort]'
+    try {
+      payload = await clone.text()
+    } catch (readError) {
+      payload = readError instanceof Error ? readError.message : String(readError)
+    }
     recordDevEvent({
-      type: 'response',
+      type: 'error',
       label,
+      details: 'Antwort kein JSON',
       payload,
       durationMs: performance.now() - started,
     })
-  } catch (error) {
-    recordDevEvent({
-      type: 'response',
-      label,
-      payload: '[non-json response]',
-      durationMs: performance.now() - started,
-    })
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    throw new Error(payload || `Antwort konnte nicht gelesen werden (${errorMessage})`)
   }
+
+  recordDevEvent({
+    type: 'response',
+    label,
+    payload: data,
+    durationMs: performance.now() - started,
+  })
+
   return data
 }
 
