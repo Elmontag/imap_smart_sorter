@@ -30,7 +30,7 @@ from database import (
 from feedback import update_profiles_on_accept
 from mailbox import ensure_folder_path, fetch_recent_messages, list_folders, move_message
 from models import Suggestion
-from runtime_settings import resolve_mailbox_inbox
+from runtime_settings import resolve_mailbox_inbox, resolve_mailbox_tags
 from ollama_service import OllamaModelStatus, OllamaStatus, ensure_ollama_ready
 from settings import S
 from runtime_settings import (
