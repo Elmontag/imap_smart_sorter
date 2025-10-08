@@ -62,6 +62,7 @@ from ollama_service import (
     get_status,
     start_model_pull,
     status_as_dict,
+    normalise_ollama_host,
 )
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
@@ -484,7 +485,7 @@ def _fallback_ollama_status(message: str, *, include_models: bool = True) -> Oll
             )
             for model, purpose in _required_ollama_models()
         ]
-    return OllamaStatus(host=S.OLLAMA_HOST, reachable=False, models=models, message=message)
+    return OllamaStatus(host=normalise_ollama_host(), reachable=False, models=models, message=message)
 
 
 async def _load_ollama_status(force_refresh: bool) -> OllamaStatus:

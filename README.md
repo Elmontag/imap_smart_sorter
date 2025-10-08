@@ -78,6 +78,7 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   auf einen nicht erreichbaren Ollama-Host hin. Stelle sicher, dass `OLLAMA_HOST` auf `http://ollama:11434`
   zeigt, wenn alle Dienste via Docker Compose laufen. Bei lokal gestarteten Komponenten außerhalb
   von Docker muss der Wert auf `http://localhost:11434` oder die entsprechende IP des Hosts gesetzt werden.
+  Der Wert darf optional einen Basis-Pfad enthalten (z. B. `http://proxy.internal/ollama/api`); das Backend verknüpft die Endpunkte automatisch ohne doppelte Segmente.
 
 ### Kalender-Synchronisation & Terminübersicht
 

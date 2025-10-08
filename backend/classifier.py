@@ -27,7 +27,12 @@ from configuration import (
     tag_slot_options_map,
     top_level_folder_names,
 )
-from ollama_service import ensure_ollama_ready, get_model_context_window
+from ollama_service import (
+    build_ollama_url,
+    ensure_ollama_ready,
+    get_model_context_window,
+    normalise_ollama_host,
+)
 from settings import S
 from runtime_settings import resolve_classifier_model, resolve_mailbox_inbox
 
@@ -49,7 +54,7 @@ class _EmbeddingProbe:
     payload_kind: Literal["prompt", "input_list", "input", "text", "openai"]
 
     def endpoint(self, base_url: str) -> str:
-        return f"{base_url}{self.path}"
+        return build_ollama_url(self.path, host=base_url)
 
     def payload(self, model: str, prompt_text: str) -> Dict[str, Any]:
         if self.payload_kind == "prompt":
@@ -273,7 +278,7 @@ def _looks_like_missing_model(detail: str) -> bool:
 
 async def embed(prompt: str) -> List[float]:
     prompt_text = prompt[: S.EMBED_PROMPT_MAX_CHARS]
-    base_url = _normalise_host(S.OLLAMA_HOST)
+    base_url = normalise_ollama_host()
     attempts: List[str] = []
     last_error: Exception | None = None
     async with _EMBED_STRATEGY_LOCK:
@@ -843,7 +848,7 @@ async def _chat(
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            async with client.stream("POST", f"{S.OLLAMA_HOST}/api/chat", json=payload) as response:
+            async with client.stream("POST", build_ollama_url("api/chat"), json=payload) as response:
                 response.raise_for_status()
 
                 content_chunks: List[str] = []

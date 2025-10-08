@@ -10,13 +10,36 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from settings import S
 from runtime_settings import resolve_classifier_model
 
 
 logger = logging.getLogger(__name__)
+
+
+
+def normalise_ollama_host(host: str | None = None) -> str:
+    """Return a normalised Ollama host URL including scheme."""
+
+    candidate = (host if host is not None else getattr(S, 'OLLAMA_HOST', '') or '').strip()
+    if not candidate:
+        candidate = 'http://127.0.0.1:11434'
+    if not candidate.startswith(('http://', 'https://')):
+        candidate = f'http://{candidate}'
+    return candidate.rstrip('/')
+
+
+
+def build_ollama_url(path: str, *, host: str | None = None) -> str:
+    """Join the configured host with a relative Ollama API path."""
+
+    base = normalise_ollama_host(host)
+    if not path:
+        return base
+    relative = path.lstrip('/')
+    return urljoin(base + '/', relative)
 
 
 @dataclass(slots=True)
@@ -122,7 +145,7 @@ def _failure_status(message: str) -> OllamaStatus:
         )
         for model, purpose in _models_to_check()
     ]
-    return OllamaStatus(host=S.OLLAMA_HOST, reachable=False, models=models, message=message)
+    return OllamaStatus(host=normalise_ollama_host(), reachable=False, models=models, message=message)
 
 
 def _normalise_percent(value: float) -> float:
@@ -214,7 +237,7 @@ async def _fetch_model_details(client: httpx.AsyncClient, model: str) -> Dict[st
 
     try:
         response = await client.post(
-            f"{S.OLLAMA_HOST}/api/show",
+            build_ollama_url("api/show"),
             json={"model": normalised},
             timeout=httpx.Timeout(60.0, connect=15.0),
         )
@@ -282,9 +305,9 @@ async def _fetch_tags(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
     """Return all models from Ollama, following legacy endpoints when necessary."""
 
     attempts: List[tuple[str, str, Dict[str, Any]]] = [
-        ("GET", f"{S.OLLAMA_HOST}/api/tags", {}),
-        ("GET", f"{S.OLLAMA_HOST}/api/models", {}),
-        ("POST", f"{S.OLLAMA_HOST}/api/tags", {"json": {}}),
+        ("GET", build_ollama_url("api/tags"), {}),
+        ("GET", build_ollama_url("api/models"), {}),
+        ("POST", build_ollama_url("api/tags"), {"json": {}}),
     ]
     last_error: Exception | None = None
     for method, url, kwargs in attempts:
@@ -371,7 +394,7 @@ async def _pull_model(
         try:
             async with client.stream(
                 "POST",
-                f"{S.OLLAMA_HOST}/api/pull",
+                build_ollama_url("api/pull"),
                 json=payload,
                 timeout=httpx.Timeout(300.0, connect=30.0),
             ) as response:
@@ -483,7 +506,7 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
                 for model, purpose in _models_to_check()
             ]
             return OllamaStatus(
-                host=S.OLLAMA_HOST,
+                host=normalise_ollama_host(),
                 reachable=False,
                 models=models,
                 message=message,
@@ -588,7 +611,7 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
             statuses.extend(custom_statuses)
         summary = _summarise(statuses)
         return OllamaStatus(
-            host=S.OLLAMA_HOST,
+            host=normalise_ollama_host(),
             reachable=True,
             models=statuses,
             message=summary,
@@ -644,8 +667,8 @@ def _extract_delete_error(response: httpx.Response, normalized: str) -> str:
 
 async def _delete_model_legacy(client: httpx.AsyncClient, normalized: str) -> Dict[str, Any] | None:
     delete_urls = [
-        f"{S.OLLAMA_HOST}/api/delete",
-        f"{S.OLLAMA_HOST}/api/delete/",
+        build_ollama_url("api/delete"),
+        build_ollama_url("api/delete/"),
     ]
     aliases = _model_aliases(normalized)
     attempts: List[tuple[str, str, Dict[str, Any]]] = []
@@ -714,8 +737,8 @@ async def delete_model(model: str) -> None:
     async with httpx.AsyncClient(timeout=timeout) as client:
         payload: Dict[str, Any] | None = None
         delete_urls = [
-            f"{S.OLLAMA_HOST}/api/tags/{encoded}",
-            f"{S.OLLAMA_HOST}/api/models/{encoded}",
+            build_ollama_url(f"api/tags/{encoded}"),
+            build_ollama_url(f"api/models/{encoded}"),
         ]
         last_error: httpx.HTTPStatusError | None = None
         for url in delete_urls:
