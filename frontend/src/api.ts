@@ -488,18 +488,65 @@ export type StreamEvent =
   | { type: 'pending_overview'; payload: PendingOverview }
   | { type: 'pending_error'; error: string }
 
-const envBase = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8000'
-const BASE = envBase.replace(/\/$/, '')
-const baseUrl = new URL(BASE)
-const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-const streamUrl = new URL(baseUrl)
+const rawEnvBase = ((import.meta.env.VITE_API_BASE as string | undefined) ?? '').trim()
+
+const trimTrailingSlash = (value: string): string => {
+  if (!value || value === '/') {
+    return value
+  }
+  return value.replace(/\/$/, '')
+}
+
+const hasConfiguredBase = rawEnvBase.length > 0
+const normalizedBase = hasConfiguredBase ? trimTrailingSlash(rawEnvBase) : ''
+const fallbackOrigin =
+  typeof window !== 'undefined' && typeof window.location?.origin === 'string'
+    ? window.location.origin
+    : 'http://localhost:8000'
+
+const httpBase = hasConfiguredBase ? normalizedBase || '/' : 'http://localhost:8000'
+const httpBaseNormalized = trimTrailingSlash(httpBase)
+const httpBaseIsAbsolute = /^https?:\/\//i.test(httpBaseNormalized)
+
+const resolveRequestUrl = (path: string): string => {
+  if (httpBaseIsAbsolute) {
+    const url = new URL(path, `${httpBaseNormalized}/`)
+    return url.toString()
+  }
+  const prefix = httpBaseNormalized === '/' ? '' : httpBaseNormalized
+  return `${prefix}${path}`
+}
+
+const wsBaseUrl = (() => {
+  if (httpBaseIsAbsolute) {
+    try {
+      return new URL(httpBaseNormalized)
+    } catch (error) {
+      return new URL('http://localhost:8000')
+    }
+  }
+  try {
+    const relativeBase = normalizedBase && normalizedBase !== '/' ? normalizedBase : '/'
+    return new URL(relativeBase, fallbackOrigin)
+  } catch (error) {
+    return new URL(fallbackOrigin)
+  }
+})()
+
+const wsProtocol = wsBaseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+const wsPathBase = trimTrailingSlash(wsBaseUrl.pathname)
+const streamUrl = new URL(wsBaseUrl.toString())
 streamUrl.protocol = wsProtocol
-streamUrl.pathname = `${baseUrl.pathname.replace(/\/$/, '')}/ws/stream`
+streamUrl.pathname = `${wsPathBase || ''}/ws/stream`.replace(/\/\+/g, '/')
 streamUrl.search = ''
 streamUrl.hash = ''
 const STREAM_URL = streamUrl.toString().replace(/\/$/, '')
 
-export const API_BASE_URL = BASE
+export const API_BASE_URL = httpBaseIsAbsolute
+  ? httpBaseNormalized
+  : httpBaseNormalized === ''
+    ? '/'
+    : httpBaseNormalized
 export const STREAM_WEBSOCKET_URL = STREAM_URL
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -522,7 +569,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const started = performance.now()
   let response: Response
   try {
-    response = await fetch(`${BASE}${path}`, {
+    response = await fetch(resolveRequestUrl(path), {
       headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
       ...init,
     })

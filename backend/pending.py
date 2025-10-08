@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import email
 from dataclasses import dataclass
+from datetime import timezone
 from email import policy
+from email.utils import parsedate_to_datetime
 from typing import List, Sequence
 
 from database import (
@@ -105,7 +107,24 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
                 )
             )
 
-    pending_entries.sort(key=lambda item: (item.folder, item.message_uid))
+    def _sort_key(item: PendingMail) -> tuple[float, str, str]:
+        parsed = None
+        if item.date:
+            try:
+                parsed = parsedate_to_datetime(item.date)
+            except (TypeError, ValueError, IndexError):
+                parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            else:
+                parsed = parsed.astimezone(timezone.utc)
+            timestamp = parsed.timestamp()
+        else:
+            timestamp = 0.0
+        return (-timestamp, item.folder.lower(), item.message_uid)
+
+    pending_entries.sort(key=_sort_key)
     pending_total = len(pending_entries)
     processed_count = processed_total + suggestion_total
 
