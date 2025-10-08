@@ -48,6 +48,12 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
     ? Math.min(overview?.displayed_pending ?? limitedEntries.length, limitedEntries.length)
     : limitedEntries.length
   const truncated = limitActive && displayedCount < pendingCount
+  const hasOverview = overview !== null
+  const isRefreshing = loading && hasOverview
+  const showInitialLoading = loading && !hasOverview
+  const showEmptyState = hasOverview && pendingCount === 0 && !error
+  const showNoDetails = hasOverview && pendingCount > 0 && limitedEntries.length === 0
+  const showTable = hasOverview && pendingCount > 0 && limitedEntries.length > 0
 
   return (
     <section className="pending-overview">
@@ -72,26 +78,33 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
 
       {error && <div className="status-banner error">{error}</div>}
 
-      {loading && <div className="pending-placeholder">Live-Status wird geladen…</div>}
+      {showInitialLoading && <div className="pending-placeholder">Live-Status wird geladen…</div>}
 
-      {!loading && !pendingCount && !error && (
-        <div className="pending-placeholder">
-          {limitDisabled
-            ? 'Detailansicht deaktiviert (PENDING_LIST_LIMIT=0). Zähler bleiben aktiv.'
-            : 'Keine unbearbeiteten Nachrichten gefunden.'}
-        </div>
+      {showEmptyState && (
+        <>
+          {isRefreshing && <div className="pending-refresh-indicator refresh-indicator">Aktualisiere…</div>}
+          <div className="pending-placeholder">
+            {limitDisabled
+              ? 'Detailansicht deaktiviert (PENDING_LIST_LIMIT=0). Zähler bleiben aktiv.'
+              : 'Keine unbearbeiteten Nachrichten gefunden.'}
+          </div>
+        </>
       )}
 
-      {!loading && pendingCount > 0 && limitedEntries.length === 0 && (
-        <div className="pending-placeholder">
-          {limitDisabled
-            ? 'Die Liste der unbearbeiteten Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
-            : 'Keine Details verfügbar.'}
-        </div>
+      {showNoDetails && (
+        <>
+          {isRefreshing && <div className="pending-refresh-indicator refresh-indicator">Aktualisiere…</div>}
+          <div className="pending-placeholder">
+            {limitDisabled
+              ? 'Die Liste der unbearbeiteten Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
+              : 'Keine Details verfügbar.'}
+          </div>
+        </>
       )}
 
-      {!loading && pendingCount > 0 && limitedEntries.length > 0 && (
+      {showTable && (
         <div className="pending-table-wrapper">
+          {isRefreshing && <div className="pending-refresh-indicator refresh-indicator">Aktualisiere…</div>}
           {truncated && (
             <div className="pending-limit-info">
               Anzeige begrenzt auf {displayedCount} von {pendingCount} Einträgen.

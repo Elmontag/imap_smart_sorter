@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { KeywordFilterActivity, getKeywordFilterActivity } from '../api'
 
@@ -13,18 +13,27 @@ export function useFilterActivity(enabled = true): FilterActivityState {
   const [data, setData] = useState<KeywordFilterActivity | null>(null)
   const [loading, setLoading] = useState<boolean>(enabled)
   const [error, setError] = useState<string | null>(null)
+  const snapshotSignatureRef = useRef<string>('')
 
   const load = useCallback(async () => {
     if (!enabled) {
       setData(null)
       setError(null)
       setLoading(false)
+      snapshotSignatureRef.current = ''
       return
     }
     setLoading(true)
     try {
       const activity = await getKeywordFilterActivity()
-      setData(activity)
+      const nextSignature = JSON.stringify(activity)
+      setData(prev => {
+        if (snapshotSignatureRef.current === nextSignature && prev !== null) {
+          return prev
+        }
+        snapshotSignatureRef.current = nextSignature
+        return activity
+      })
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Filteraktivität konnte nicht geladen werden.')
