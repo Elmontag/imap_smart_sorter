@@ -329,6 +329,20 @@ def _extract_pull_error(response: httpx.Response, normalized: str) -> str:
     return f"HTTP {response.status_code}"
 
 
+def _extract_pull_error(response: httpx.Response, normalized: str) -> str:
+    payload = _coerce_json_dict(response)
+    if payload:
+        message = payload.get("error") or payload.get("message") or payload.get("status")
+        if message:
+            return str(message)
+    text = response.text.strip()
+    if response.status_code == 404:
+        return f"Modell '{normalized}' wurde nicht gefunden"
+    if text:
+        return text
+    return f"HTTP {response.status_code}"
+
+
 async def _pull_model(
     client: httpx.AsyncClient,
     model: str,
