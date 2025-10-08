@@ -21,13 +21,20 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
   const limitActive = overview?.limit_active ?? Boolean(overview?.list_limit && overview.list_limit > 0)
   const limitDisabled = !limitActive && (overview?.list_limit ?? null) === 0
   const entries = overview?.pending ?? []
+  const effectiveLimit = limitActive ? Math.max(overview?.list_limit ?? 0, 0) : 0
+  const limitedEntries = useMemo(() => {
+    if (!limitActive || effectiveLimit <= 0) {
+      return entries
+    }
+    return entries.slice(0, effectiveLimit)
+  }, [effectiveLimit, entries, limitActive])
   const itemsPerPage = 10
   const [page, setPage] = useState(1)
-  const totalPages = Math.max(1, Math.ceil(entries.length / itemsPerPage))
+  const totalPages = Math.max(1, Math.ceil(limitedEntries.length / itemsPerPage))
 
   useEffect(() => {
     setPage(1)
-  }, [entries.length, limitActive])
+  }, [limitedEntries.length, limitActive])
 
   useEffect(() => {
     if (page > totalPages) {
@@ -36,8 +43,11 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
   }, [page, totalPages])
 
   const startIndex = (page - 1) * itemsPerPage
-  const pageItems = entries.slice(startIndex, startIndex + itemsPerPage)
-  const truncated = limitActive && (overview?.displayed_pending ?? entries.length) < pendingCount
+  const pageItems = limitedEntries.slice(startIndex, startIndex + itemsPerPage)
+  const displayedCount = limitActive
+    ? Math.min(overview?.displayed_pending ?? limitedEntries.length, limitedEntries.length)
+    : limitedEntries.length
+  const truncated = limitActive && displayedCount < pendingCount
 
   return (
     <section className="pending-overview">
@@ -72,7 +82,7 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
         </div>
       )}
 
-      {!loading && pendingCount > 0 && entries.length === 0 && (
+      {!loading && pendingCount > 0 && limitedEntries.length === 0 && (
         <div className="pending-placeholder">
           {limitDisabled
             ? 'Die Liste der unbearbeiteten Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
@@ -80,11 +90,11 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
         </div>
       )}
 
-      {!loading && pendingCount > 0 && entries.length > 0 && (
+      {!loading && pendingCount > 0 && limitedEntries.length > 0 && (
         <div className="pending-table-wrapper">
           {truncated && (
             <div className="pending-limit-info">
-              Anzeige begrenzt auf {overview?.displayed_pending ?? entries.length} von {pendingCount} Einträgen.
+              Anzeige begrenzt auf {displayedCount} von {pendingCount} Einträgen.
             </div>
           )}
           <table className="pending-table">
@@ -107,7 +117,7 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
               ))}
             </tbody>
           </table>
-          {entries.length > itemsPerPage && (
+          {limitedEntries.length > itemsPerPage && (
             <div className="pending-pagination" role="navigation" aria-label="Pending Navigation">
               <button type="button" onClick={() => setPage(page - 1)} disabled={page <= 1}>
                 Zurück
