@@ -92,6 +92,7 @@ def test_delete_model_falls_back_to_legacy_post(backend_env, monkeypatch):
     client = DummyClient(
         plan=[
             {"status": 405},
+            {"status": 405},
             {"status": 200, "payload": {"deleted": True}},
         ],
     )
@@ -100,10 +101,9 @@ def test_delete_model_falls_back_to_legacy_post(backend_env, monkeypatch):
     asyncio.run(ollama_service.delete_model("mistral"))
 
     delete_url = "http://ollama:11434/api/delete"
-    assert client.calls == [
-        ("DELETE", f"http://ollama:11434/api/tags/{encoded}", {}),
-        ("DELETE", delete_url, {"params": {"model": normalized}}),
-    ]
+    assert client.calls[0] == ("DELETE", f"http://ollama:11434/api/tags/{encoded}", {})
+    assert client.calls[1] == ("DELETE", f"http://ollama:11434/api/models/{encoded}", {})
+    assert client.calls[2] == ("DELETE", delete_url, {"params": {"model": normalized}})
 
 
 def test_delete_model_falls_back_to_post_name(backend_env, monkeypatch):
@@ -118,6 +118,11 @@ def test_delete_model_falls_back_to_post_name(backend_env, monkeypatch):
             {"status": 405},
             {"status": 405},
             {"status": 405},
+            {"status": 405},
+            {"status": 405},
+            {"status": 405},
+            {"status": 405},
+            {"status": 405},
             {"status": 200, "payload": {"deleted": True}},
         ],
     )
@@ -126,15 +131,11 @@ def test_delete_model_falls_back_to_post_name(backend_env, monkeypatch):
     asyncio.run(ollama_service.delete_model("custom"))
 
     delete_url = "http://ollama:11434/api/delete"
-    assert client.calls == [
-        ("DELETE", f"http://ollama:11434/api/tags/{encoded}", {}),
-        ("DELETE", delete_url, {"params": {"model": normalized}}),
-        ("DELETE", delete_url, {"params": {"name": normalized}}),
-        ("DELETE", delete_url, {"json": {"model": normalized}}),
-        ("DELETE", delete_url, {"json": {"name": normalized}}),
-        ("POST", delete_url, {"json": {"model": normalized, "name": normalized}}),
-        ("POST", delete_url, {"json": {"model": normalized}}),
-    ]
+    assert client.calls[0] == ("DELETE", f"http://ollama:11434/api/tags/{encoded}", {})
+    assert client.calls[1] == ("DELETE", f"http://ollama:11434/api/models/{encoded}", {})
+    assert client.calls[-2] == ("POST", delete_url, {"json": {"model": normalized, "name": normalized}})
+    assert client.calls[-1] == ("POST", delete_url, {"json": {"model": normalized}})
+    assert len(client.calls) == 12
 
 
 def test_delete_model_raises_for_missing_model(backend_env, monkeypatch):
@@ -166,6 +167,10 @@ def test_delete_model_propagates_legacy_error(backend_env, monkeypatch):
             {"status": 405},
             {"status": 405},
             {"status": 405},
+            {"status": 405},
+            {"status": 405},
+            {"status": 405},
+            {"status": 405},
             {"status": 500, "payload": {"error": "kaputt"}},
         ],
     )
@@ -176,13 +181,8 @@ def test_delete_model_propagates_legacy_error(backend_env, monkeypatch):
 
     assert "kaputt" in str(excinfo.value)
     delete_url = "http://ollama:11434/api/delete"
-    assert client.calls == [
-        ("DELETE", f"http://ollama:11434/api/tags/{encoded}", {}),
-        ("DELETE", delete_url, {"params": {"model": normalized}}),
-        ("DELETE", delete_url, {"params": {"name": normalized}}),
-        ("DELETE", delete_url, {"json": {"model": normalized}}),
-        ("DELETE", delete_url, {"json": {"name": normalized}}),
-        ("POST", delete_url, {"json": {"model": normalized, "name": normalized}}),
-        ("POST", delete_url, {"json": {"model": normalized}}),
-        ("POST", delete_url, {"json": {"name": normalized}}),
-    ]
+    assert client.calls[0] == ("DELETE", f"http://ollama:11434/api/tags/{encoded}", {})
+    assert client.calls[1] == ("DELETE", f"http://ollama:11434/api/models/{encoded}", {})
+    assert client.calls[-2] == ("POST", delete_url, {"json": {"model": normalized, "name": normalized}})
+    assert client.calls[-1] == ("POST", delete_url, {"json": {"model": normalized}})
+    assert len(client.calls) == 12

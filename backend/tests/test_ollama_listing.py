@@ -1,5 +1,8 @@
 import asyncio
 
+import httpx
+import pytest
+
 
 def test_ollama_status_lists_detected_models_without_requirements(backend_env, monkeypatch):
     ollama_service = backend_env["ollama_service"]
@@ -34,3 +37,71 @@ def test_ollama_status_lists_detected_models_without_requirements(backend_env, m
         assert model.purpose == "custom"
         assert model.pulled is True
         assert model.message == "bereit"
+
+
+class _FetchDummyResponse:
+    def __init__(self, method: str, url: str, status: int, payload: dict | None = None) -> None:
+        self.status_code = status
+        self._payload = payload or {}
+        self.request = httpx.Request(method, url)
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=self.request, response=self)
+
+
+class _FetchDummyClient:
+    def __init__(self, plan: list[dict[str, object]]) -> None:
+        self.plan = list(plan)
+        self.calls: list[tuple[str, str]] = []
+
+    async def request(self, method: str, url: str, **kwargs) -> _FetchDummyResponse:  # noqa: ARG002
+        method_upper = method.upper()
+        self.calls.append((method_upper, url))
+        entry = self.plan.pop(0) if self.plan else {"status": 200, "payload": {}}
+        status = int(entry.get("status", 200))
+        payload = entry.get("payload")
+        if payload is not None and not isinstance(payload, dict):
+            raise AssertionError("payload must be a dict")
+        return _FetchDummyResponse(method_upper, url, status, payload)
+
+
+def test_fetch_tags_falls_back_to_models_endpoint(backend_env):
+    ollama_service = backend_env["ollama_service"]
+    client = _FetchDummyClient(
+        [
+            {"status": 405, "payload": {"error": "method not allowed"}},
+            {"status": 200, "payload": {"models": [{"model": "llama3"}]}}
+        ]
+    )
+
+    models = asyncio.run(ollama_service._fetch_tags(client))
+
+    assert models == [{"model": "llama3"}]
+    assert client.calls == [
+        ("GET", "http://ollama:11434/api/tags"),
+        ("GET", "http://ollama:11434/api/models"),
+    ]
+
+
+def test_fetch_tags_raises_when_all_variants_fail(backend_env):
+    ollama_service = backend_env["ollama_service"]
+    client = _FetchDummyClient(
+        [
+            {"status": 405, "payload": {"error": "method not allowed"}},
+            {"status": 404, "payload": {"error": "missing"}},
+            {"status": 500, "payload": {"error": "kaputt"}},
+        ]
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(ollama_service._fetch_tags(client))
+
+    assert client.calls == [
+        ("GET", "http://ollama:11434/api/tags"),
+        ("GET", "http://ollama:11434/api/models"),
+        ("POST", "http://ollama:11434/api/tags"),
+    ]

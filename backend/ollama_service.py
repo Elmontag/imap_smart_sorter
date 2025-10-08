@@ -279,13 +279,54 @@ async def get_model_context_window(model: str) -> int | None:
 
 
 async def _fetch_tags(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
-    response = await client.get(f"{S.OLLAMA_HOST}/api/tags")
-    response.raise_for_status()
-    payload = response.json()
-    models = payload.get("models")
-    if isinstance(models, list):
-        return [item for item in models if isinstance(item, dict)]
-    return []
+    """Return all models from Ollama, following legacy endpoints when necessary."""
+
+    attempts: List[tuple[str, str, Dict[str, Any]]] = [
+        ("GET", f"{S.OLLAMA_HOST}/api/tags", {}),
+        ("GET", f"{S.OLLAMA_HOST}/api/models", {}),
+        ("POST", f"{S.OLLAMA_HOST}/api/tags", {"json": {}}),
+    ]
+    last_error: Exception | None = None
+    for method, url, kwargs in attempts:
+        try:
+            response = await client.request(method, url, **kwargs)
+        except httpx.HTTPError as exc:
+            last_error = exc
+            continue
+        if response.status_code in {404, 405}:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+            continue
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            continue
+        payload = response.json()
+        if isinstance(payload, dict):
+            models = payload.get("models")
+            if isinstance(models, list):
+                return [item for item in models if isinstance(item, dict)]
+        return []
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Ollama-Modelle konnten nicht ermittelt werden")
+
+
+def _extract_pull_error(response: httpx.Response, normalized: str) -> str:
+    payload = _coerce_json_dict(response)
+    if payload:
+        message = payload.get("error") or payload.get("message") or payload.get("status")
+        if message:
+            return str(message)
+    text = response.text.strip()
+    if response.status_code == 404:
+        return f"Modell '{normalized}' wurde nicht gefunden"
+    if text:
+        return text
+    return f"HTTP {response.status_code}"
 
 
 def _extract_pull_error(response: httpx.Response, normalized: str) -> str:
@@ -602,26 +643,50 @@ def _extract_delete_error(response: httpx.Response, normalized: str) -> str:
 
 
 async def _delete_model_legacy(client: httpx.AsyncClient, normalized: str) -> Dict[str, Any] | None:
-    delete_url = f"{S.OLLAMA_HOST}/api/delete"
+    delete_urls = [
+        f"{S.OLLAMA_HOST}/api/delete",
+        f"{S.OLLAMA_HOST}/api/delete/",
+    ]
     aliases = _model_aliases(normalized)
-    attempts: List[tuple[str, Dict[str, Any]]] = []
-    for alias in aliases:
-        attempts.extend(
-            [
-                ("DELETE", {"params": {"model": alias}}),
-                ("DELETE", {"params": {"name": alias}}),
-                ("DELETE", {"json": {"model": alias}}),
-                ("DELETE", {"json": {"name": alias}}),
-                ("POST", {"json": {"model": alias, "name": alias}}),
-                ("POST", {"json": {"model": alias}}),
-                ("POST", {"json": {"name": alias}}),
-                ("POST", {"data": {"model": alias}}),
-                ("POST", {"data": {"name": alias}}),
-            ]
-        )
+    attempts: List[tuple[str, str, Dict[str, Any]]] = []
+    for delete_url in delete_urls:
+        for alias in aliases:
+            attempts.extend(
+                [
+                    ("DELETE", delete_url, {"params": {"model": alias}}),
+                    ("DELETE", delete_url, {"params": {"name": alias}}),
+                    ("DELETE", delete_url, {"json": {"model": alias}}),
+                    ("DELETE", delete_url, {"json": {"name": alias}}),
+                    ("DELETE", delete_url, {"data": {"model": alias}}),
+                    ("DELETE", delete_url, {"data": {"name": alias}}),
+                    (
+                        "DELETE",
+                        delete_url,
+                        {
+                            "content": json.dumps({"model": alias}).encode("utf-8"),
+                            "headers": {"Content-Type": "application/json"},
+                        },
+                    ),
+                    (
+                        "DELETE",
+                        delete_url,
+                        {
+                            "content": json.dumps({"name": alias}).encode("utf-8"),
+                            "headers": {"Content-Type": "application/json"},
+                        },
+                    ),
+                    ("POST", delete_url, {"json": {"model": alias, "name": alias}}),
+                    ("POST", delete_url, {"json": {"model": alias}}),
+                    ("POST", delete_url, {"json": {"name": alias}}),
+                    ("POST", delete_url, {"data": {"model": alias}}),
+                    ("POST", delete_url, {"data": {"name": alias}}),
+                    ("POST", delete_url, {"params": {"model": alias}}),
+                    ("POST", delete_url, {"params": {"name": alias}}),
+                ]
+            )
 
     last_message = None
-    for method, kwargs in attempts:
+    for method, delete_url, kwargs in attempts:
         response = await client.request(method, delete_url, **kwargs)
         if response.status_code == 405:
             last_message = _extract_delete_error(response, normalized)
@@ -647,16 +712,35 @@ async def delete_model(model: str) -> None:
     timeout = httpx.Timeout(60.0, connect=15.0)
     encoded = quote(normalized, safe="")
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.delete(f"{S.OLLAMA_HOST}/api/tags/{encoded}")
-        if response.status_code == 405:
-            payload = await _delete_model_legacy(client, normalized)
-        else:
+        payload: Dict[str, Any] | None = None
+        delete_urls = [
+            f"{S.OLLAMA_HOST}/api/tags/{encoded}",
+            f"{S.OLLAMA_HOST}/api/models/{encoded}",
+        ]
+        last_error: httpx.HTTPStatusError | None = None
+        for url in delete_urls:
+            response = await client.delete(url)
+            if response.status_code in {404, 405}:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    last_error = exc
+                if response.status_code == 405:
+                    continue
+                message = _extract_delete_error(response, normalized)
+                raise RuntimeError(message)
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 message = _extract_delete_error(response, normalized)
                 raise RuntimeError(message) from exc
             payload = _coerce_json_dict(response)
+            break
+        else:
+            if last_error is not None and last_error.response.status_code == 404:
+                message = _extract_delete_error(last_error.response, normalized)
+                raise RuntimeError(message)
+            payload = await _delete_model_legacy(client, normalized)
     if isinstance(payload, dict) and payload.get("deleted") is False:
         message = str(payload.get("error") or payload)
         raise RuntimeError(message)
