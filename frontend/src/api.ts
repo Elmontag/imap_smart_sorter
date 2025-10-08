@@ -507,19 +507,33 @@ const ensureLeadingSlash = (value: string): string => {
 }
 
 const splitPath = (value: string): { pathname: string; search: string } => {
-  if (!value) {
+  const raw = value.trim()
+  if (!raw) {
     return { pathname: '/', search: '' }
   }
-  const [pathPart] = value.split(/[?#]/, 1)
-  const index = value.indexOf('?')
-  const hashIndex = value.indexOf('#')
-  let suffix = ''
-  if (index >= 0) {
-    suffix += value.slice(index)
-  } else if (hashIndex >= 0) {
-    suffix += value.slice(hashIndex)
+
+  const queryIndex = raw.indexOf('?')
+  const hashIndex = raw.indexOf('#')
+
+  let cutIndex = -1
+  if (queryIndex >= 0 && hashIndex >= 0) {
+    cutIndex = Math.min(queryIndex, hashIndex)
+  } else {
+    cutIndex = Math.max(queryIndex, hashIndex)
   }
-  const pathname = pathPart ? ensureLeadingSlash(pathPart.replace(/\/+$/, '')) || '/' : '/'
+
+  const pathPart = cutIndex >= 0 ? raw.slice(0, cutIndex) : raw
+
+  let suffix = ''
+  if (queryIndex >= 0) {
+    suffix = raw.slice(queryIndex)
+  } else if (hashIndex >= 0) {
+    suffix = raw.slice(hashIndex)
+  }
+
+  const cleaned = pathPart.replace(/\/+$/, '')
+  const pathname = cleaned ? ensureLeadingSlash(cleaned) || '/' : '/'
+
   return { pathname, search: suffix }
 }
 
