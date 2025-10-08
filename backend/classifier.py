@@ -27,7 +27,7 @@ from configuration import (
 )
 from ollama_service import get_model_context_window
 from settings import S
-from runtime_settings import resolve_classifier_model
+from runtime_settings import resolve_classifier_model, resolve_mailbox_inbox
 
 
 logger = logging.getLogger(__name__)
@@ -281,7 +281,7 @@ def _match_catalog_path(name: str, catalog_index: Sequence[Tuple[str, str]] | No
             return []
         seen: set[str] = set()
         inbox_aliases = {"inbox"}
-        inbox_value = (S.IMAP_INBOX or "").strip().lower()
+        inbox_value = resolve_mailbox_inbox().strip().lower()
         if inbox_value:
             inbox_aliases.add(inbox_value)
         joined = "/".join(segments)
@@ -1433,7 +1433,7 @@ def _base_parent_segment(parent_hint: str | None) -> str:
     ensured = ensure_top_level_parent(parent_hint)
     if ensured:
         return ensured
-    fallback = (S.IMAP_INBOX or "INBOX").strip() or "INBOX"
+    fallback = resolve_mailbox_inbox()
     fallback_ensured = ensure_top_level_parent(fallback)
     return fallback_ensured or fallback
 

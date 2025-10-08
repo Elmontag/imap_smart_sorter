@@ -11,6 +11,7 @@ from database import (
     get_mailbox_tags,
     get_mode_override,
 )
+from mail_settings import MailboxSettings, load_mailbox_settings
 
 
 def resolve_move_mode() -> str:
@@ -39,6 +40,20 @@ def resolve_mailbox_tags() -> Tuple[str | None, str | None, str | None]:
     processed = stored_processed if stored_processed is not None else (S.IMAP_PROCESSED_TAG or None)
     prefix = stored_prefix if stored_prefix is not None else (S.IMAP_AI_TAG_PREFIX or None)
     return protected, processed, prefix
+
+
+def resolve_mailbox_settings(include_password: bool = False) -> MailboxSettings:
+    """Return the active mailbox connection settings including overrides."""
+
+    return load_mailbox_settings(include_password=include_password)
+
+
+def resolve_mailbox_inbox() -> str:
+    """Return the configured inbox folder name with sane defaults."""
+
+    settings = load_mailbox_settings(include_password=False)
+    inbox = settings.inbox.strip() if settings.inbox else ""
+    return inbox or "INBOX"
 
 
 def resolve_analysis_module() -> str:

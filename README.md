@@ -9,7 +9,7 @@ Der IMAP Smart Sorter analysiert eingehende E-Mails, schlägt passende Zielordne
   Im Dashboard kontrollierst du den Scan über Start/Stop-Buttons, siehst eine Automatisierungs-Kachel für Keyword-Regeln und behältst Statuskarten für Ollama sowie laufende Analysen im Blick. Offene Vorschläge erscheinen als aufklappbare Listeneinträge mit kompaktem Kopfbereich. Die Ollama-Kachel zeigt Host-Erreichbarkeit sowie Pull-Fortschritte der Modelle per Progressbar an und meldet bei Verbindungsproblemen klar, dass die restlichen Funktionen weiterhin verfügbar bleiben.
   Über die Hauptnavigation wechselst du nahtlos zwischen E-Mail- und Kalender-Dashboard: Eingehende Mails werden auf ICS-Einladungen, Absagen oder Aktualisierungen geprüft, Kennzahlen zu gescannten Nachrichten sowie importierten, ausstehenden und fehlgeschlagenen Terminen erscheinen auf einen Blick.
   Die Kalenderansicht bietet Listen-, Tages-, Wochen-, Monats- und Jahresmodus; in Woche und Monat markierst du Tage direkt in der Übersicht und siehst darunter eine Detailleiste mit allen Terminen des ausgewählten Datums.
-  Eine Einstellungsseite (`#/settings`) bündelt Statische Regeln, KI-Parameter, Kalenderanbindung und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln. Im Tab „KI & Tags“ lassen sich Modelle direkt über die UI nachladen; der Fortschritt wird wie im Dashboard live visualisiert und alternative Modelle können per Formular mit Zweckauswahl gepullt werden. Der Tab „Kalender“ verwaltet CalDAV-Zugangsdaten, Standard-Zeitzone, Quelle-Ordner für den Kalenderscan, einen optionalen Zielordner für bearbeitete Einladungen sowie den IMAP-Tag nach erfolgreichem Import – samt Verbindungstest auf Knopfdruck.
+  Eine Einstellungsseite (`#/settings`) bündelt Statische Regeln, KI-Parameter, Kontenverwaltung und Betriebsmodus in separaten Tabs – inklusive Editor für Keyword-Regeln. Im Tab „KI & Tags“ lassen sich Modelle direkt über die UI nachladen; der Fortschritt wird wie im Dashboard live visualisiert und alternative Modelle können per Formular mit Zweckauswahl gepullt werden. Der Tab „Konten“ fasst IMAP-Zugang und CalDAV-Sync zusammen: Hinterlege Host, Port, Login und Passwort fürs Postfach, teste die Verbindung und pflege daneben CalDAV-URL, Standard-Zeitzone, Scan-Ordner, Zielordner sowie den IMAP-Tag nach erfolgreichem Import – jeweils mit eigenem Verbindungstest.
   Der Tab „Statische Regeln“ bietet eine zweigeteilte Ansicht mit Regel-Sidebar, Detailformular und Vorlagen für Newsletter-, Bestell-, Event- und Kalendereinladungs-Filter. Tags aus den definierten Tag-Slots lassen sich dort über Chips bequem zu- oder abwählen.
   Über die zusätzliche Unterseite `#/catalog` verwaltest du Ordner- und Tag-Katalog in einer dreispaltigen Ansicht mit hierarchischen Sidebars.
 
@@ -81,7 +81,7 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 - Der Kalender-Scanner durchsucht überwachte IMAP-Ordner nach `text/calendar`-Anhängen oder `.ics`-Dateien
   und legt gefundene Termine als Einträge in der Datenbank ab. Sequence-Nummern und `UID`s sorgen dafür,
   dass Aktualisierungen oder Absagen bestehender Termine als neue Version erkannt werden.
-- Über `CALENDAR_SOURCE_FOLDERS` (bzw. die Einstellung im Tab „Kalender“) begrenzt du den Scan auf ausgewählte IMAP-Ordner; ohne Angabe nutzt der Scanner zunächst die überwachten Dashboard-Ordner und fällt andernfalls auf das Posteingang-Default zurück.
+- Über `CALENDAR_SOURCE_FOLDERS` (bzw. die Einstellung im Tab „Konten“) begrenzt du den Scan auf ausgewählte IMAP-Ordner; ohne Angabe nutzt der Scanner zunächst die überwachten Dashboard-Ordner und fällt andernfalls auf das Posteingang-Default zurück.
 - `CALENDAR_POLL_INTERVAL_SECONDS` definiert das Intervall des Dauerlaufs, mit dem der automatische Kalenderscan in der Hintergrundsteuerung neue Einladungen verarbeitet.
 - Nach erfolgreichem Import über das Kalender-Dashboard setzt das Backend den IMAP-Tag aus `CALENDAR_PROCESSED_TAG`
   (Standard „Termin bearbeitet“) und verschiebt die Nachricht optional in den konfigurierten Zielordner. So erkennst du im Postfach
@@ -92,7 +92,7 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   markierst du Tage direkt in der Kachelansicht und siehst die Details aller Termine des gewählten Tages in einem separaten Panel – inklusive Status, Uhrzeit, Ort und direkter Import-Aktion.
 - Die Zeitzone orientiert sich an der Benutzerkonfiguration (`CALENDAR_DEFAULT_TIMEZONE` bzw. gespeicherte Einstellung).
   Für Einladungen mit `TZID`-Hinweisen wird automatisch auf die passende Zone umgerechnet; Ganztagstermine bleiben erhalten.
-- Im Einstellungs-Tab „Kalender“ aktivierst du die Synchronisation, hinterlegst CalDAV-URL, Benutzername, optionales Passwort,
+- Im Einstellungs-Tab „Konten“ aktivierst du die Synchronisation, hinterlegst CalDAV-URL, Benutzername, optionales Passwort,
   Kalenderpfad und Standard-Zeitzone, definierst spezifische IMAP-Ordner für den Kalenderscan und legst optional einen Zielordner
   für verarbeitete Terminmails fest. Änderungen werden dauerhaft gespeichert und können jederzeit neu geladen werden.
 - Ein separater Button prüft die CalDAV-Verbindung unmittelbar mit den eingegebenen oder gespeicherten Zugangsdaten.
@@ -225,6 +225,9 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 | `POST`  | `/api/calendar/scan/cancel` | Bricht einen laufenden Einmalscan ab |
 | `POST`  | `/api/calendar/scan` | Startet einen manuellen Scan nach ICS-Anhängen in den überwachten Ordnern |
 | `POST`  | `/api/calendar/import` | Importiert einen Kalendereintrag in den konfigurierten CalDAV-Kalender (`{ "event_id": 123 }`) |
+| `GET`   | `/api/mailbox/config` | Liefert Host, Port, Benutzername, Inbox, Flags und Passwort-Status des IMAP-Kontos |
+| `PUT`   | `/api/mailbox/config` | Aktualisiert IMAP-Host, Port, Zugangsdaten, Inbox, SSL-Flag, Zeitraum und Passwort |
+| `POST`  | `/api/mailbox/config/test` | Prüft die IMAP-Verbindung mit übergebenem oder gespeichertem Passwort |
 | `GET`   | `/api/calendar/config` | Liefert die gespeicherten CalDAV-Einstellungen (ohne Passwort) inklusive Ordnerlisten |
 | `PUT`   | `/api/calendar/config` | Speichert CalDAV-URL, Zugangsdaten, Zeitzone, Tag, Scan-Quellordner und Zielordner |
 | `POST`  | `/api/calendar/config/test` | Prüft die CalDAV-Verbindung mit den übergebenen oder gespeicherten Zugangsdaten |

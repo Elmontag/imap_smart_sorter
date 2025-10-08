@@ -29,6 +29,7 @@ from database import (
 from mailbox import MessageContent, add_message_tag, fetch_recent_messages, move_message
 from models import CalendarEventEntry
 from settings import S
+from runtime_settings import resolve_mailbox_inbox
 from utils import message_received_at, subject_from
 
 
@@ -242,7 +243,7 @@ async def scan_calendar_mailboxes(folders: Sequence[str] | None = None) -> Calen
         if not configured:
             configured = get_monitored_folders()
     if not configured:
-        configured = [S.IMAP_INBOX]
+        configured = [resolve_mailbox_inbox()]
     payloads = await asyncio.to_thread(fetch_recent_messages, configured)
     timezone_name = load_calendar_settings(include_password=False).timezone
     seen_messages: set[str] = set()
@@ -344,7 +345,8 @@ async def import_calendar_event(event_id: int) -> object:
     updated = update_calendar_event_status(event.id, "imported", error=None, imported_at=datetime.utcnow())
     if settings.processed_tag:
         try:
-            add_message_tag(event.message_uid, event.folder or S.IMAP_INBOX, settings.processed_tag)
+            inbox = resolve_mailbox_inbox()
+            add_message_tag(event.message_uid, event.folder or inbox, settings.processed_tag)
         except Exception:  # pragma: no cover - network interaction
             logger.warning(
                 "Tag %s konnte nach dem Import nicht gesetzt werden", settings.processed_tag, exc_info=True
@@ -354,7 +356,7 @@ async def import_calendar_event(event_id: int) -> object:
             move_message(
                 event.message_uid,
                 settings.processed_folder,
-                src_folder=event.folder or S.IMAP_INBOX,
+                src_folder=event.folder or resolve_mailbox_inbox(),
             )
         except Exception:  # pragma: no cover - network interaction
             logger.warning(

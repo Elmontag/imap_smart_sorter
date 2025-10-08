@@ -10,13 +10,19 @@ import {
   OllamaModelPurpose,
   getKeywordFilters,
   getCalendarSettings,
+  getMailboxSettings,
   updateKeywordFilters,
   updateAppConfig,
   updateCalendarSettings,
+  updateMailboxSettings,
   CalendarSettings,
   CalendarSettingsUpdateRequest,
   CalendarConnectionTestRequest,
+  MailboxSettings,
+  MailboxSettingsUpdateRequest,
+  MailboxConnectionTestRequest,
   testCalendarConnection,
+  testMailboxConnection,
 } from '../api'
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
 import CatalogEditor from '../components/CatalogEditor'
@@ -93,15 +99,15 @@ const sameStringLists = (a: string[], b: string[]): boolean => {
   return a.every((value, index) => value === b[index])
 }
 
-type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general' | 'calendar'
+type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'accounts' | 'general'
 
 const settingsTabs: SettingsTab[] = [
   'staticRules',
   'catalogFolders',
   'catalogTags',
   'analysis',
+  'accounts',
   'general',
-  'calendar',
 ]
 
 const isSettingsTab = (value: string | null): value is SettingsTab =>
@@ -124,6 +130,18 @@ interface ConfigDraft {
   protectedTag: string
   processedTag: string
   aiTagPrefix: string
+}
+
+interface MailboxDraft {
+  host: string
+  port: string
+  username: string
+  inbox: string
+  use_ssl: boolean
+  process_only_seen: boolean
+  since_days: string
+  password: string
+  clear_password: boolean
 }
 
 interface CalendarDraft {
@@ -307,6 +325,24 @@ export default function SettingsPage(): JSX.Element {
   })
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
+  const [mailboxConfig, setMailboxConfig] = useState<MailboxSettings | null>(null)
+  const [mailboxDraft, setMailboxDraft] = useState<MailboxDraft>({
+    host: '',
+    port: '993',
+    username: '',
+    inbox: 'INBOX',
+    use_ssl: true,
+    process_only_seen: false,
+    since_days: '30',
+    password: '',
+    clear_password: false,
+  })
+  const [mailboxLoading, setMailboxLoading] = useState(false)
+  const [mailboxSaving, setMailboxSaving] = useState(false)
+  const [mailboxError, setMailboxError] = useState<string | null>(null)
+  const [mailboxHasPassword, setMailboxHasPassword] = useState(false)
+  const [mailboxTesting, setMailboxTesting] = useState(false)
+  const [mailboxTestStatus, setMailboxTestStatus] = useState<StatusMessage | null>(null)
   const [calendarConfig, setCalendarConfig] = useState<CalendarSettings | null>(null)
   const [calendarDraft, setCalendarDraft] = useState<CalendarDraft>({
     enabled: false,
@@ -385,6 +421,34 @@ export default function SettingsPage(): JSX.Element {
     }
   }, [])
 
+  const loadMailboxConfig = useCallback(async () => {
+    setMailboxLoading(true)
+    try {
+      const settings = await getMailboxSettings()
+      setMailboxConfig(settings)
+      setMailboxHasPassword(Boolean(settings.has_password))
+      setMailboxDraft({
+        host: settings.host ?? '',
+        port: String(settings.port ?? 993),
+        username: settings.username ?? '',
+        inbox: settings.inbox ?? 'INBOX',
+        use_ssl: Boolean(settings.use_ssl),
+        process_only_seen: Boolean(settings.process_only_seen),
+        since_days: String(settings.since_days ?? 30),
+        password: '',
+        clear_password: false,
+      })
+      setMailboxError(null)
+      setMailboxTestStatus(null)
+    } catch (err) {
+      setMailboxError(
+        err instanceof Error ? err.message : 'Mailbox-Konfiguration konnte nicht geladen werden.',
+      )
+    } finally {
+      setMailboxLoading(false)
+    }
+  }, [])
+
   const loadCalendarConfig = useCallback(async () => {
     setCalendarLoading(true)
     try {
@@ -416,8 +480,9 @@ export default function SettingsPage(): JSX.Element {
 
   useEffect(() => {
     void loadFilters()
+    void loadMailboxConfig()
     void loadCalendarConfig()
-  }, [loadFilters, loadCalendarConfig])
+  }, [loadFilters, loadMailboxConfig, loadCalendarConfig])
 
   useEffect(() => {
     setTemplateMenuOpen(false)
@@ -551,6 +616,42 @@ export default function SettingsPage(): JSX.Element {
       configDraft.aiTagPrefix.trim() !== (appConfig.ai_tag_prefix ?? '').trim()
     )
   }, [appConfig, configDraft])
+
+  const mailboxDirty = useMemo(() => {
+    if (!mailboxConfig) {
+      return false
+    }
+    const host = mailboxDraft.host.trim()
+    const username = mailboxDraft.username.trim()
+    const inbox = mailboxDraft.inbox.trim()
+    const portValue = Number.parseInt(mailboxDraft.port, 10)
+    const sinceValue = Number.parseInt(mailboxDraft.since_days, 10)
+    if (host !== (mailboxConfig.host ?? '').trim()) {
+      return true
+    }
+    if (username !== (mailboxConfig.username ?? '').trim()) {
+      return true
+    }
+    if (inbox !== (mailboxConfig.inbox ?? '').trim()) {
+      return true
+    }
+    if (Number.isNaN(portValue) || portValue !== mailboxConfig.port) {
+      return true
+    }
+    if (Number.isNaN(sinceValue) || sinceValue !== mailboxConfig.since_days) {
+      return true
+    }
+    if (mailboxDraft.use_ssl !== mailboxConfig.use_ssl) {
+      return true
+    }
+    if (mailboxDraft.process_only_seen !== mailboxConfig.process_only_seen) {
+      return true
+    }
+    if (mailboxDraft.password.trim().length > 0 || mailboxDraft.clear_password) {
+      return true
+    }
+    return false
+  }, [mailboxConfig, mailboxDraft])
 
   const calendarDirty = useMemo(() => {
     if (!calendarConfig) {
@@ -859,6 +960,75 @@ export default function SettingsPage(): JSX.Element {
     }
   }, [configDraft, refreshAppConfig])
 
+  const handleMailboxSave = useCallback(async () => {
+    const trimmedHost = mailboxDraft.host.trim()
+    const trimmedUser = mailboxDraft.username.trim()
+    const trimmedInbox = mailboxDraft.inbox.trim() || 'INBOX'
+    const portValue = Number.parseInt(mailboxDraft.port, 10)
+    const sinceValue = Number.parseInt(mailboxDraft.since_days, 10)
+    const missing: string[] = []
+    if (!trimmedHost) {
+      missing.push('Host')
+    }
+    if (!trimmedUser) {
+      missing.push('Benutzername')
+    }
+    if (Number.isNaN(portValue) || portValue <= 0) {
+      missing.push('Port')
+    }
+    if (Number.isNaN(sinceValue) || sinceValue < 0) {
+      missing.push('Zeitraum (Tage)')
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte prüfe folgende Felder: ' : 'Bitte prüfe folgendes Feld: '
+      setStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    setMailboxSaving(true)
+    try {
+      const payload: MailboxSettingsUpdateRequest = {
+        host: trimmedHost,
+        port: portValue,
+        username: trimmedUser,
+        inbox: trimmedInbox,
+        use_ssl: mailboxDraft.use_ssl,
+        process_only_seen: mailboxDraft.process_only_seen,
+        since_days: sinceValue,
+      }
+      const trimmedPassword = mailboxDraft.password.trim()
+      if (trimmedPassword && !mailboxDraft.clear_password) {
+        payload.password = trimmedPassword
+      }
+      if (mailboxDraft.clear_password) {
+        payload.clear_password = true
+      }
+      const updated = await updateMailboxSettings(payload)
+      setMailboxConfig(updated)
+      setMailboxHasPassword(Boolean(updated.has_password))
+      setMailboxDraft({
+        host: updated.host ?? '',
+        port: String(updated.port ?? 993),
+        username: updated.username ?? '',
+        inbox: updated.inbox ?? 'INBOX',
+        use_ssl: Boolean(updated.use_ssl),
+        process_only_seen: Boolean(updated.process_only_seen),
+        since_days: String(updated.since_days ?? 30),
+        password: '',
+        clear_password: false,
+      })
+      setStatus({ kind: 'success', message: 'Mailbox-Konfiguration gespeichert.' })
+      setMailboxError(null)
+      setMailboxTestStatus(null)
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Mailbox-Konfiguration konnte nicht gespeichert werden.'
+      setStatus({ kind: 'error', message })
+      setMailboxError(message)
+    } finally {
+      setMailboxSaving(false)
+    }
+  }, [mailboxDraft])
+
   const handleCalendarSave = useCallback(async () => {
     const trimmedTimezone = calendarDraft.timezone.trim()
     const trimmedProcessedTag = calendarDraft.processed_tag.trim()
@@ -935,6 +1105,57 @@ export default function SettingsPage(): JSX.Element {
       setCalendarSaving(false)
     }
   }, [calendarDraft])
+
+  const handleMailboxTest = useCallback(async () => {
+    const trimmedHost = mailboxDraft.host.trim()
+    const trimmedUser = mailboxDraft.username.trim()
+    const trimmedInbox = mailboxDraft.inbox.trim()
+    const portValue = Number.parseInt(mailboxDraft.port, 10)
+    const missing: string[] = []
+    if (!trimmedHost) {
+      missing.push('Host')
+    }
+    if (!trimmedUser) {
+      missing.push('Benutzername')
+    }
+    if (Number.isNaN(portValue) || portValue <= 0) {
+      missing.push('Port')
+    }
+    const useStoredPassword = mailboxHasPassword && !mailboxDraft.password && !mailboxDraft.clear_password
+    if (!useStoredPassword && mailboxDraft.password.trim().length === 0) {
+      missing.push('Passwort')
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte fülle folgende Felder aus: ' : 'Bitte fülle folgendes Feld aus: '
+      setMailboxTestStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    setMailboxTestStatus(null)
+    setMailboxTesting(true)
+    try {
+      const payload: MailboxConnectionTestRequest = {
+        host: trimmedHost,
+        port: portValue,
+        username: trimmedUser,
+        inbox: trimmedInbox || undefined,
+        use_ssl: mailboxDraft.use_ssl,
+        use_stored_password: useStoredPassword,
+      }
+      if (!useStoredPassword) {
+        payload.password = mailboxDraft.password.trim()
+      }
+      const response = await testMailboxConnection(payload)
+      const message =
+        response.message ?? (response.ok ? 'Verbindung erfolgreich getestet.' : 'Verbindung fehlgeschlagen.')
+      setMailboxTestStatus({ kind: response.ok ? 'success' : 'error', message })
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Verbindungstest konnte nicht durchgeführt werden.'
+      setMailboxTestStatus({ kind: 'error', message })
+    } finally {
+      setMailboxTesting(false)
+    }
+  }, [mailboxDraft, mailboxHasPassword])
 
   const handleCalendarTest = useCallback(async () => {
     const trimmedUrl = calendarDraft.caldav_url.trim()
@@ -1063,11 +1284,11 @@ export default function SettingsPage(): JSX.Element {
           <button
             type="button"
             role="tab"
-            aria-selected={activeTab === 'calendar'}
-            className={`settings-tab ${activeTab === 'calendar' ? 'active' : ''}`}
-            onClick={() => handleTabChange('calendar')}
+            aria-selected={activeTab === 'accounts'}
+            className={`settings-tab ${activeTab === 'accounts' ? 'active' : ''}`}
+            onClick={() => handleTabChange('accounts')}
           >
-            Kalender
+            Konten
           </button>
           <button
             type="button"
@@ -1517,8 +1738,164 @@ export default function SettingsPage(): JSX.Element {
           </div>
         )}
 
-          {activeTab === 'calendar' && (
+          {activeTab === 'accounts' && (
             <div className="settings-section">
+              <section className="general-card">
+                <h2>E-Mail-Konto</h2>
+                <p className="muted">
+                  Hinterlege die Zugangsdaten für das IMAP-Postfach und prüfe die Verbindung.
+                </p>
+                {mailboxError && <div className="status-banner error">{mailboxError}</div>}
+                <div className="config-grid">
+                  <label>
+                    <span>IMAP-Host</span>
+                    <input
+                      type="text"
+                      value={mailboxDraft.host}
+                      onChange={event => setMailboxDraft(current => ({ ...current, host: event.target.value }))}
+                      placeholder="imap.example.org"
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Port</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={mailboxDraft.port}
+                      onChange={event => setMailboxDraft(current => ({ ...current, port: event.target.value }))}
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Benutzername</span>
+                    <input
+                      type="text"
+                      value={mailboxDraft.username}
+                      onChange={event => setMailboxDraft(current => ({ ...current, username: event.target.value }))}
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Posteingang</span>
+                    <input
+                      type="text"
+                      value={mailboxDraft.inbox}
+                      onChange={event => setMailboxDraft(current => ({ ...current, inbox: event.target.value }))}
+                      placeholder="z. B. INBOX"
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label className="toggle-field">
+                    <span>SSL/TLS verwenden</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={mailboxDraft.use_ssl}
+                        onChange={event =>
+                          setMailboxDraft(current => ({ ...current, use_ssl: event.target.checked }))
+                        }
+                        disabled={mailboxLoading || mailboxSaving}
+                      />
+                      <span>{mailboxDraft.use_ssl ? 'Aktiv' : 'Inaktiv'}</span>
+                    </div>
+                  </label>
+                  <label className="toggle-field">
+                    <span>Nur gelesene Mails prüfen</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={mailboxDraft.process_only_seen}
+                        onChange={event =>
+                          setMailboxDraft(current => ({ ...current, process_only_seen: event.target.checked }))
+                        }
+                        disabled={mailboxLoading || mailboxSaving}
+                      />
+                      <span>{mailboxDraft.process_only_seen ? 'Aktiv' : 'Inaktiv'}</span>
+                    </div>
+                    <small className="muted">
+                      Bei aktivierter Option verarbeitet der Worker ausschließlich bereits gelesene Nachrichten.
+                    </small>
+                  </label>
+                  <label>
+                    <span>Zeitraum (Tage)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={mailboxDraft.since_days}
+                      onChange={event =>
+                        setMailboxDraft(current => ({ ...current, since_days: event.target.value }))
+                      }
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                    <small className="muted">Ältere Nachrichten außerhalb des Zeitraums werden ignoriert.</small>
+                  </label>
+                  <label>
+                    <span>Passwort</span>
+                    <input
+                      type="password"
+                      value={mailboxDraft.password}
+                      onChange={event =>
+                        setMailboxDraft(current => ({ ...current, password: event.target.value }))
+                      }
+                      placeholder={mailboxHasPassword ? 'Passwort beibehalten' : 'Neues Passwort'}
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                    <small className="muted">
+                      {mailboxHasPassword
+                        ? 'Leer lassen, um das gespeicherte Passwort weiter zu nutzen.'
+                        : 'Trage hier das Passwort für das IMAP-Konto ein.'}
+                    </small>
+                  </label>
+                  <label className="toggle-field">
+                    <span>Passwort löschen</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={mailboxDraft.clear_password}
+                        onChange={event =>
+                          setMailboxDraft(current => ({ ...current, clear_password: event.target.checked }))
+                        }
+                        disabled={mailboxLoading || mailboxSaving}
+                      />
+                      <span>{mailboxDraft.clear_password ? 'Wird entfernt' : 'Beibehalten'}</span>
+                    </div>
+                    <small className="muted">Aktiviere diese Option, um das gespeicherte Passwort zu entfernen.</small>
+                  </label>
+                </div>
+                <div className="config-actions">
+                  {mailboxTestStatus && (
+                    <div className={`status-banner ${mailboxTestStatus.kind} inline`}>
+                      {mailboxTestStatus.message}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleMailboxTest()}
+                    disabled={mailboxLoading || mailboxSaving || mailboxTesting}
+                  >
+                    {mailboxTesting ? 'Teste Verbindung…' : 'Verbindung testen'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void loadMailboxConfig()}
+                    disabled={mailboxLoading || mailboxSaving}
+                  >
+                    {mailboxLoading ? 'Lade…' : 'Neu laden'}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void handleMailboxSave()}
+                    disabled={!mailboxDirty || mailboxSaving}
+                  >
+                    {mailboxSaving ? 'Speichere…' : 'E-Mail speichern'}
+                  </button>
+                </div>
+              </section>
               <section className="general-card">
                 <h2>CalDAV-Synchronisation</h2>
                 <p className="muted">
