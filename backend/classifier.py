@@ -1,13 +1,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import textwrap
 from collections import defaultdict
+from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, Literal, Optional
 
 import httpx
 
@@ -25,7 +27,12 @@ from configuration import (
     tag_slot_options_map,
     top_level_folder_names,
 )
-from ollama_service import get_model_context_window
+from ollama_service import (
+    build_ollama_url,
+    ensure_ollama_ready,
+    get_model_context_window,
+    normalise_ollama_host,
+)
 from settings import S
 from runtime_settings import resolve_classifier_model, resolve_mailbox_inbox
 
@@ -38,6 +45,73 @@ _MIN_NUM_CTX = 2048
 _PROMPT_CHAR_PER_TOKEN = 4
 _PROMPT_HEADROOM_RATIO = 0.9
 _CLASSIFIER_CONTEXT_CACHE: Dict[str, int] = {}
+
+
+@dataclass(frozen=True)
+class _EmbeddingProbe:
+    label: str
+    path: str
+    payload_kind: Literal["prompt", "input_list", "input", "text", "openai"]
+    encodings: tuple[Literal["json", "json_bytes", "json_text", "form"], ...] = ("json",)
+
+    def endpoint(self, base_url: str) -> str:
+        return build_ollama_url(self.path, host=base_url)
+
+    def payload(self, model: str, prompt_text: str) -> Dict[str, Any]:
+        if self.payload_kind == "prompt":
+            return {"model": model, "prompt": prompt_text}
+        if self.payload_kind == "input_list":
+            return {"model": model, "input": [prompt_text]}
+        if self.payload_kind == "input":
+            return {"model": model, "input": prompt_text}
+        if self.payload_kind == "text":
+            return {"model": model, "text": prompt_text}
+        if self.payload_kind == "openai":
+            return {"model": model, "input": prompt_text}
+        raise ValueError(f"Unknown payload kind: {self.payload_kind}")
+
+    def _form_payload(self, payload: Dict[str, Any]) -> Dict[str, str]:
+        encoded: Dict[str, str] = {}
+        for key, value in payload.items():
+            if isinstance(value, (dict, list)):
+                encoded[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                encoded[key] = str(value)
+        return encoded
+
+    def request_variants(self, model: str, prompt_text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        payload = self.payload(model, prompt_text)
+        variants: List[Tuple[str, Dict[str, Any]]] = []
+        for encoding in self.encodings:
+            if encoding == "json":
+                variants.append((f"{self.label}-json", {"json": payload}))
+            elif encoding == "json_bytes":
+                variants.append(
+                    (
+                        f"{self.label}-json-bytes",
+                        {
+                            "content": json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                            "headers": {"Content-Type": "application/json"},
+                        },
+                    )
+                )
+            elif encoding == "json_text":
+                variants.append(
+                    (
+                        f"{self.label}-json-text",
+                        {
+                            "data": json.dumps(payload, ensure_ascii=False),
+                            "headers": {"Content-Type": "application/json"},
+                        },
+                    )
+                )
+            elif encoding == "form":
+                variants.append((f"{self.label}-form", {"data": self._form_payload(payload)}))
+        return variants
+
+
+_EMBED_STRATEGY_CACHE: Dict[str, _EmbeddingProbe] = {}
+_EMBED_STRATEGY_LOCK = asyncio.Lock()
 
 
 def _is_user_override(field_name: str) -> bool:
@@ -160,24 +234,7 @@ def build_embedding_prompt(subject: str, sender: str, body: str) -> str:
     return prompt
 
 
-async def embed(prompt: str) -> List[float]:
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{S.OLLAMA_HOST}/api/embed",
-                json={
-                    "model": S.EMBED_MODEL,
-                    "input": [prompt[: S.EMBED_PROMPT_MAX_CHARS]],
-                },
-            )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:  # pragma: no cover - network interaction
-        logger.warning(
-            "Ollama Embedding fehlgeschlagen (%s): %s", S.OLLAMA_HOST, exc
-        )
-        return []
-
-    data = response.json()
+def _extract_embedding(data: Dict[str, Any]) -> List[float]:
     embedding = data.get("embedding")
     if isinstance(embedding, list):
         if embedding and isinstance(embedding[0], list):
@@ -188,6 +245,215 @@ async def embed(prompt: str) -> List[float]:
         first = embeddings[0]
         if isinstance(first, list):
             return first
+    data_entries = data.get("data")
+    if isinstance(data_entries, list) and data_entries:
+        first_entry = data_entries[0]
+        if isinstance(first_entry, dict):
+            openai_embedding = first_entry.get("embedding")
+            if isinstance(openai_embedding, list):
+                return openai_embedding
+    return []
+
+
+def _normalise_error_detail(response: httpx.Response | None) -> str:
+    if response is None:
+        return ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("error") or payload.get("message")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+    text = response.text.strip()
+    return text[:200] if text else ""
+
+
+def _embedding_probe_list(cached: Optional[_EmbeddingProbe]) -> List[_EmbeddingProbe]:
+    probes = [
+        _EmbeddingProbe(
+            "embeddings-prompt",
+            "/api/embeddings",
+            "prompt",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "embeddings-text",
+            "/api/embeddings",
+            "text",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "embeddings-input-list",
+            "/api/embeddings",
+            "input_list",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "embeddings-input",
+            "/api/embeddings",
+            "input",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "openai-embeddings",
+            "/v1/embeddings",
+            "openai",
+            ("json", "json_bytes", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-input-list",
+            "/api/embed",
+            "input_list",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-input",
+            "/api/embed",
+            "input",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-prompt",
+            "/api/embed",
+            "prompt",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+        _EmbeddingProbe(
+            "legacy-embed-text",
+            "/api/embed",
+            "text",
+            ("json", "json_bytes", "json_text", "form"),
+        ),
+    ]
+    if cached is None:
+        return probes
+    ordered: List[_EmbeddingProbe] = [cached]
+    seen = {cached}
+    for probe in probes:
+        if probe in seen:
+            continue
+        ordered.append(probe)
+    return ordered
+
+
+def _looks_like_missing_model(detail: str) -> bool:
+    lowered = detail.lower()
+    indicators = [
+        "model",
+        "not found",
+        "nicht gefunden",
+        "unknown",
+        "pull",
+        "download",
+        "kein modell",
+    ]
+    return any(token in lowered for token in indicators)
+
+
+async def embed(prompt: str) -> List[float]:
+    prompt_text = prompt[: S.EMBED_PROMPT_MAX_CHARS]
+    base_url = normalise_ollama_host()
+    attempts: List[str] = []
+    last_error: Exception | None = None
+    async with _EMBED_STRATEGY_LOCK:
+        cached_strategy = _EMBED_STRATEGY_CACHE.get(base_url)
+    probes = _embedding_probe_list(cached_strategy)
+    attempted_refresh = False
+    index = 0
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            while index < len(probes):
+                probe = probes[index]
+                endpoint = probe.endpoint(base_url)
+                variants = probe.request_variants(S.EMBED_MODEL, prompt_text)
+                variant_index = 0
+                fatal_error = False
+                while variant_index < len(variants):
+                    label, request_kwargs = variants[variant_index]
+                    try:
+                        response = await client.post(endpoint, **request_kwargs)
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        detail = _normalise_error_detail(exc.response)
+                        attempts.append(
+                            f"{label}:{exc.response.status_code}:{detail or 'no-detail'}"
+                        )
+                        last_error = exc
+                        status = exc.response.status_code
+                        retry_current = False
+                        if (
+                            status in {400, 404, 422}
+                            and not attempted_refresh
+                            and detail
+                            and _looks_like_missing_model(detail)
+                        ):
+                            attempted_refresh = True
+                            try:
+                                await ensure_ollama_ready()
+                            except Exception as refresh_exc:  # pragma: no cover - defensive log
+                                logger.warning(
+                                    "Ollama-Statusaktualisierung nach Modellfehler fehlgeschlagen: %s",
+                                    refresh_exc,
+                                )
+                            else:
+                                retry_current = True
+                        if retry_current:
+                            continue
+                        if status in {400, 404, 422}:
+                            logger.debug(
+                                "Ollama-Embedding fehlgeschlagen (%s %s %s): %s",
+                                label,
+                                endpoint,
+                                status,
+                                detail,
+                            )
+                            variant_index += 1
+                            continue
+                        fatal_error = True
+                        break
+                    except httpx.HTTPError as exc:  # pragma: no cover - network interaction
+                        attempts.append(f"{label}:network:{exc}")
+                        last_error = exc
+                        fatal_error = True
+                        break
+
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        attempts.append(f"{label}:invalid-json")
+                        last_error = ValueError("invalid JSON payload")
+                        variant_index += 1
+                        continue
+                    embedding = _extract_embedding(data)
+                    if embedding:
+                        if attempts:
+                            logger.debug(
+                                "Ollama-Embedding erfolgreich nach vorherigen Versuchen: %s",
+                                ";".join(attempts),
+                            )
+                        async with _EMBED_STRATEGY_LOCK:
+                            _EMBED_STRATEGY_CACHE[base_url] = probe
+                        return embedding
+                    attempts.append(f"{label}:invalid-payload")
+                    last_error = ValueError("embedding payload missing")
+                    variant_index += 1
+                if fatal_error:
+                    break
+                index += 1
+    except httpx.HTTPError as exc:  # pragma: no cover - network interaction
+        attempts.append(f"client:{exc}")
+        last_error = exc
+
+    if last_error is not None:
+        logger.warning(
+            "Ollama Embedding fehlgeschlagen (%s): %s | Versuche: %s",
+            S.OLLAMA_HOST,
+            last_error,
+            ";".join(attempts) or "keine",
+        )
     return []
 
 
@@ -667,7 +933,7 @@ async def _chat(
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=None)
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            async with client.stream("POST", f"{S.OLLAMA_HOST}/api/chat", json=payload) as response:
+            async with client.stream("POST", build_ollama_url("api/chat"), json=payload) as response:
                 response.raise_for_status()
 
                 content_chunks: List[str] = []
