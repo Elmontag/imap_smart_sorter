@@ -17,6 +17,11 @@ def anyio_backend() -> str:
         ("http://ollama:11434", "api/embeddings", "http://ollama:11434/api/embeddings"),
         ("http://ollama:11434/", "/api/embed", "http://ollama:11434/api/embed"),
         ("http://ollama:11434/api", "api/embeddings", "http://ollama:11434/api/embeddings"),
+        (
+            "http://proxy.internal/ollama/api",
+            "api/embeddings",
+            "http://proxy.internal/ollama/api/embeddings",
+        ),
     ],
 )
 def test_build_ollama_url_resolves_paths(backend_env, monkeypatch, config_host, path, expected):
@@ -24,6 +29,7 @@ def test_build_ollama_url_resolves_paths(backend_env, monkeypatch, config_host, 
     settings_module = importlib.import_module("backend.settings")
 
     monkeypatch.setattr(settings_module.S, "OLLAMA_HOST", config_host)
+    monkeypatch.setattr(ollama_service.S, "OLLAMA_HOST", config_host)
 
     assert ollama_service.build_ollama_url(path) == expected
 

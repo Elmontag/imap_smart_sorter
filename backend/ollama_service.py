@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
-from urllib.parse import quote, urljoin
+from urllib.parse import ParseResult, quote, urlunparse, urlparse
 
 from settings import S
 from runtime_settings import resolve_classifier_model
@@ -38,8 +38,36 @@ def build_ollama_url(path: str, *, host: str | None = None) -> str:
     base = normalise_ollama_host(host)
     if not path:
         return base
-    relative = path.lstrip('/')
-    return urljoin(base + '/', relative)
+
+    # If the caller already provided a fully qualified URL, respect it.
+    if "://" in path:
+        return path
+
+    parsed_base: ParseResult = urlparse(base)
+    parsed_relative: ParseResult = urlparse(path)
+
+    base_segments = [segment for segment in parsed_base.path.split('/') if segment]
+    relative_segments = [segment for segment in parsed_relative.path.split('/') if segment]
+
+    # Avoid duplicating trailing path components (e.g. host ends with /api and
+    # the relative path begins with api/...).
+    while base_segments and relative_segments and base_segments[-1] == relative_segments[0]:
+        relative_segments.pop(0)
+
+    merged_segments = base_segments + relative_segments
+
+    new_path = '/' + '/'.join(merged_segments) if merged_segments else '/'
+    if parsed_relative.path.endswith('/') and not new_path.endswith('/'):
+        new_path += '/'
+
+    merged = parsed_base._replace(
+        path=new_path,
+        params="",
+        query=parsed_relative.query,
+        fragment=parsed_relative.fragment,
+    )
+
+    return urlunparse(merged)
 
 
 @dataclass(slots=True)
