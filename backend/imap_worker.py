@@ -6,7 +6,6 @@ import asyncio
 import email
 import logging
 import os
-import re
 from email import policy
 from typing import Sequence
 
@@ -17,7 +16,6 @@ from classifier import (
     propose_new_folder_if_needed,
     score_profiles,
 )
-from configuration import max_tag_total
 from database import (
     get_monitored_folders,
     is_processed,
@@ -38,68 +36,21 @@ from mailbox import (
     move_message,
 )
 from models import Suggestion
-from runtime_settings import resolve_mailbox_inbox
+from runtime_settings import resolve_mailbox_inbox, resolve_mailbox_tags
 from ollama_service import OllamaModelStatus, OllamaStatus, ensure_ollama_ready
 from settings import S
 from runtime_settings import (
     analysis_module_uses_filters,
     analysis_module_uses_llm,
     resolve_analysis_module,
-    resolve_mailbox_tags,
     resolve_move_mode,
 )
 from keyword_filters import evaluate_filters
 from utils import extract_text, message_received_at, subject_from, thread_headers
+from tagging_service import apply_suggestion_tags
 
 
 logger = logging.getLogger(__name__)
-
-
-_TAG_SANITIZE_RE = re.compile(r"[^0-9A-Za-z._+/:-]+")
-
-
-def _format_ai_tag(label: str, prefix: str | None) -> str | None:
-    cleaned = label.strip()
-    if not cleaned:
-        return None
-    normalized = re.sub(r"\s+", "-", cleaned)
-    normalized = _TAG_SANITIZE_RE.sub("", normalized)
-    normalized = normalized.strip("-/")[:48]
-    if not normalized:
-        return None
-    if prefix:
-        base = prefix.strip("/")
-        if not base:
-            return normalized
-        return f"{base}/{normalized}"
-    return normalized
-
-
-def _apply_ai_tags(uid: str, folder: str, raw_tags: Sequence[str]) -> None:
-    if not raw_tags:
-        return
-    _, processed_marker, prefix = resolve_mailbox_tags()
-    processed_marker = (processed_marker or "").strip()
-    unique: list[str] = []
-    limit = max_tag_total()
-    for tag in raw_tags:
-        if not isinstance(tag, str):
-            continue
-        formatted = _format_ai_tag(tag, prefix)
-        if not formatted:
-            continue
-        if processed_marker and formatted == processed_marker:
-            continue
-        if formatted in unique:
-            continue
-        unique.append(formatted)
-        if len(unique) >= limit:
-            break
-    if not unique:
-        return
-    logger.debug("Adding AI Tags %s to %s", unique, uid)
-    for tag in unique:
-        add_message_tag(uid, folder, tag)
 
 
 def _should_autostart() -> bool:
@@ -312,13 +263,13 @@ async def handle_message(
         move_status="pending",
     )
     save_suggestion(suggestion)
-    _, processed_tag, _ = resolve_mailbox_tags()
-    if processed_tag:
-        add_message_tag(uid, src_folder, processed_tag)
-    _apply_ai_tags(uid, src_folder, tags)
 
     mode = resolve_move_mode()
-    should_auto_move = mode == "AUTO" and (
+    auto_mode = mode == "AUTO"
+    if auto_mode:
+        apply_suggestion_tags(uid, src_folder, tags, include_processed=True)
+
+    should_auto_move = auto_mode and (
         (match_score >= S.AUTO_THRESHOLD) or bool(thread.get("in_reply_to"))
     )
 

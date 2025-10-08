@@ -62,6 +62,7 @@ from ollama_service import (
     get_status,
     start_model_pull,
     status_as_dict,
+    normalise_ollama_host,
 )
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
@@ -93,6 +94,7 @@ from runtime_settings import (
     resolve_mailbox_tags,
     resolve_move_mode,
 )
+from tagging_service import apply_suggestion_tags
 
 
 class MoveMode(str, Enum):
@@ -483,7 +485,7 @@ def _fallback_ollama_status(message: str, *, include_models: bool = True) -> Oll
             )
             for model, purpose in _required_ollama_models()
         ]
-    return OllamaStatus(host=S.OLLAMA_HOST, reachable=False, models=models, message=message)
+    return OllamaStatus(host=normalise_ollama_host(), reachable=False, models=models, message=message)
 
 
 async def _load_ollama_status(force_refresh: bool) -> OllamaStatus:
@@ -1720,11 +1722,20 @@ def _perform_move(uid: str, target: str, src_folder: str | None) -> None:
 def api_move(payload: MoveRequest) -> Dict[str, Any]:
     suggestion = _ensure_suggestion(payload.message_uid)
 
-    dry_run = payload.dry_run or _resolve_mode() == MoveMode.DRY_RUN
+    current_mode = _resolve_mode()
+    dry_run = payload.dry_run or current_mode == MoveMode.DRY_RUN
     if dry_run:
         exists = folder_exists(payload.target_folder)
         record_dry_run(payload.message_uid, {"folder_exists": exists})
         return {"ok": exists, "dry_run": True, "checks": {"folder_exists": exists}}
+
+    if current_mode != MoveMode.AUTO:
+        apply_suggestion_tags(
+            payload.message_uid,
+            suggestion.src_folder,
+            suggestion.tags or [],
+            include_processed=True,
+        )
 
     _perform_move(payload.message_uid, payload.target_folder, suggestion.src_folder)
     return {"ok": True, "dry_run": False}
