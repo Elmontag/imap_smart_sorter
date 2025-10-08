@@ -160,24 +160,7 @@ def build_embedding_prompt(subject: str, sender: str, body: str) -> str:
     return prompt
 
 
-async def embed(prompt: str) -> List[float]:
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{S.OLLAMA_HOST}/api/embed",
-                json={
-                    "model": S.EMBED_MODEL,
-                    "input": [prompt[: S.EMBED_PROMPT_MAX_CHARS]],
-                },
-            )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:  # pragma: no cover - network interaction
-        logger.warning(
-            "Ollama Embedding fehlgeschlagen (%s): %s", S.OLLAMA_HOST, exc
-        )
-        return []
-
-    data = response.json()
+def _extract_embedding(data: Dict[str, Any]) -> List[float]:
     embedding = data.get("embedding")
     if isinstance(embedding, list):
         if embedding and isinstance(embedding[0], list):
@@ -188,6 +171,116 @@ async def embed(prompt: str) -> List[float]:
         first = embeddings[0]
         if isinstance(first, list):
             return first
+    data_entries = data.get("data")
+    if isinstance(data_entries, list) and data_entries:
+        first_entry = data_entries[0]
+        if isinstance(first_entry, dict):
+            openai_embedding = first_entry.get("embedding")
+            if isinstance(openai_embedding, list):
+                return openai_embedding
+    return []
+
+
+def _normalise_error_detail(response: httpx.Response | None) -> str:
+    if response is None:
+        return ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("error") or payload.get("message")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+    text = response.text.strip()
+    return text[:200] if text else ""
+
+
+async def embed(prompt: str) -> List[float]:
+    prompt_text = prompt[: S.EMBED_PROMPT_MAX_CHARS]
+    base_url = S.OLLAMA_HOST.rstrip("/") or S.OLLAMA_HOST
+    attempts: List[str] = []
+    last_error: Exception | None = None
+
+    strategies: List[Tuple[str, str, Dict[str, Any]]] = [
+        (
+            "embeddings-prompt",
+            f"{base_url}/api/embeddings",
+            {"model": S.EMBED_MODEL, "prompt": prompt_text},
+        ),
+        (
+            "embeddings-input-list",
+            f"{base_url}/api/embeddings",
+            {"model": S.EMBED_MODEL, "input": [prompt_text]},
+        ),
+        (
+            "embeddings-input",
+            f"{base_url}/api/embeddings",
+            {"model": S.EMBED_MODEL, "input": prompt_text},
+        ),
+        (
+            "openai-embeddings",
+            f"{base_url}/v1/embeddings",
+            {"model": S.EMBED_MODEL, "input": prompt_text},
+        ),
+        (
+            "legacy-embed",
+            f"{base_url}/api/embed",
+            {"model": S.EMBED_MODEL, "input": [prompt_text]},
+        ),
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            for label, endpoint, payload in strategies:
+                try:
+                    response = await client.post(endpoint, json=payload)
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    detail = _normalise_error_detail(exc.response)
+                    attempts.append(
+                        f"{label}:{exc.response.status_code}:{detail or 'no-detail'}"
+                    )
+                    last_error = exc
+                    status = exc.response.status_code
+                    if status in {400, 404, 422}:
+                        # Try the next strategy – Ollama versions differ in payloads/endpoints.
+                        logger.debug(
+                            "Ollama-Embedding fehlgeschlagen (%s %s %s): %s",
+                            label,
+                            endpoint,
+                            status,
+                            detail,
+                        )
+                        continue
+                    break
+                except httpx.HTTPError as exc:  # pragma: no cover - network interaction
+                    attempts.append(f"{label}:network:{exc}")
+                    last_error = exc
+                    break
+
+                data = response.json()
+                embedding = _extract_embedding(data)
+                if embedding:
+                    if attempts:
+                        logger.debug(
+                            "Ollama-Embedding erfolgreich nach vorherigen Versuchen: %s",
+                            ";".join(attempts),
+                        )
+                    return embedding
+                attempts.append(f"{label}:invalid-payload")
+                last_error = ValueError("embedding payload missing")
+    except httpx.HTTPError as exc:  # pragma: no cover - network interaction
+        attempts.append(f"client:{exc}")
+        last_error = exc
+
+    if last_error is not None:
+        logger.warning(
+            "Ollama Embedding fehlgeschlagen (%s): %s | Versuche: %s",
+            S.OLLAMA_HOST,
+            last_error,
+            ";".join(attempts) or "keine",
+        )
     return []
 
 
