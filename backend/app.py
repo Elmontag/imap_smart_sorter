@@ -76,6 +76,7 @@ from calendar_settings import (
     load_calendar_settings,
     persist_calendar_settings,
 )
+from mail_settings import persist_mailbox_settings, verify_mailbox_connection
 from calendar_scan_control import CalendarScanStatus as CalendarAutoScanStatus, controller as calendar_scan_controller
 from calendar_rescan_control import (
     CalendarRescanBusyError,
@@ -86,6 +87,8 @@ from runtime_settings import (
     analysis_module_uses_llm,
     resolve_analysis_module,
     resolve_classifier_model,
+    resolve_mailbox_inbox,
+    resolve_mailbox_settings,
     resolve_mailbox_tags,
     resolve_move_mode,
 )
@@ -823,6 +826,21 @@ def _calendar_settings_payload() -> CalendarSettingsResponse:
     )
 
 
+def _mailbox_settings_payload() -> MailboxSettingsResponse:
+    settings = resolve_mailbox_settings(include_password=True)
+    sanitized = settings.sanitized()
+    return MailboxSettingsResponse(
+        host=sanitized.host,
+        port=sanitized.port,
+        username=sanitized.username,
+        inbox=sanitized.inbox,
+        use_ssl=sanitized.use_ssl,
+        process_only_seen=sanitized.process_only_seen,
+        since_days=sanitized.since_days,
+        has_password=bool(settings.password),
+    )
+
+
 class CalendarEventResponse(BaseModel):
     id: int
     message_uid: str
@@ -853,7 +871,7 @@ class CalendarEventResponse(BaseModel):
         return cls(
             id=entry.id or 0,
             message_uid=entry.message_uid,
-            folder=entry.folder or S.IMAP_INBOX,
+            folder=entry.folder or resolve_mailbox_inbox(),
             subject=entry.subject,
             from_addr=entry.from_addr,
             message_date=entry.message_date,
@@ -1010,6 +1028,44 @@ class CalendarImportResponse(BaseModel):
     metrics: CalendarMetricsResponse
 
 
+class MailboxSettingsResponse(BaseModel):
+    host: str
+    port: int
+    username: str
+    inbox: str
+    use_ssl: bool
+    process_only_seen: bool
+    since_days: int
+    has_password: bool
+
+
+class MailboxSettingsUpdate(BaseModel):
+    host: str
+    port: int
+    username: str
+    inbox: str
+    use_ssl: bool
+    process_only_seen: bool
+    since_days: int
+    password: Optional[str] = None
+    clear_password: bool = False
+
+
+class MailboxConnectionTestRequest(BaseModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    inbox: Optional[str] = None
+    use_ssl: Optional[bool] = None
+    use_stored_password: bool = False
+
+
+class MailboxConnectionTestResponse(BaseModel):
+    ok: bool
+    message: Optional[str] = None
+
+
 class CalendarSettingsResponse(BaseModel):
     enabled: bool
     caldav_url: str
@@ -1093,8 +1149,9 @@ def api_set_mode(payload: ModeUpdate) -> ModeResponse:
 def api_folders() -> FolderSelectionResponse:
     available = list_folders()
     selected = get_monitored_folders()
-    if not selected and S.IMAP_INBOX in available:
-        selected = [S.IMAP_INBOX]
+    inbox = resolve_mailbox_inbox()
+    if not selected and inbox in available:
+        selected = [inbox]
     return FolderSelectionResponse(available=available, selected=selected)
 
 
@@ -1438,6 +1495,86 @@ async def api_calendar_import(payload: CalendarImportRequest) -> CalendarImportR
         event=CalendarEventResponse.from_entry(updated, tz),
         metrics=metrics,
     )
+
+
+@app.get("/api/mailbox/config", response_model=MailboxSettingsResponse)
+def api_mailbox_config() -> MailboxSettingsResponse:
+    return _mailbox_settings_payload()
+
+
+@app.put("/api/mailbox/config", response_model=MailboxSettingsResponse)
+def api_update_mailbox_config(payload: MailboxSettingsUpdate) -> MailboxSettingsResponse:
+    if payload.clear_password and payload.password:
+        raise HTTPException(400, "Passwort kann nicht gleichzeitig gesetzt und gelöscht werden.")
+    password_value = payload.password
+    clear_password = payload.clear_password
+    if password_value is not None and not password_value.strip():
+        password_value = None
+        clear_password = True
+    try:
+        updated = persist_mailbox_settings(
+            host=(payload.host or "").strip(),
+            port=payload.port,
+            username=(payload.username or "").strip(),
+            inbox=(payload.inbox or "").strip(),
+            use_ssl=payload.use_ssl,
+            process_only_seen=payload.process_only_seen,
+            since_days=payload.since_days,
+            password=password_value,
+            clear_password=clear_password,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    sanitized = updated.sanitized()
+    return MailboxSettingsResponse(
+        host=sanitized.host,
+        port=sanitized.port,
+        username=sanitized.username,
+        inbox=sanitized.inbox,
+        use_ssl=sanitized.use_ssl,
+        process_only_seen=sanitized.process_only_seen,
+        since_days=sanitized.since_days,
+        has_password=bool(updated.password),
+    )
+
+
+@app.post("/api/mailbox/config/test", response_model=MailboxConnectionTestResponse)
+async def api_mailbox_config_test(payload: MailboxConnectionTestRequest) -> MailboxConnectionTestResponse:
+    current = resolve_mailbox_settings(include_password=True)
+    host = (payload.host or current.host).strip()
+    username = (payload.username or current.username).strip()
+    inbox = (payload.inbox or current.inbox).strip() or "INBOX"
+    use_ssl = payload.use_ssl if payload.use_ssl is not None else current.use_ssl
+    port = payload.port if payload.port is not None else current.port
+    if payload.password is not None:
+        if not payload.password:
+            raise HTTPException(400, "Passwort darf nicht leer sein.")
+        password_value = payload.password
+    elif payload.use_stored_password:
+        if not current.password:
+            raise HTTPException(400, "Kein gespeichertes Passwort verfügbar.")
+        password_value = current.password
+    else:
+        if current.password:
+            password_value = current.password
+        else:
+            raise HTTPException(400, "Bitte gib ein Passwort an oder speichere eines in den Einstellungen.")
+    try:
+        await asyncio.to_thread(
+            verify_mailbox_connection,
+            host=host,
+            port=port,
+            username=username,
+            password=password_value,
+            inbox=inbox,
+            use_ssl=use_ssl,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - network guard
+        logger.exception("Mailbox-Verbindungstest fehlgeschlagen", exc_info=True)
+        raise HTTPException(500, "Verbindungstest fehlgeschlagen") from exc
+    return MailboxConnectionTestResponse(ok=True, message="Verbindung erfolgreich getestet.")
 
 
 @app.get("/api/calendar/config", response_model=CalendarSettingsResponse)

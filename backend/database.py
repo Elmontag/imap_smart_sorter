@@ -237,6 +237,25 @@ def set_calendar_settings_entry(values: Dict[str, Any]) -> None:
     _set_config_value("CALENDAR_SETTINGS", payload)
 
 
+def get_mailbox_settings_entry() -> Dict[str, Any]:
+    raw = _get_config_value("MAILBOX_SETTINGS")
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Persistierte Mailbox-Konfiguration konnte nicht geparst werden.")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def set_mailbox_settings_entry(values: Dict[str, Any]) -> None:
+    payload = json.dumps(values, ensure_ascii=False)
+    _set_config_value("MAILBOX_SETTINGS", payload)
+
+
 def calendar_event_by_uid(message_uid: str, event_uid: str) -> Optional[CalendarEventEntry]:
     with get_session() as ses:
         return ses.exec(

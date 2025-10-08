@@ -38,6 +38,7 @@ from mailbox import (
     move_message,
 )
 from models import Suggestion
+from runtime_settings import resolve_mailbox_inbox
 from ollama_service import ensure_ollama_ready
 from settings import S
 from runtime_settings import (
@@ -143,7 +144,8 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
         target_folders: Sequence[str] = [str(folder) for folder in folders if str(folder).strip()]
     else:
         configured = get_monitored_folders()
-        target_folders = configured or [S.IMAP_INBOX]
+        inbox = resolve_mailbox_inbox()
+        target_folders = configured or [inbox]
     messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
     all_folders = await asyncio.to_thread(list_folders)
     processed = 0

@@ -168,9 +168,24 @@ def _match_model_entry(
     entries: Iterable[Dict[str, Any]],
 ) -> Dict[str, Any] | None:
     candidate_set = {value.strip() for value in candidates if value}
+    normalized_candidates = {_normalise_model_name(value) for value in candidate_set if value}
+    base_candidates = {
+        value.split(":", 1)[0].strip()
+        for value in candidate_set
+        if value and value.split(":", 1)[0].strip()
+    }
     for entry in entries:
         value = str(entry.get("model") or entry.get("name") or "").strip()
-        if value in candidate_set:
+        if not value:
+            continue
+        normalized = _normalise_model_name(value)
+        base = value.split(":", 1)[0].strip()
+        if (
+            value in candidate_set
+            or normalized in candidate_set
+            or normalized in normalized_candidates
+            or base in base_candidates
+        ):
             return entry
     return None
 

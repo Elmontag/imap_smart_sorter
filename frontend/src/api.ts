@@ -203,6 +203,44 @@ export interface CalendarConnectionTestResponse {
   message?: string | null
 }
 
+export interface MailboxSettings {
+  host: string
+  port: number
+  username: string
+  inbox: string
+  use_ssl: boolean
+  process_only_seen: boolean
+  since_days: number
+  has_password: boolean
+}
+
+export interface MailboxSettingsUpdateRequest {
+  host: string
+  port: number
+  username: string
+  inbox: string
+  use_ssl: boolean
+  process_only_seen: boolean
+  since_days: number
+  password?: string | null
+  clear_password?: boolean
+}
+
+export interface MailboxConnectionTestRequest {
+  host?: string
+  port?: number
+  username?: string
+  password?: string | null
+  inbox?: string
+  use_ssl?: boolean
+  use_stored_password?: boolean
+}
+
+export interface MailboxConnectionTestResponse {
+  ok: boolean
+  message?: string | null
+}
+
 export interface TagExample {
   message_uid: string
   subject: string
@@ -679,6 +717,28 @@ export async function testCalendarConnection(
   payload: CalendarConnectionTestRequest,
 ): Promise<CalendarConnectionTestResponse> {
   return request<CalendarConnectionTestResponse>('/api/calendar/config/test', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getMailboxSettings(): Promise<MailboxSettings> {
+  return request<MailboxSettings>('/api/mailbox/config')
+}
+
+export async function updateMailboxSettings(
+  payload: MailboxSettingsUpdateRequest,
+): Promise<MailboxSettings> {
+  return request<MailboxSettings>('/api/mailbox/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function testMailboxConnection(
+  payload: MailboxConnectionTestRequest,
+): Promise<MailboxConnectionTestResponse> {
+  return request<MailboxConnectionTestResponse>('/api/mailbox/config/test', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
