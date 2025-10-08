@@ -18,7 +18,7 @@ from classifier import (
 )
 from database import (
     get_monitored_folders,
-    known_suggestion_uids,
+    known_suggestion_uids_by_folder,
     list_folder_profiles,
     mark_failed,
     mark_moved,
@@ -105,13 +105,14 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
     """Scan the configured folders once and create suggestions for unseen mails."""
 
     if folders is not None:
-        target_folders: Sequence[str] = [str(folder) for folder in folders if str(folder).strip()]
+        target_folders = [str(folder).strip() for folder in folders if str(folder).strip()]
     else:
-        configured = get_monitored_folders()
-        inbox = resolve_mailbox_inbox()
+        configured = [str(folder).strip() for folder in get_monitored_folders() if str(folder).strip()]
+        inbox = str(resolve_mailbox_inbox()).strip()
         target_folders = configured or [inbox]
     processed_map = processed_uids_by_folder(target_folders)
-    known_suggestions = known_suggestion_uids()
+    known_suggestions = known_suggestion_uids_by_folder()
+    global_known = known_suggestions.get(None, set())
     messages = await asyncio.to_thread(
         fetch_recent_messages,
         target_folders,
@@ -121,19 +122,24 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
     all_folders = await asyncio.to_thread(list_folders)
     processed = 0
     for folder, payloads in messages.items():
-        processed_for_folder = processed_map.setdefault(folder, set())
+        lookup_key = str(folder).strip()
+        folder_key = lookup_key or str(folder)
+        processed_for_folder = processed_map.setdefault(folder_key, set())
+        folder_known = known_suggestions.get(folder_key, set()) or known_suggestions.get(folder, set())
         for uid, meta in payloads.items():
             uid_str = str(uid)
             raw_bytes = meta.body if hasattr(meta, "body") else meta
             if not raw_bytes:
                 continue
-            if uid_str in known_suggestions:
+            if folder_known and uid_str in folder_known:
+                continue
+            if global_known and uid_str in global_known:
                 continue
             if processed_for_folder and uid_str in processed_for_folder:
                 continue
             try:
                 await handle_message(uid_str, raw_bytes, folder, all_folders)
-                mark_processed(folder, uid_str)
+                mark_processed(folder_key, uid_str)
                 processed += 1
                 processed_for_folder.add(uid_str)
             except Exception:  # pragma: no cover - defensive background handling

@@ -507,10 +507,27 @@ def processed_uids_by_folder(folders: Sequence[str]) -> Dict[str, Set[str]]:
         return mapping
 
 
-def known_suggestion_uids() -> Set[str]:
+def known_suggestion_uids_by_folder() -> Dict[str | None, Set[str]]:
     with get_session() as ses:
-        rows = ses.exec(select(Suggestion)).all()
-        return {str(row.message_uid) for row in rows if row.message_uid}
+        rows = ses.exec(select(Suggestion.src_folder, Suggestion.message_uid)).all()
+
+    mapping: Dict[str | None, Set[str]] = {}
+    for src_folder, message_uid in rows:
+        normalized_uid = str(message_uid).strip() if message_uid is not None else ""
+        if not normalized_uid:
+            continue
+        folder_key = str(src_folder).strip() if src_folder else None
+        bucket = mapping.setdefault(folder_key, set())
+        bucket.add(normalized_uid)
+    return mapping
+
+
+def known_suggestion_uids() -> Set[str]:
+    by_folder = known_suggestion_uids_by_folder()
+    aggregated: Set[str] = set()
+    for items in by_folder.values():
+        aggregated.update(items)
+    return aggregated
 
 
 def record_filter_hit(

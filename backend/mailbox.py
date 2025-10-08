@@ -6,7 +6,7 @@ import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Collection, Dict, Iterable, Iterator, List, Mapping, Sequence
+from typing import Collection, Dict, Iterable, Iterator, List, Mapping, Sequence, Set
 
 from imapclient import IMAPClient
 
@@ -105,7 +105,7 @@ def fetch_recent_messages(
     folders: Iterable[str],
     *,
     processed_lookup: Mapping[str, Collection[str]] | None = None,
-    skip_known_uids: Collection[str] | None = None,
+    skip_known_uids: Mapping[str | None, Collection[str]] | None = None,
 ) -> Dict[str, Dict[int, MessageContent]]:
     """Return the RFC822 payload for recently seen messages in the given folders."""
 
@@ -118,7 +118,13 @@ def fetch_recent_messages(
     protected_tag = (protected_tag or "").strip()
     processed_tag = (processed_tag or "").strip()
     processed_lookup = processed_lookup or {}
-    skip_known: set[str] = {str(uid) for uid in (skip_known_uids or []) if str(uid).strip()}
+    skip_lookup_raw = skip_known_uids or {}
+    skip_lookup: Dict[str | None, Set[str]] = {}
+    for key, values in skip_lookup_raw.items():
+        normalized_key = str(key).strip() if isinstance(key, str) and key else None
+        bucket = skip_lookup.setdefault(normalized_key, set())
+        bucket.update({str(uid).strip() for uid in values if str(uid).strip()})
+    global_known = skip_lookup.get(None, set())
     try:
         with _connect() as server:
             for folder in folders:
@@ -135,6 +141,16 @@ def fetch_recent_messages(
                     for uid in processed_lookup.get(folder, set())
                     if str(uid).strip()
                 }
+                lookup_key = str(folder).strip()
+                if lookup_key and lookup_key != folder:
+                    processed_for_folder.update(
+                        {
+                            str(uid)
+                            for uid in processed_lookup.get(lookup_key, set())
+                            if str(uid).strip()
+                        }
+                    )
+                folder_known = skip_lookup.get(lookup_key, set()) or skip_lookup.get(folder, set())
                 try:
                     flag_data = fetch_messages(server, uids, [b"FLAGS"])
                 except Exception as exc:  # pragma: no cover - defensive network handling
@@ -155,7 +171,9 @@ def fetch_recent_messages(
                     uid_str = str(uid)
                     if processed_for_folder and uid_str in processed_for_folder:
                         continue
-                    if skip_known and uid_str in skip_known:
+                    if folder_known and uid_str in folder_known:
+                        continue
+                    if global_known and uid_str in global_known:
                         continue
                     eligible_flags[int(uid)] = normalized_flags
 

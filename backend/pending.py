@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from email import policy
 from typing import List, Sequence
 
-from database import get_monitored_folders, known_suggestion_uids, processed_uids_by_folder
+from database import (
+    get_monitored_folders,
+    known_suggestion_uids_by_folder,
+    processed_uids_by_folder,
+)
 from mailbox import MessageContent, fetch_recent_messages
 from settings import S
 from utils import subject_from
@@ -55,13 +59,15 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
     """Return metadata about messages that still await automated processing."""
 
     if folders is not None:
-        target_folders: List[str] = [str(folder) for folder in folders if str(folder).strip()]
+        target_folders = [str(folder).strip() for folder in folders if str(folder).strip()]
     else:
-        configured = get_monitored_folders()
-        target_folders = [str(folder) for folder in configured] or [S.IMAP_INBOX]
+        configured = [str(folder).strip() for folder in get_monitored_folders() if str(folder).strip()]
+        inbox = str(S.IMAP_INBOX).strip()
+        target_folders = configured or [inbox]
     raw_payloads = await asyncio.to_thread(fetch_recent_messages, target_folders)
     processed_map = processed_uids_by_folder(target_folders)
-    known_suggestions = known_suggestion_uids()
+    known_suggestions = known_suggestion_uids_by_folder()
+    global_known = known_suggestions.get(None, set())
 
     pending_entries: List[PendingMail] = []
     processed_total = sum(len(items) for items in processed_map.values())
@@ -71,12 +77,17 @@ async def load_pending_overview(folders: Sequence[str] | None = None) -> Pending
     limit_active = list_limit > 0
 
     for folder, messages in raw_payloads.items():
-        processed_for_folder = processed_map.get(folder, set())
+        lookup_key = str(folder).strip()
+        processed_for_folder = processed_map.get(folder) or processed_map.get(lookup_key, set())
+        folder_known = known_suggestions.get(lookup_key, set()) or known_suggestions.get(folder, set())
         for uid, meta in messages.items():
             uid_str = str(uid)
             if uid_str in processed_for_folder:
                 continue
-            if uid_str in known_suggestions:
+            if folder_known and uid_str in folder_known:
+                suggestion_total += 1
+                continue
+            if global_known and uid_str in global_known:
                 suggestion_total += 1
                 continue
             payload = meta.body if isinstance(meta, MessageContent) else meta
