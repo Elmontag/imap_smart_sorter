@@ -150,6 +150,15 @@ def _truncate_body_for_context(body: str, num_ctx: int, overhead_chars: int) -> 
     return body[: max(0, max_chars)]
 
 
+def _normalise_host(host: str) -> str:
+    candidate = (host or "").strip()
+    if not candidate:
+        return "http://127.0.0.1:11434"
+    if not candidate.startswith(("http://", "https://")):
+        candidate = f"http://{candidate}"
+    return candidate.rstrip("/")
+
+
 def _sender_domain(value: str) -> str:
     if not value:
         return ""
