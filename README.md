@@ -114,7 +114,9 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   Optionskatalog; das LLM muss eine Option auswählen und den Score ≥ `MIN_MATCH_SCORE` halten, andernfalls bleibt der Slot
   leer. Kontext-Tags wie `datum-YYYY-MM-TT` oder `reiseort-ORT` werden nur bei eindeutiger Zuordnung ergänzt.
 - Tagging und Ordnerentscheidungen bleiben getrennt: Tags landen als `IMAP_AI_TAG_PREFIX/slot-option`-Kombination
-  am jeweiligen IMAP-Objekt, während Ordner-Vorschläge weiter bestätigt oder abgelehnt werden können.
+  am jeweiligen IMAP-Objekt, während Ordner-Vorschläge weiter bestätigt oder abgelehnt werden können. Im
+  Confirm-Modus setzt das Backend diese Tags – inklusive `IMAP_PROCESSED_TAG` – erst nach der Freigabe im Dashboard;
+  der Auto-Modus versieht Nachrichten weiterhin unmittelbar mit allen Markierungen.
 
 ### Konfigurierbare Hierarchie & Tag-Slots
 
@@ -134,7 +136,8 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 ### Schutz- und Monitoring-Einstellungen
 
 - `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).
-- `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
+- `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans. Im Confirm-Modus
+  geschieht das erst mit der manuellen Bestätigung, damit unbearbeitete Vorschläge im Posteingang unverändert bleiben.
 - Der Tab „Betrieb“ in den Einstellungen bündelt Analyse-Modul, Verarbeitungsmodus und IMAP-Tags; das Dashboard zeigt den gewählten Modus weiterhin an. Die Auswahl des Sprachmodells erfolgt im Tab „KI & Tags“.
 - Die Module steuern, welche Informationen sichtbar sind:
 - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien), Pending-Listen und Vorschlagskarten werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist. Der Worker ruft in diesem Modus keine Ollama-Endpunkte auf.
