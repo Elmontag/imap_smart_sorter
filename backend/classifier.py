@@ -1,13 +1,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import textwrap
 from collections import defaultdict
+from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, Literal, Optional
 
 import httpx
 
@@ -25,7 +27,7 @@ from configuration import (
     tag_slot_options_map,
     top_level_folder_names,
 )
-from ollama_service import get_model_context_window
+from ollama_service import ensure_ollama_ready, get_model_context_window
 from settings import S
 from runtime_settings import resolve_classifier_model, resolve_mailbox_inbox
 
@@ -38,6 +40,33 @@ _MIN_NUM_CTX = 2048
 _PROMPT_CHAR_PER_TOKEN = 4
 _PROMPT_HEADROOM_RATIO = 0.9
 _CLASSIFIER_CONTEXT_CACHE: Dict[str, int] = {}
+
+
+@dataclass(frozen=True)
+class _EmbeddingProbe:
+    label: str
+    path: str
+    payload_kind: Literal["prompt", "input_list", "input", "text", "openai"]
+
+    def endpoint(self, base_url: str) -> str:
+        return f"{base_url}{self.path}"
+
+    def payload(self, model: str, prompt_text: str) -> Dict[str, Any]:
+        if self.payload_kind == "prompt":
+            return {"model": model, "prompt": prompt_text}
+        if self.payload_kind == "input_list":
+            return {"model": model, "input": [prompt_text]}
+        if self.payload_kind == "input":
+            return {"model": model, "input": prompt_text}
+        if self.payload_kind == "text":
+            return {"model": model, "text": prompt_text}
+        if self.payload_kind == "openai":
+            return {"model": model, "input": prompt_text}
+        raise ValueError(f"Unknown payload kind: {self.payload_kind}")
+
+
+_EMBED_STRATEGY_CACHE: Dict[str, _EmbeddingProbe] = {}
+_EMBED_STRATEGY_LOCK = asyncio.Lock()
 
 
 def _is_user_override(field_name: str) -> bool:
@@ -114,6 +143,15 @@ def _truncate_body_for_context(body: str, num_ctx: int, overhead_chars: int) -> 
     if available > 0:
         max_chars = min(max_chars, available)
     return body[: max(0, max_chars)]
+
+
+def _normalise_host(host: str) -> str:
+    candidate = (host or "").strip()
+    if not candidate:
+        return "http://127.0.0.1:11434"
+    if not candidate.startswith(("http://", "https://")):
+        candidate = f"http://{candidate}"
+    return candidate.rstrip("/")
 
 
 def _sender_domain(value: str) -> str:
@@ -196,53 +234,88 @@ def _normalise_error_detail(response: httpx.Response | None) -> str:
     return text[:200] if text else ""
 
 
+def _embedding_probe_list(cached: Optional[_EmbeddingProbe]) -> List[_EmbeddingProbe]:
+    probes = [
+        _EmbeddingProbe("embeddings-prompt", "/api/embeddings", "prompt"),
+        _EmbeddingProbe("embeddings-text", "/api/embeddings", "text"),
+        _EmbeddingProbe("embeddings-input-list", "/api/embeddings", "input_list"),
+        _EmbeddingProbe("embeddings-input", "/api/embeddings", "input"),
+        _EmbeddingProbe("openai-embeddings", "/v1/embeddings", "openai"),
+        _EmbeddingProbe("legacy-embed-input-list", "/api/embed", "input_list"),
+        _EmbeddingProbe("legacy-embed-input", "/api/embed", "input"),
+        _EmbeddingProbe("legacy-embed-prompt", "/api/embed", "prompt"),
+        _EmbeddingProbe("legacy-embed-text", "/api/embed", "text"),
+    ]
+    if cached is None:
+        return probes
+    ordered: List[_EmbeddingProbe] = [cached]
+    seen = {cached}
+    for probe in probes:
+        if probe in seen:
+            continue
+        ordered.append(probe)
+    return ordered
+
+
+def _looks_like_missing_model(detail: str) -> bool:
+    lowered = detail.lower()
+    indicators = [
+        "model",
+        "not found",
+        "nicht gefunden",
+        "unknown",
+        "pull",
+        "download",
+        "kein modell",
+    ]
+    return any(token in lowered for token in indicators)
+
+
 async def embed(prompt: str) -> List[float]:
     prompt_text = prompt[: S.EMBED_PROMPT_MAX_CHARS]
-    base_url = S.OLLAMA_HOST.rstrip("/") or S.OLLAMA_HOST
+    base_url = _normalise_host(S.OLLAMA_HOST)
     attempts: List[str] = []
     last_error: Exception | None = None
-
-    strategies: List[Tuple[str, str, Dict[str, Any]]] = [
-        (
-            "embeddings-prompt",
-            f"{base_url}/api/embeddings",
-            {"model": S.EMBED_MODEL, "prompt": prompt_text},
-        ),
-        (
-            "embeddings-input-list",
-            f"{base_url}/api/embeddings",
-            {"model": S.EMBED_MODEL, "input": [prompt_text]},
-        ),
-        (
-            "embeddings-input",
-            f"{base_url}/api/embeddings",
-            {"model": S.EMBED_MODEL, "input": prompt_text},
-        ),
-        (
-            "openai-embeddings",
-            f"{base_url}/v1/embeddings",
-            {"model": S.EMBED_MODEL, "input": prompt_text},
-        ),
-        (
-            "legacy-embed",
-            f"{base_url}/api/embed",
-            {"model": S.EMBED_MODEL, "input": [prompt_text]},
-        ),
-    ]
+    async with _EMBED_STRATEGY_LOCK:
+        cached_strategy = _EMBED_STRATEGY_CACHE.get(base_url)
+    probes = _embedding_probe_list(cached_strategy)
+    attempted_refresh = False
+    index = 0
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            for label, endpoint, payload in strategies:
+            while index < len(probes):
+                probe = probes[index]
+                label = probe.label
+                endpoint = probe.endpoint(base_url)
+                payload = probe.payload(S.EMBED_MODEL, prompt_text)
                 try:
                     response = await client.post(endpoint, json=payload)
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
                     detail = _normalise_error_detail(exc.response)
-                    attempts.append(
-                        f"{label}:{exc.response.status_code}:{detail or 'no-detail'}"
-                    )
+                    attempts.append(f"{label}:{exc.response.status_code}:{detail or 'no-detail'}")
                     last_error = exc
                     status = exc.response.status_code
+                    retry_current = False
+                    if (
+                        status in {400, 404, 422}
+                        and not attempted_refresh
+                        and detail
+                        and _looks_like_missing_model(detail)
+                    ):
+                        attempted_refresh = True
+                        try:
+                            await ensure_ollama_ready()
+                        except Exception as refresh_exc:  # pragma: no cover - defensive log
+                            logger.warning(
+                                "Ollama-Statusaktualisierung nach Modellfehler fehlgeschlagen: %s",
+                                refresh_exc,
+                            )
+                        else:
+                            retry_current = True
+                    if retry_current:
+                        continue
                     if status in {400, 404, 422}:
                         # Try the next strategy – Ollama versions differ in payloads/endpoints.
                         logger.debug(
@@ -252,6 +325,7 @@ async def embed(prompt: str) -> List[float]:
                             status,
                             detail,
                         )
+                        index += 1
                         continue
                     break
                 except httpx.HTTPError as exc:  # pragma: no cover - network interaction
@@ -259,104 +333,13 @@ async def embed(prompt: str) -> List[float]:
                     last_error = exc
                     break
 
-                data = response.json()
-                embedding = _extract_embedding(data)
-                if embedding:
-                    if attempts:
-                        logger.debug(
-                            "Ollama-Embedding erfolgreich nach vorherigen Versuchen: %s",
-                            ";".join(attempts),
-                        )
-                    return embedding
-                attempts.append(f"{label}:invalid-payload")
-                last_error = ValueError("embedding payload missing")
-    except httpx.HTTPError as exc:  # pragma: no cover - network interaction
-        attempts.append(f"client:{exc}")
-        last_error = exc
-
-    if last_error is not None:
-        logger.warning(
-            "Ollama Embedding fehlgeschlagen (%s): %s | Versuche: %s",
-            S.OLLAMA_HOST,
-            last_error,
-            ";".join(attempts) or "keine",
-        )
-    return []
-
-
-def _normalise_error_detail(response: httpx.Response | None) -> str:
-    if response is None:
-        return ""
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        detail = payload.get("error") or payload.get("message")
-        if isinstance(detail, str) and detail.strip():
-            return detail.strip()
-    text = response.text.strip()
-    return text[:200] if text else ""
-
-
-async def embed(prompt: str) -> List[float]:
-    prompt_text = prompt[: S.EMBED_PROMPT_MAX_CHARS]
-    attempts: List[str] = []
-    last_error: Exception | None = None
-
-    strategies: List[Tuple[str, str, Dict[str, Any]]] = [
-        (
-            "embeddings-prompt",
-            f"{S.OLLAMA_HOST}/api/embeddings",
-            {"model": S.EMBED_MODEL, "prompt": prompt_text},
-        ),
-        (
-            "embeddings-input-list",
-            f"{S.OLLAMA_HOST}/api/embeddings",
-            {"model": S.EMBED_MODEL, "input": [prompt_text]},
-        ),
-        (
-            "embeddings-input",
-            f"{S.OLLAMA_HOST}/api/embeddings",
-            {"model": S.EMBED_MODEL, "input": prompt_text},
-        ),
-        (
-            "legacy-embed",
-            f"{S.OLLAMA_HOST}/api/embed",
-            {"model": S.EMBED_MODEL, "input": [prompt_text]},
-        ),
-    ]
-
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            for label, endpoint, payload in strategies:
                 try:
-                    response = await client.post(endpoint, json=payload)
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    detail = _normalise_error_detail(exc.response)
-                    attempts.append(
-                        f"{label}:{exc.response.status_code}:{detail or 'no-detail'}"
-                    )
-                    last_error = exc
-                    status = exc.response.status_code
-                    if status in {400, 404, 422}:
-                        # Try the next strategy – Ollama versions differ in payloads/endpoints.
-                        logger.debug(
-                            "Ollama-Embedding fehlgeschlagen (%s %s %s): %s",
-                            label,
-                            endpoint,
-                            status,
-                            detail,
-                        )
-                        continue
-                    break
-                except httpx.HTTPError as exc:  # pragma: no cover - network interaction
-                    attempts.append(f"{label}:network:{exc}")
-                    last_error = exc
-                    break
-
-                data = response.json()
+                    data = response.json()
+                except ValueError:
+                    attempts.append(f"{label}:invalid-json")
+                    last_error = ValueError("invalid JSON payload")
+                    index += 1
+                    continue
                 embedding = _extract_embedding(data)
                 if embedding:
                     if attempts:
@@ -364,9 +347,12 @@ async def embed(prompt: str) -> List[float]:
                             "Ollama-Embedding erfolgreich nach vorherigen Versuchen: %s",
                             ";".join(attempts),
                         )
+                    async with _EMBED_STRATEGY_LOCK:
+                        _EMBED_STRATEGY_CACHE[base_url] = probe
                     return embedding
                 attempts.append(f"{label}:invalid-payload")
                 last_error = ValueError("embedding payload missing")
+                index += 1
     except httpx.HTTPError as exc:  # pragma: no cover - network interaction
         attempts.append(f"client:{exc}")
         last_error = exc
