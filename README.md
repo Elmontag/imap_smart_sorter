@@ -23,6 +23,7 @@ Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie pa
 4. Beende mit `docker compose down`
 
 > **Hinweis:** Der `ollama`-Dienst lädt Modelle beim ersten Start nach. Plane zusätzliche Zeit/Netzwerk ein oder passe `CLASSIFIER_MODEL`/`EMBED_MODEL` an lokal verfügbare Modelle an.
+> **Persistenz:** Die SQLite-Datenbank (`data/app.db`) liegt im benannten Volume `data`. Eigene Einstellungen und Kalender-/Mailbox-Konfigurationen bleiben damit auch nach einem Container-Neustart erhalten.
 
 ### Umgebungsvariablen im Überblick
 
@@ -167,6 +168,13 @@ pip install -r backend/requirements.txt
 uvicorn backend.app:app --host 0.0.0.0 --port 8000
 # In zweitem Terminal für den Worker
 python backend/imap_worker.py
+```
+
+### Tests & Validierung
+
+```bash
+python -m compileall backend
+pytest backend/tests
 ```
 
 ### Frontend
