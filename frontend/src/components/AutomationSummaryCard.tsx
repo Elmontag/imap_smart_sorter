@@ -22,19 +22,28 @@ const formatDateTime = (value?: string | null) => {
 export default function AutomationSummaryCard({ activity, loading, error, onReload }: Props): JSX.Element {
   const topRules = useMemo(() => activity?.rules.slice(0, 3) ?? [], [activity?.rules])
   const recent = useMemo(() => activity?.recent.slice(0, 5) ?? [], [activity?.recent])
+  const hasActivity = activity !== null
+  const isRefreshing = loading && hasActivity
 
   return (
     <section className="automation-summary-card">
       <div className="automation-header">
         <div>
-          <h2>Automatisierte Filter</h2>
+          <h2>Statische Regeln</h2>
           <p className="automation-subline">
-            Schlüsselwortregeln greifen vor der KI-Klassifikation und verschieben passende Nachrichten direkt.
+            Statische Regeln greifen vor der KI-Klassifikation und verschieben passende Nachrichten direkt.
           </p>
         </div>
-        <button type="button" className="ghost" onClick={onReload} disabled={loading}>
-          {loading ? 'Aktualisiere…' : 'Aktualisieren'}
-        </button>
+        <div className="automation-header-actions">
+          {isRefreshing && (
+            <span className="refresh-indicator" role="status" aria-live="polite">
+              Aktualisiere…
+            </span>
+          )}
+          <button type="button" className="ghost" onClick={onReload} disabled={loading}>
+            {loading && !hasActivity ? 'Lade…' : 'Aktualisieren'}
+          </button>
+        </div>
       </div>
       {error && <div className="automation-error">{error}</div>}
       <div className="automation-metrics">

@@ -492,8 +492,9 @@ const envBase = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http:/
 const BASE = envBase.replace(/\/$/, '')
 const baseUrl = new URL(BASE)
 const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
-const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
+const streamUrl = new URL('/ws/stream', baseUrl)
+streamUrl.protocol = wsProtocol
+const STREAM_URL = streamUrl.toString().replace(/\/$/, '')
 
 export const API_BASE_URL = BASE
 export const STREAM_WEBSOCKET_URL = STREAM_URL

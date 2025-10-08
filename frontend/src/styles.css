@@ -1092,9 +1092,20 @@ button.link {
   gap: 16px;
 }
 
+.pending-table-container {
+  position: relative;
+}
+
 .pending-refresh-indicator {
-  align-self: flex-end;
-  margin-bottom: 4px;
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  margin: 0;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
+  pointer-events: none;
 }
 
 .pending-limit-info {
@@ -3148,6 +3159,17 @@ button.link.danger:hover {
   align-items: flex-start;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.automation-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.automation-header-actions .refresh-indicator {
+  margin: 0;
 }
 
 .automation-subline {
