@@ -61,6 +61,8 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   kontinuierliche Analyse weiterhin automatisch beim Start laufen soll – ansonsten steuerst du sowohl
   Einmal- als auch Daueranalyse ausschließlich über das Dashboard.
 - Das Dashboard zeigt laufende Modell-Pulls samt Fortschritt an; über den Einstellungs-Tab „KI & Tags“ lassen sich weitere Modelle per `/api/ollama/pull` direkt aus der Oberfläche nachladen.
+- Die Ollama-Statuskarten listen zusätzlich alle auf dem Host installierten Modelle auf, selbst wenn sie
+  nicht aktiv als Klassifikator- oder Embedding-Modelle hinterlegt sind.
 - Über `EMBED_PROMPT_HINT` kannst du zusätzliche Instruktionen (z. B. Projektnamen, Prioritäten)
   setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten

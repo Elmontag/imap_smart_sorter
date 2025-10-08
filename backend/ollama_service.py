@@ -405,6 +405,8 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
                 models_to_check.append((entry.model, entry.purpose))
                 seen.add(key)
 
+        consumed_entries: set[str] = set()
+
         for model, purpose in models_to_check:
             normalized = _normalise_model_name(model)
             entry = _match_model_entry({model, normalized}, tags)
@@ -427,6 +429,9 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
                     entry = _match_model_entry({model, normalized}, tags)
             if entry is not None:
                 status.available = True
+                entry_name = str(entry.get("model") or entry.get("name") or "").strip()
+                if entry_name:
+                    consumed_entries.add(_normalise_model_name(entry_name))
                 digest = entry.get("digest") or entry.get("sha256")
                 if isinstance(digest, str):
                     status.digest = digest
@@ -453,6 +458,40 @@ async def _probe_status(pull_missing: bool) -> OllamaStatus:
                 if not progress.active and not progress.error and status.available:
                     status.pulled = True
             statuses.append(status)
+            consumed_entries.add(normalized)
+
+        existing_keys = {(status.normalized_name, status.purpose) for status in statuses}
+        custom_statuses: List[OllamaModelStatus] = []
+        for entry in tags:
+            entry_name = str(entry.get("model") or entry.get("name") or "").strip()
+            if not entry_name:
+                continue
+            normalized = _normalise_model_name(entry_name)
+            if normalized in consumed_entries:
+                continue
+            key = (normalized, "custom")
+            if key in existing_keys:
+                continue
+            status = OllamaModelStatus(
+                name=entry_name,
+                normalized_name=normalized,
+                purpose="custom",
+                available=True,
+                pulled=True,
+                message="bereit",
+            )
+            digest = entry.get("digest") or entry.get("sha256")
+            if isinstance(digest, str):
+                status.digest = digest
+            size = entry.get("size")
+            if isinstance(size, (int, float)):
+                status.size = int(size)
+            custom_statuses.append(status)
+            consumed_entries.add(normalized)
+
+        if custom_statuses:
+            custom_statuses.sort(key=lambda item: item.normalized_name)
+            statuses.extend(custom_statuses)
         summary = _summarise(statuses)
         return OllamaStatus(
             host=S.OLLAMA_HOST,
