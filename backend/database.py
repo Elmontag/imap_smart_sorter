@@ -188,6 +188,15 @@ def _set_config_value(key: str, value: str) -> None:
         ses.commit()
 
 
+def _delete_config_value(key: str) -> None:
+    with get_session() as ses:
+        entry = ses.exec(select(AppConfig).where(AppConfig.key == key)).first()
+        if not entry:
+            return
+        ses.delete(entry)
+        ses.commit()
+
+
 def _get_config_value(key: str) -> Optional[str]:
     with get_session() as ses:
         entry = ses.exec(select(AppConfig).where(AppConfig.key == key)).first()
@@ -420,6 +429,27 @@ def get_monitored_folders() -> List[str]:
     return [str(folder) for folder in data if isinstance(folder, str) and folder.strip()]
 
 
+def set_poll_interval_seconds(value: int | None) -> None:
+    if value is None:
+        _delete_config_value("POLL_INTERVAL_SECONDS")
+        return
+    seconds = max(int(value), 1)
+    _set_config_value("POLL_INTERVAL_SECONDS", str(seconds))
+
+
+def get_poll_interval_override() -> Optional[int]:
+    raw = _get_config_value("POLL_INTERVAL_SECONDS")
+    if not raw:
+        return None
+    try:
+        value = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def update_proposal(uid: str, proposal: Dict[str, Any] | None) -> Optional[Suggestion]:
     with get_session() as ses:
         row = ses.exec(select(Suggestion).where(Suggestion.message_uid == uid)).first()
@@ -477,10 +507,27 @@ def processed_uids_by_folder(folders: Sequence[str]) -> Dict[str, Set[str]]:
         return mapping
 
 
-def known_suggestion_uids() -> Set[str]:
+def known_suggestion_uids_by_folder() -> Dict[str | None, Set[str]]:
     with get_session() as ses:
-        rows = ses.exec(select(Suggestion)).all()
-        return {str(row.message_uid) for row in rows if row.message_uid}
+        rows = ses.exec(select(Suggestion.src_folder, Suggestion.message_uid)).all()
+
+    mapping: Dict[str | None, Set[str]] = {}
+    for src_folder, message_uid in rows:
+        normalized_uid = str(message_uid).strip() if message_uid is not None else ""
+        if not normalized_uid:
+            continue
+        folder_key = str(src_folder).strip() if src_folder else None
+        bucket = mapping.setdefault(folder_key, set())
+        bucket.add(normalized_uid)
+    return mapping
+
+
+def known_suggestion_uids() -> Set[str]:
+    by_folder = known_suggestion_uids_by_folder()
+    aggregated: Set[str] = set()
+    for items in by_folder.values():
+        aggregated.update(items)
+    return aggregated
 
 
 def record_filter_hit(

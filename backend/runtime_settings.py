@@ -10,6 +10,7 @@ from database import (
     get_classifier_model,
     get_mailbox_tags,
     get_mode_override,
+    get_poll_interval_override,
 )
 from mail_settings import MailboxSettings, load_mailbox_settings
 
@@ -77,3 +78,12 @@ def analysis_module_uses_filters(module: str | None = None) -> bool:
 
     value = (module or resolve_analysis_module() or "").strip().upper()
     return value in {"STATIC", "HYBRID"}
+
+
+def resolve_poll_interval_seconds() -> float:
+    """Return the polling interval for the continuous scan in seconds."""
+
+    override = get_poll_interval_override()
+    base = float(getattr(S, "POLL_INTERVAL_SECONDS", 60) or 60)
+    value = float(override if override is not None else base)
+    return max(value, 5.0)
