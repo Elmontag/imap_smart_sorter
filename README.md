@@ -23,6 +23,7 @@ Während der Analyse werden pro Nachricht ein thematischer Überbegriff sowie pa
 4. Beende mit `docker compose down`
 
 > **Hinweis:** Der `ollama`-Dienst lädt Modelle beim ersten Start nach. Plane zusätzliche Zeit/Netzwerk ein oder passe `CLASSIFIER_MODEL`/`EMBED_MODEL` an lokal verfügbare Modelle an.
+> **Persistenz:** Die SQLite-Datenbank (`data/app.db`) liegt im benannten Volume `data`. Eigene Einstellungen und Kalender-/Mailbox-Konfigurationen bleiben damit auch nach einem Container-Neustart erhalten.
 
 ### Umgebungsvariablen im Überblick
 
@@ -60,6 +61,8 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   kontinuierliche Analyse weiterhin automatisch beim Start laufen soll – ansonsten steuerst du sowohl
   Einmal- als auch Daueranalyse ausschließlich über das Dashboard.
 - Das Dashboard zeigt laufende Modell-Pulls samt Fortschritt an; über den Einstellungs-Tab „KI & Tags“ lassen sich weitere Modelle per `/api/ollama/pull` direkt aus der Oberfläche nachladen.
+- Die Ollama-Statuskarten listen zusätzlich alle auf dem Host installierten Modelle auf, selbst wenn sie
+  nicht aktiv als Klassifikator- oder Embedding-Modelle hinterlegt sind.
 - Über `EMBED_PROMPT_HINT` kannst du zusätzliche Instruktionen (z. B. Projektnamen, Prioritäten)
   setzen, ohne den Code anzupassen. Sowohl Embedding- als auch Klassifikationsprompt greifen auf den Hinweis zu.
 - `EMBED_PROMPT_MAX_CHARS` limitiert die Länge des Prompts, um Speicherbedarf und Antwortzeiten
@@ -167,6 +170,13 @@ pip install -r backend/requirements.txt
 uvicorn backend.app:app --host 0.0.0.0 --port 8000
 # In zweitem Terminal für den Worker
 python backend/imap_worker.py
+```
+
+### Tests & Validierung
+
+```bash
+python -m compileall backend
+pytest backend/tests
 ```
 
 ### Frontend

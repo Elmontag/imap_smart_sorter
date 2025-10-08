@@ -96,7 +96,7 @@ def _clean_organizer(value: object | None) -> str | None:
         return None
     lowered = text.lower()
     if lowered.startswith("mailto:"):
-        return text[6:]
+        return text.split(":", 1)[1] if ":" in text else text[6:]
     return text
 
 
