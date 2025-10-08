@@ -52,3 +52,29 @@ class FilterHit(SQLModel, table=True):
     matched_terms: Optional[List[str]] = Field(default=None, sa_column=Column(SAJSON))
     message_date: Optional[datetime] = None
     matched_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CalendarEventEntry(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message_uid: str
+    folder: str
+    subject: Optional[str] = None
+    from_addr: Optional[str] = None
+    message_date: Optional[datetime] = None
+    event_uid: str
+    sequence: Optional[int] = None
+    summary: Optional[str] = None
+    organizer: Optional[str] = None
+    location: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    all_day: bool = False
+    timezone: Optional[str] = None
+    method: Optional[str] = None
+    cancellation: bool = False
+    status: str = "pending"
+    last_error: Optional[str] = None
+    last_import_at: Optional[datetime] = None
+    raw_ics: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

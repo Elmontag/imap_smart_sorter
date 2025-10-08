@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   AnalysisModule,
   KeywordFilterConfig,
@@ -7,9 +7,22 @@ import {
   KeywordFilterRuleConfig,
   TagSlotConfig,
   MoveMode,
+  OllamaModelPurpose,
   getKeywordFilters,
+  getCalendarSettings,
+  getMailboxSettings,
   updateKeywordFilters,
   updateAppConfig,
+  updateCalendarSettings,
+  updateMailboxSettings,
+  CalendarSettings,
+  CalendarSettingsUpdateRequest,
+  CalendarConnectionTestRequest,
+  MailboxSettings,
+  MailboxSettingsUpdateRequest,
+  MailboxConnectionTestRequest,
+  testCalendarConnection,
+  testMailboxConnection,
 } from '../api'
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
 import CatalogEditor from '../components/CatalogEditor'
@@ -17,10 +30,13 @@ import DevtoolsPanel from '../components/DevtoolsPanel'
 import RuleEditorForm, { EditableRuleDraft } from '../components/RuleEditorForm'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
+import { useOllamaStatus } from '../store/useOllamaStatus'
 
 const modeOptions: MoveMode[] = ['DRY_RUN', 'CONFIRM', 'AUTO']
 const fieldOrder: KeywordFilterField[] = ['subject', 'sender', 'body']
 const moduleOptions: AnalysisModule[] = ['STATIC', 'HYBRID', 'LLM_PURE']
+
+const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
@@ -32,6 +48,7 @@ const baseRuleConfig = (): KeywordFilterRuleConfig => ({
   tags: [],
   match: { mode: 'all', fields: [...fieldOrder], terms: [] },
   date: { after: null, before: null, include_future: false },
+  tag_future_dates: false,
 })
 
 const cloneRuleConfig = (rule: KeywordFilterRuleConfig): KeywordFilterRuleConfig => ({
@@ -52,6 +69,7 @@ const cloneRuleConfig = (rule: KeywordFilterRuleConfig): KeywordFilterRuleConfig
         include_future: Boolean(rule.date.include_future),
       }
     : { after: null, before: null, include_future: false },
+  tag_future_dates: Boolean(rule.tag_future_dates),
 })
 
 const createRuleDraft = (rule?: KeywordFilterRuleConfig): EditableRuleDraft => ({
@@ -74,7 +92,26 @@ const normalizeList = (values: string[]): string[] => {
 
 const parseList = (value: string): string[] => normalizeList(value.split(/[\n,]+/))
 
-type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'general'
+const sameStringLists = (a: string[], b: string[]): boolean => {
+  if (a.length !== b.length) {
+    return false
+  }
+  return a.every((value, index) => value === b[index])
+}
+
+type SettingsTab = 'staticRules' | 'catalogFolders' | 'catalogTags' | 'analysis' | 'accounts' | 'general'
+
+const settingsTabs: SettingsTab[] = [
+  'staticRules',
+  'catalogFolders',
+  'catalogTags',
+  'analysis',
+  'accounts',
+  'general',
+]
+
+const isSettingsTab = (value: string | null): value is SettingsTab =>
+  Boolean(value) && (settingsTabs as readonly string[]).includes(value)
 
 type RuleDraft = EditableRuleDraft
 type TemplateDraft = EditableRuleDraft
@@ -93,6 +130,31 @@ interface ConfigDraft {
   protectedTag: string
   processedTag: string
   aiTagPrefix: string
+}
+
+interface MailboxDraft {
+  host: string
+  port: string
+  username: string
+  inbox: string
+  use_ssl: boolean
+  process_only_seen: boolean
+  since_days: string
+  password: string
+  clear_password: boolean
+}
+
+interface CalendarDraft {
+  enabled: boolean
+  caldav_url: string
+  username: string
+  calendar_name: string
+  timezone: string
+  processed_tag: string
+  source_folders: string
+  processed_folder: string
+  password: string
+  clear_password: boolean
 }
 const defaultTemplateConfigs: KeywordFilterRuleConfig[] = [
   {
@@ -187,8 +249,60 @@ const modeDescriptions = {
   AUTO: 'Filter und KI dürfen Nachrichten eigenständig verschieben.',
 } as const
 
+const formatBytes = (value?: number | null) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+const modelLabel = (purpose: OllamaModelPurpose) => {
+  if (purpose === 'classifier') return 'Klassifikator'
+  if (purpose === 'embedding') return 'Embeddings'
+  return 'Modell'
+}
+
+const modelProgressLabel = (
+  progress?: number | null,
+  completed?: number | null,
+  total?: number | null,
+  status?: string | null,
+) => {
+  const percent = typeof progress === 'number' ? Math.round(progress * 100) : null
+  const completedLabel = formatBytes(completed)
+  const totalLabel = formatBytes(total)
+  const parts: string[] = []
+  if (percent !== null) {
+    parts.push(`${percent}%`)
+  }
+  if (completedLabel && totalLabel) {
+    parts.push(`${completedLabel} / ${totalLabel}`)
+  }
+  if (parts.length === 0 && completedLabel) {
+    parts.push(completedLabel)
+  }
+  if (parts.length === 0 && status) {
+    parts.push(status)
+  }
+  return parts.join(' · ')
+}
+
 export default function SettingsPage(): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('staticRules')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const tabFromQuery = useMemo<SettingsTab>(() => {
+    const params = new URLSearchParams(location.search)
+    const requested = params.get('tab')
+    return isSettingsTab(requested) ? requested : 'staticRules'
+  }, [location.search])
+  const [activeTab, setActiveTab] = useState<SettingsTab>(tabFromQuery)
   const [ruleDrafts, setRuleDrafts] = useState<RuleDraft[]>([])
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null)
   const [filtersLoading, setFiltersLoading] = useState(true)
@@ -211,6 +325,43 @@ export default function SettingsPage(): JSX.Element {
   })
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
+  const [mailboxConfig, setMailboxConfig] = useState<MailboxSettings | null>(null)
+  const [mailboxDraft, setMailboxDraft] = useState<MailboxDraft>({
+    host: '',
+    port: '993',
+    username: '',
+    inbox: 'INBOX',
+    use_ssl: true,
+    process_only_seen: false,
+    since_days: '30',
+    password: '',
+    clear_password: false,
+  })
+  const [mailboxLoading, setMailboxLoading] = useState(false)
+  const [mailboxSaving, setMailboxSaving] = useState(false)
+  const [mailboxError, setMailboxError] = useState<string | null>(null)
+  const [mailboxHasPassword, setMailboxHasPassword] = useState(false)
+  const [mailboxTesting, setMailboxTesting] = useState(false)
+  const [mailboxTestStatus, setMailboxTestStatus] = useState<StatusMessage | null>(null)
+  const [calendarConfig, setCalendarConfig] = useState<CalendarSettings | null>(null)
+  const [calendarDraft, setCalendarDraft] = useState<CalendarDraft>({
+    enabled: false,
+    caldav_url: '',
+    username: '',
+    calendar_name: '',
+    timezone: 'Europe/Berlin',
+    processed_tag: 'Termin bearbeitet',
+    source_folders: '',
+    processed_folder: '',
+    password: '',
+    clear_password: false,
+  })
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [calendarSaving, setCalendarSaving] = useState(false)
+  const [calendarError, setCalendarError] = useState<string | null>(null)
+  const [calendarHasPassword, setCalendarHasPassword] = useState(false)
+  const [calendarTesting, setCalendarTesting] = useState(false)
+  const [calendarTestStatus, setCalendarTestStatus] = useState<StatusMessage | null>(null)
   const templateMenuRef = useRef<HTMLDivElement | null>(null)
 
   const {
@@ -225,6 +376,35 @@ export default function SettingsPage(): JSX.Element {
     error: activityError,
     refresh: refreshActivity,
   } = useFilterActivity()
+  const ollamaEnabled = Boolean(appConfig?.analysis_module && appConfig.analysis_module !== 'STATIC')
+  const {
+    status: ollamaStatus,
+    loading: ollamaLoading,
+    error: ollamaError,
+    pullBusy: ollamaPullBusy,
+    refresh: refreshOllama,
+    pullModel,
+    deleteModel,
+  } = useOllamaStatus(ollamaEnabled)
+  const [pullModelDraft, setPullModelDraft] = useState('')
+  const [pullPurpose, setPullPurpose] = useState<OllamaModelPurpose>('classifier')
+  const [modelActionFeedback, setModelActionFeedback] = useState<StatusMessage | null>(null)
+
+  useEffect(() => {
+    if (tabFromQuery !== activeTab) {
+      setActiveTab(tabFromQuery)
+    }
+  }, [tabFromQuery, activeTab])
+
+  const handleTabChange = useCallback(
+    (next: SettingsTab) => {
+      setActiveTab(next)
+      const params = new URLSearchParams(location.search)
+      params.set('tab', next)
+      navigate({ pathname: location.pathname, search: params.toString() }, { replace: true })
+    },
+    [location.pathname, location.search, navigate],
+  )
 
   const loadFilters = useCallback(async () => {
     setFiltersLoading(true)
@@ -241,9 +421,68 @@ export default function SettingsPage(): JSX.Element {
     }
   }, [])
 
+  const loadMailboxConfig = useCallback(async () => {
+    setMailboxLoading(true)
+    try {
+      const settings = await getMailboxSettings()
+      setMailboxConfig(settings)
+      setMailboxHasPassword(Boolean(settings.has_password))
+      setMailboxDraft({
+        host: settings.host ?? '',
+        port: String(settings.port ?? 993),
+        username: settings.username ?? '',
+        inbox: settings.inbox ?? 'INBOX',
+        use_ssl: Boolean(settings.use_ssl),
+        process_only_seen: Boolean(settings.process_only_seen),
+        since_days: String(settings.since_days ?? 30),
+        password: '',
+        clear_password: false,
+      })
+      setMailboxError(null)
+      setMailboxTestStatus(null)
+    } catch (err) {
+      setMailboxError(
+        err instanceof Error ? err.message : 'Mailbox-Konfiguration konnte nicht geladen werden.',
+      )
+    } finally {
+      setMailboxLoading(false)
+    }
+  }, [])
+
+  const loadCalendarConfig = useCallback(async () => {
+    setCalendarLoading(true)
+    try {
+      const settings = await getCalendarSettings()
+      setCalendarConfig(settings)
+      setCalendarHasPassword(Boolean(settings.has_password))
+      setCalendarDraft({
+        enabled: settings.enabled,
+        caldav_url: settings.caldav_url ?? '',
+        username: settings.username ?? '',
+        calendar_name: settings.calendar_name ?? '',
+        timezone: settings.timezone ?? 'Europe/Berlin',
+        processed_tag: settings.processed_tag ?? 'Termin bearbeitet',
+        source_folders: settings.source_folders?.join('\n') ?? '',
+        processed_folder: settings.processed_folder ?? '',
+        password: '',
+        clear_password: false,
+      })
+      setCalendarError(null)
+      setCalendarTestStatus(null)
+    } catch (err) {
+      setCalendarError(
+        err instanceof Error ? err.message : 'Kalenderkonfiguration konnte nicht geladen werden.',
+      )
+    } finally {
+      setCalendarLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     void loadFilters()
-  }, [loadFilters])
+    void loadMailboxConfig()
+    void loadCalendarConfig()
+  }, [loadFilters, loadMailboxConfig, loadCalendarConfig])
 
   useEffect(() => {
     setTemplateMenuOpen(false)
@@ -311,13 +550,27 @@ export default function SettingsPage(): JSX.Element {
     setRuleTemplates(current => current.map(template => (template.id === id ? mutator(template) : template)))
   }, [])
 
-  const classifierOptions = useMemo(
-    () =>
-      (appConfig?.ollama?.models || [])
-        .filter(model => model.purpose === 'classifier' && model.name)
-        .map(model => model.name),
-    [appConfig?.ollama?.models],
-  )
+  const classifierOptions = useMemo(() => {
+    const models = ollamaStatus?.models ?? []
+    const seen = new Set<string>()
+    const names: string[] = []
+    models.forEach(model => {
+      if (model.purpose !== 'classifier') {
+        return
+      }
+      const trimmed = (model.name || '').trim()
+      if (trimmed.length === 0 || seen.has(trimmed)) {
+        return
+      }
+      seen.add(trimmed)
+      names.push(trimmed)
+    })
+    const current = (configDraft.classifierModel || '').trim()
+    if (current && !seen.has(current)) {
+      names.push(current)
+    }
+    return names
+  }, [ollamaStatus?.models, configDraft.classifierModel])
 
   const tagSlotOptions = useMemo<TagSlotConfig[]>(() => {
     if (!appConfig?.tag_slots) {
@@ -363,6 +616,80 @@ export default function SettingsPage(): JSX.Element {
       configDraft.aiTagPrefix.trim() !== (appConfig.ai_tag_prefix ?? '').trim()
     )
   }, [appConfig, configDraft])
+
+  const mailboxDirty = useMemo(() => {
+    if (!mailboxConfig) {
+      return false
+    }
+    const host = mailboxDraft.host.trim()
+    const username = mailboxDraft.username.trim()
+    const inbox = mailboxDraft.inbox.trim()
+    const portValue = Number.parseInt(mailboxDraft.port, 10)
+    const sinceValue = Number.parseInt(mailboxDraft.since_days, 10)
+    if (host !== (mailboxConfig.host ?? '').trim()) {
+      return true
+    }
+    if (username !== (mailboxConfig.username ?? '').trim()) {
+      return true
+    }
+    if (inbox !== (mailboxConfig.inbox ?? '').trim()) {
+      return true
+    }
+    if (Number.isNaN(portValue) || portValue !== mailboxConfig.port) {
+      return true
+    }
+    if (Number.isNaN(sinceValue) || sinceValue !== mailboxConfig.since_days) {
+      return true
+    }
+    if (mailboxDraft.use_ssl !== mailboxConfig.use_ssl) {
+      return true
+    }
+    if (mailboxDraft.process_only_seen !== mailboxConfig.process_only_seen) {
+      return true
+    }
+    if (mailboxDraft.password.trim().length > 0 || mailboxDraft.clear_password) {
+      return true
+    }
+    return false
+  }, [mailboxConfig, mailboxDraft])
+
+  const calendarDirty = useMemo(() => {
+    if (!calendarConfig) {
+      return false
+    }
+    if (calendarDraft.enabled !== calendarConfig.enabled) {
+      return true
+    }
+    if (calendarDraft.caldav_url.trim() !== (calendarConfig.caldav_url ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.username.trim() !== (calendarConfig.username ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.calendar_name.trim() !== (calendarConfig.calendar_name ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.timezone.trim() !== (calendarConfig.timezone ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.processed_tag.trim() !== (calendarConfig.processed_tag ?? '').trim()) {
+      return true
+    }
+    const draftFolders = parseList(calendarDraft.source_folders)
+    const storedFolders = normalizeList(
+      (calendarConfig.source_folders ?? []).map(folder => folder.trim()),
+    )
+    if (!sameStringLists(draftFolders, storedFolders)) {
+      return true
+    }
+    if (calendarDraft.processed_folder.trim() !== (calendarConfig.processed_folder ?? '').trim()) {
+      return true
+    }
+    if (calendarDraft.password.trim().length > 0 || calendarDraft.clear_password) {
+      return true
+    }
+    return false
+  }, [calendarConfig, calendarDraft])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
@@ -495,6 +822,7 @@ export default function SettingsPage(): JSX.Element {
                   include_future: Boolean(rule.date.include_future),
                 }
               : undefined,
+          tag_future_dates: Boolean(rule.tag_future_dates),
         }
       }),
     }
@@ -536,6 +864,66 @@ export default function SettingsPage(): JSX.Element {
     [],
   )
 
+  const handleModelReload = useCallback(
+    async (model: string, purpose: OllamaModelPurpose) => {
+      const trimmed = model.trim()
+      if (!trimmed) {
+        return
+      }
+      setModelActionFeedback(null)
+      try {
+        await pullModel(trimmed, purpose)
+        setModelActionFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
+      } catch (err) {
+        setModelActionFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
+      }
+    },
+    [pullModel],
+  )
+
+  const handleModelDelete = useCallback(
+    async (model: string) => {
+      const trimmed = model.trim()
+      if (!trimmed) {
+        return
+      }
+      if (typeof window !== 'undefined') {
+        const confirmed = window.confirm(`Soll das Modell ${trimmed} wirklich gelöscht werden?`)
+        if (!confirmed) {
+          return
+        }
+      }
+      setModelActionFeedback(null)
+      try {
+        await deleteModel(trimmed)
+        setModelActionFeedback({ kind: 'success', message: `Modell ${trimmed} gelöscht.` })
+      } catch (err) {
+        setModelActionFeedback({ kind: 'error', message: `Löschen fehlgeschlagen: ${toMessage(err)}` })
+      }
+    },
+    [deleteModel],
+  )
+
+  const handlePullSubmit = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      const trimmed = pullModelDraft.trim()
+      if (!trimmed) {
+        setModelActionFeedback({ kind: 'error', message: 'Bitte einen Modellnamen angeben.' })
+        return
+      }
+      setModelActionFeedback(null)
+      try {
+        await pullModel(trimmed, pullPurpose)
+        setModelActionFeedback({ kind: 'info', message: `Pull für ${trimmed} gestartet.` })
+        setPullModelDraft('')
+      } catch (err) {
+        setModelActionFeedback({ kind: 'error', message: `Pull fehlgeschlagen: ${toMessage(err)}` })
+      }
+    },
+    [pullModelDraft, pullPurpose, pullModel],
+  )
+
   const handleConfigSave = useCallback(async () => {
     if (!configDraft.classifierModel.trim()) {
       setStatus({ kind: 'error', message: 'Das Sprachmodell darf nicht leer sein.' })
@@ -562,6 +950,7 @@ export default function SettingsPage(): JSX.Element {
       setStatus({ kind: 'success', message: 'Konfiguration gespeichert.' })
       setConfigError(null)
       await refreshAppConfig()
+      await refreshOllama()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Konfiguration konnte nicht gespeichert werden.'
       setStatus({ kind: 'error', message })
@@ -570,6 +959,266 @@ export default function SettingsPage(): JSX.Element {
       setConfigSaving(false)
     }
   }, [configDraft, refreshAppConfig])
+
+  const handleMailboxSave = useCallback(async () => {
+    const trimmedHost = mailboxDraft.host.trim()
+    const trimmedUser = mailboxDraft.username.trim()
+    const trimmedInbox = mailboxDraft.inbox.trim() || 'INBOX'
+    const portValue = Number.parseInt(mailboxDraft.port, 10)
+    const sinceValue = Number.parseInt(mailboxDraft.since_days, 10)
+    const missing: string[] = []
+    if (!trimmedHost) {
+      missing.push('Host')
+    }
+    if (!trimmedUser) {
+      missing.push('Benutzername')
+    }
+    if (Number.isNaN(portValue) || portValue <= 0) {
+      missing.push('Port')
+    }
+    if (Number.isNaN(sinceValue) || sinceValue < 0) {
+      missing.push('Zeitraum (Tage)')
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte prüfe folgende Felder: ' : 'Bitte prüfe folgendes Feld: '
+      setStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    setMailboxSaving(true)
+    try {
+      const payload: MailboxSettingsUpdateRequest = {
+        host: trimmedHost,
+        port: portValue,
+        username: trimmedUser,
+        inbox: trimmedInbox,
+        use_ssl: mailboxDraft.use_ssl,
+        process_only_seen: mailboxDraft.process_only_seen,
+        since_days: sinceValue,
+      }
+      const trimmedPassword = mailboxDraft.password.trim()
+      if (trimmedPassword && !mailboxDraft.clear_password) {
+        payload.password = trimmedPassword
+      }
+      if (mailboxDraft.clear_password) {
+        payload.clear_password = true
+      }
+      const updated = await updateMailboxSettings(payload)
+      setMailboxConfig(updated)
+      setMailboxHasPassword(Boolean(updated.has_password))
+      setMailboxDraft({
+        host: updated.host ?? '',
+        port: String(updated.port ?? 993),
+        username: updated.username ?? '',
+        inbox: updated.inbox ?? 'INBOX',
+        use_ssl: Boolean(updated.use_ssl),
+        process_only_seen: Boolean(updated.process_only_seen),
+        since_days: String(updated.since_days ?? 30),
+        password: '',
+        clear_password: false,
+      })
+      setStatus({ kind: 'success', message: 'Mailbox-Konfiguration gespeichert.' })
+      setMailboxError(null)
+      setMailboxTestStatus(null)
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Mailbox-Konfiguration konnte nicht gespeichert werden.'
+      setStatus({ kind: 'error', message })
+      setMailboxError(message)
+    } finally {
+      setMailboxSaving(false)
+    }
+  }, [mailboxDraft])
+
+  const handleCalendarSave = useCallback(async () => {
+    const trimmedTimezone = calendarDraft.timezone.trim()
+    const trimmedProcessedTag = calendarDraft.processed_tag.trim()
+    if (!trimmedTimezone) {
+      setStatus({ kind: 'error', message: 'Die Zeitzone darf nicht leer sein.' })
+      return
+    }
+    if (!trimmedProcessedTag) {
+      setStatus({ kind: 'error', message: 'Bitte gib einen Tag für importierte Termine an.' })
+      return
+    }
+    const missing: string[] = []
+    if (calendarDraft.enabled) {
+      if (!calendarDraft.caldav_url.trim()) {
+        missing.push('CalDAV-URL')
+      }
+      if (!calendarDraft.username.trim()) {
+        missing.push('Benutzername')
+      }
+      if (!calendarDraft.calendar_name.trim()) {
+        missing.push('Kalendername')
+      }
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte fülle folgende Felder aus: ' : 'Bitte fülle folgendes Feld aus: '
+      setStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    const sourceFolders = parseList(calendarDraft.source_folders)
+    const processedFolder = calendarDraft.processed_folder.trim()
+    setCalendarSaving(true)
+    try {
+      const payload: CalendarSettingsUpdateRequest = {
+        enabled: calendarDraft.enabled,
+        caldav_url: calendarDraft.caldav_url.trim(),
+        username: calendarDraft.username.trim(),
+        calendar_name: calendarDraft.calendar_name.trim(),
+        timezone: trimmedTimezone,
+        processed_tag: trimmedProcessedTag,
+        source_folders: sourceFolders,
+        processed_folder: processedFolder,
+      }
+      const trimmedPassword = calendarDraft.password.trim()
+      if (trimmedPassword && !calendarDraft.clear_password) {
+        payload.password = trimmedPassword
+      }
+      if (calendarDraft.clear_password) {
+        payload.clear_password = true
+      }
+      const updated = await updateCalendarSettings(payload)
+      setCalendarConfig(updated)
+      setCalendarHasPassword(Boolean(updated.has_password))
+      setCalendarDraft({
+        enabled: updated.enabled,
+        caldav_url: updated.caldav_url ?? '',
+        username: updated.username ?? '',
+        calendar_name: updated.calendar_name ?? '',
+        timezone: updated.timezone ?? 'Europe/Berlin',
+        processed_tag: updated.processed_tag ?? 'Termin bearbeitet',
+        source_folders: updated.source_folders?.join('\n') ?? '',
+        processed_folder: updated.processed_folder ?? '',
+        password: '',
+        clear_password: false,
+      })
+      setStatus({ kind: 'success', message: 'Kalenderkonfiguration gespeichert.' })
+      setCalendarError(null)
+      setCalendarTestStatus(null)
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Kalenderkonfiguration konnte nicht gespeichert werden.'
+      setStatus({ kind: 'error', message })
+      setCalendarError(message)
+    } finally {
+      setCalendarSaving(false)
+    }
+  }, [calendarDraft])
+
+  const handleMailboxTest = useCallback(async () => {
+    const trimmedHost = mailboxDraft.host.trim()
+    const trimmedUser = mailboxDraft.username.trim()
+    const trimmedInbox = mailboxDraft.inbox.trim()
+    const portValue = Number.parseInt(mailboxDraft.port, 10)
+    const missing: string[] = []
+    if (!trimmedHost) {
+      missing.push('Host')
+    }
+    if (!trimmedUser) {
+      missing.push('Benutzername')
+    }
+    if (Number.isNaN(portValue) || portValue <= 0) {
+      missing.push('Port')
+    }
+    const useStoredPassword = mailboxHasPassword && !mailboxDraft.password && !mailboxDraft.clear_password
+    if (!useStoredPassword && mailboxDraft.password.trim().length === 0) {
+      missing.push('Passwort')
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte fülle folgende Felder aus: ' : 'Bitte fülle folgendes Feld aus: '
+      setMailboxTestStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    setMailboxTestStatus(null)
+    setMailboxTesting(true)
+    try {
+      const payload: MailboxConnectionTestRequest = {
+        host: trimmedHost,
+        port: portValue,
+        username: trimmedUser,
+        inbox: trimmedInbox || undefined,
+        use_ssl: mailboxDraft.use_ssl,
+        use_stored_password: useStoredPassword,
+      }
+      if (!useStoredPassword) {
+        payload.password = mailboxDraft.password.trim()
+      }
+      const response = await testMailboxConnection(payload)
+      const message =
+        response.message ?? (response.ok ? 'Verbindung erfolgreich getestet.' : 'Verbindung fehlgeschlagen.')
+      setMailboxTestStatus({ kind: response.ok ? 'success' : 'error', message })
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Verbindungstest konnte nicht durchgeführt werden.'
+      setMailboxTestStatus({ kind: 'error', message })
+    } finally {
+      setMailboxTesting(false)
+    }
+  }, [mailboxDraft, mailboxHasPassword])
+
+  const handleCalendarTest = useCallback(async () => {
+    const trimmedUrl = calendarDraft.caldav_url.trim()
+    const trimmedUser = calendarDraft.username.trim()
+    const trimmedCalendar = calendarDraft.calendar_name.trim()
+    const trimmedPassword = calendarDraft.password.trim()
+    const missing: string[] = []
+    if (!trimmedUrl) {
+      missing.push('CalDAV-URL')
+    }
+    if (!trimmedUser) {
+      missing.push('Benutzername')
+    }
+    if (!trimmedCalendar) {
+      missing.push('Kalendername')
+    }
+    if (missing.length > 0) {
+      const suffix = missing.length > 1 ? 'Bitte fülle folgende Felder aus: ' : 'Bitte fülle folgendes Feld aus: '
+      setCalendarTestStatus({ kind: 'error', message: `${suffix}${missing.join(', ')}` })
+      return
+    }
+    setCalendarTestStatus(null)
+    setCalendarTesting(true)
+    try {
+      const payload: CalendarConnectionTestRequest = {
+        caldav_url: trimmedUrl,
+        username: trimmedUser,
+        calendar_name: trimmedCalendar,
+      }
+      if (trimmedPassword && !calendarDraft.clear_password) {
+        payload.password = trimmedPassword
+      } else if (calendarHasPassword && !calendarDraft.clear_password) {
+        payload.use_stored_password = true
+      }
+      const response = await testCalendarConnection(payload)
+      const message =
+        response.message ??
+        (response.ok ? 'Verbindung erfolgreich getestet.' : 'Verbindungstest fehlgeschlagen.')
+      setCalendarTestStatus({ kind: response.ok ? 'success' : 'error', message })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Verbindungstest fehlgeschlagen.'
+      setCalendarTestStatus({ kind: 'error', message })
+    } finally {
+      setCalendarTesting(false)
+    }
+  }, [
+    calendarDraft.caldav_url,
+    calendarDraft.username,
+    calendarDraft.calendar_name,
+    calendarDraft.password,
+    calendarDraft.clear_password,
+    calendarHasPassword,
+  ])
+
+  useEffect(() => {
+    setCalendarTestStatus(null)
+  }, [
+    calendarDraft.caldav_url,
+    calendarDraft.username,
+    calendarDraft.calendar_name,
+    calendarDraft.password,
+    calendarDraft.clear_password,
+  ])
 
   return (
     <div className="app-shell">
@@ -580,14 +1229,6 @@ export default function SettingsPage(): JSX.Element {
             <p className="app-subline">Passe Automatisierung, KI-Verhalten und Betriebsmodus fein an.</p>
           </div>
         </div>
-        <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-        </nav>
       </header>
 
       {status && (
@@ -609,7 +1250,7 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'staticRules'}
             className={`settings-tab ${activeTab === 'staticRules' ? 'active' : ''}`}
-            onClick={() => setActiveTab('staticRules')}
+            onClick={() => handleTabChange('staticRules')}
           >
             Statische Regeln
           </button>
@@ -618,7 +1259,7 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'catalogFolders'}
             className={`settings-tab ${activeTab === 'catalogFolders' ? 'active' : ''}`}
-            onClick={() => setActiveTab('catalogFolders')}
+            onClick={() => handleTabChange('catalogFolders')}
           >
             Ordnerkatalog
           </button>
@@ -627,7 +1268,7 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'catalogTags'}
             className={`settings-tab ${activeTab === 'catalogTags' ? 'active' : ''}`}
-            onClick={() => setActiveTab('catalogTags')}
+            onClick={() => handleTabChange('catalogTags')}
           >
             Tag-Slots
           </button>
@@ -636,16 +1277,25 @@ export default function SettingsPage(): JSX.Element {
             role="tab"
             aria-selected={activeTab === 'analysis'}
             className={`settings-tab ${activeTab === 'analysis' ? 'active' : ''}`}
-            onClick={() => setActiveTab('analysis')}
+            onClick={() => handleTabChange('analysis')}
           >
             KI & Tags
           </button>
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === 'accounts'}
+            className={`settings-tab ${activeTab === 'accounts' ? 'active' : ''}`}
+            onClick={() => handleTabChange('accounts')}
+          >
+            Konten
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === 'general'}
             className={`settings-tab ${activeTab === 'general' ? 'active' : ''}`}
-            onClick={() => setActiveTab('general')}
+            onClick={() => handleTabChange('general')}
           >
             Betrieb
           </button>
@@ -872,48 +1522,161 @@ export default function SettingsPage(): JSX.Element {
             <div className="settings-section">
               <section className="analysis-card">
                 <h2>Ollama & Modelle</h2>
-                {appConfig?.ollama ? (
-                  <div className={`ollama-status-card ${appConfig.ollama.reachable ? 'ok' : 'error'}`}>
-                    <div className="ollama-status-header">
-                      <span className="label">Host</span>
-                      <span className={`indicator ${appConfig.ollama.reachable ? 'online' : 'offline'}`}>
-                        {appConfig.ollama.reachable ? 'verbunden' : 'offline'}
-                      </span>
-                    </div>
-                    <div className="ollama-status-body">
-                      <div className="host">{appConfig.ollama.host}</div>
-                      <div className="models">
-                        {appConfig.ollama.models.map(model => (
-                          <span key={model.name}>
-                            {model.purpose === 'classifier' ? 'Klassifikator' : 'Embeddings'}: {model.name}
-                            {!model.available && ' (fehlt)'}
-                          </span>
-                        ))}
+                <div className={`ollama-status-card ${ollamaStatus?.reachable ? 'ok' : 'error'}`}>
+                  <div className="ollama-status-header">
+                    <span className="label">Host</span>
+                    <span className={`indicator ${ollamaStatus?.reachable ? 'online' : 'offline'}`}>
+                      {ollamaStatus?.reachable ? 'verbunden' : 'nicht verbunden'}
+                    </span>
+                  </div>
+                  <div className="ollama-status-body">
+                    {ollamaLoading && <div className="placeholder">Lade Status…</div>}
+                    {!ollamaLoading && ollamaStatus && (
+                      <>
+                        <div className="host">{ollamaStatus.host}</div>
+                        <div className="models detailed">
+                          {ollamaStatus.models.length === 0 && <span>Keine Modelle bekannt.</span>}
+                          {ollamaStatus.models.map(model => {
+                            const progressValue = Math.max(0, Math.min(100, Math.round((model.progress ?? 0) * 100)))
+                            return (
+                              <div key={`${model.purpose}-${model.normalized_name}`} className="ollama-model-detail">
+                                <div className="ollama-model-detail-header">
+                                  <div>
+                                    <span className="model-purpose">{modelLabel(model.purpose)}</span>
+                                    <strong>{model.name}</strong>
+                                  </div>
+                                  {model.name && (
+                                    <div className="ollama-model-detail-actions">
+                                      <button
+                                        type="button"
+                                        className="link"
+                                        onClick={() => handleModelReload(model.name, model.purpose as OllamaModelPurpose)}
+                                        disabled={ollamaPullBusy || model.pulling}
+                                      >
+                                        {model.pulling ? 'Lädt…' : 'Neu laden'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="link danger"
+                                        onClick={() => handleModelDelete(model.name)}
+                                        disabled={ollamaPullBusy || model.pulling}
+                                      >
+                                        Löschen
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                                {model.pulling && (
+                                  <div
+                                    className="ollama-progress-bar"
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={progressValue}
+                                  >
+                                    <div className="ollama-progress-indicator" style={{ width: `${progressValue}%` }} />
+                                  </div>
+                                )}
+                                <div className="ollama-model-detail-meta">
+                                  {model.pulling && (
+                                    <span>{modelProgressLabel(model.progress, model.download_completed, model.download_total, model.status)}</span>
+                                  )}
+                                  {!model.pulling && model.message && <span>{model.message}</span>}
+                                  {model.error && <span className="error">{model.error}</span>}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {ollamaStatus.message && <div className="ollama-note">{ollamaStatus.message}</div>}
+                      </>
+                    )}
+                    {!ollamaLoading && !ollamaStatus && (
+                      <div className="placeholder">
+                        {ollamaEnabled
+                          ? 'Keine Ollama-Informationen verfügbar.'
+                          : 'Ollama ist für das statische Modul deaktiviert.'}
                       </div>
-                      {appConfig.ollama.message && <div className="ollama-note">{appConfig.ollama.message}</div>}
+                    )}
+                    {ollamaError && (
+                      <div className="status-banner error inline">Status konnte nicht geladen werden: {ollamaError}</div>
+                    )}
+                  </div>
+                  <div className="ollama-status-actions">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => refreshOllama()}
+                      disabled={ollamaLoading || ollamaPullBusy}
+                    >
+                      {ollamaLoading ? 'Aktualisiere…' : 'Status aktualisieren'}
+                    </button>
+                  </div>
+                </div>
+                <form className="ollama-pull-form" onSubmit={handlePullSubmit}>
+                  <h3>Modell herunterladen</h3>
+                  <div className="ollama-pull-grid">
+                    <label>
+                      <span>Modellname</span>
+                      <input
+                        type="text"
+                        value={pullModelDraft}
+                        onChange={event => setPullModelDraft(event.target.value)}
+                        placeholder="z. B. llama3"
+                        disabled={ollamaPullBusy}
+                      />
+                    </label>
+                    <label>
+                      <span>Zweck</span>
+                      <select
+                        value={pullPurpose}
+                        onChange={event => setPullPurpose(event.target.value as OllamaModelPurpose)}
+                        disabled={ollamaPullBusy}
+                      >
+                        <option value="classifier">Klassifikator</option>
+                        <option value="embedding">Embeddings</option>
+                        <option value="custom">Allgemein</option>
+                      </select>
+                    </label>
+                    <div className="ollama-pull-actions">
+                      <button type="submit" className="primary" disabled={ollamaPullBusy}>
+                        {ollamaPullBusy ? 'Starte…' : 'Pull starten'}
+                      </button>
                     </div>
                   </div>
-                ) : (
-                  <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
-                )}
+                  {modelActionFeedback && (
+                    <div className={`status-banner ${modelActionFeedback.kind} inline`}>
+                      {modelActionFeedback.message}
+                    </div>
+                  )}
+                </form>
               </section>
               <section className="analysis-card">
                 <h2>Analyse-Modell</h2>
                 <label className="mode-select large">
                   <span>Sprachmodell</span>
-                  <input
-                    type="text"
-                    list="classifier-models"
-                    value={configDraft.classifierModel}
-                    onChange={event => handleConfigChange('classifierModel', event.target.value)}
-                    placeholder="z. B. llama3"
-                    disabled={configSaving}
-                  />
-                  <datalist id="classifier-models">
-                    {classifierOptions.map(option => (
-                      <option key={option} value={option} />
-                    ))}
-                  </datalist>
+                  <div className="model-select-row">
+                    <select
+                      value={configDraft.classifierModel}
+                      onChange={event => handleConfigChange('classifierModel', event.target.value)}
+                      disabled={configSaving}
+                    >
+                      <option value="">Modell wählen…</option>
+                      {classifierOptions.map(option => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={configDraft.classifierModel}
+                      onChange={event => handleConfigChange('classifierModel', event.target.value)}
+                      placeholder="Eigenes Modell"
+                      disabled={configSaving}
+                    />
+                  </div>
+                  <span className="field-hint">Die Freitexteingabe überschreibt die Auswahl.</span>
                 </label>
                 <div className="config-actions secondary">
                   <button
@@ -971,6 +1734,345 @@ export default function SettingsPage(): JSX.Element {
                 ) : (
                   <div className="placeholder">Konfiguration wird geladen…</div>
                 )}
+              </section>
+          </div>
+        )}
+
+          {activeTab === 'accounts' && (
+            <div className="settings-section">
+              <section className="general-card">
+                <h2>E-Mail-Konto</h2>
+                <p className="muted">
+                  Hinterlege die Zugangsdaten für das IMAP-Postfach und prüfe die Verbindung.
+                </p>
+                {mailboxError && <div className="status-banner error">{mailboxError}</div>}
+                <div className="config-grid">
+                  <label>
+                    <span>IMAP-Host</span>
+                    <input
+                      type="text"
+                      value={mailboxDraft.host}
+                      onChange={event => setMailboxDraft(current => ({ ...current, host: event.target.value }))}
+                      placeholder="imap.example.org"
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Port</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={mailboxDraft.port}
+                      onChange={event => setMailboxDraft(current => ({ ...current, port: event.target.value }))}
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Benutzername</span>
+                    <input
+                      type="text"
+                      value={mailboxDraft.username}
+                      onChange={event => setMailboxDraft(current => ({ ...current, username: event.target.value }))}
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Posteingang</span>
+                    <input
+                      type="text"
+                      value={mailboxDraft.inbox}
+                      onChange={event => setMailboxDraft(current => ({ ...current, inbox: event.target.value }))}
+                      placeholder="z. B. INBOX"
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                  </label>
+                  <label className="toggle-field">
+                    <span>SSL/TLS verwenden</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={mailboxDraft.use_ssl}
+                        onChange={event =>
+                          setMailboxDraft(current => ({ ...current, use_ssl: event.target.checked }))
+                        }
+                        disabled={mailboxLoading || mailboxSaving}
+                      />
+                      <span>{mailboxDraft.use_ssl ? 'Aktiv' : 'Inaktiv'}</span>
+                    </div>
+                  </label>
+                  <label className="toggle-field">
+                    <span>Nur gelesene Mails prüfen</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={mailboxDraft.process_only_seen}
+                        onChange={event =>
+                          setMailboxDraft(current => ({ ...current, process_only_seen: event.target.checked }))
+                        }
+                        disabled={mailboxLoading || mailboxSaving}
+                      />
+                      <span>{mailboxDraft.process_only_seen ? 'Aktiv' : 'Inaktiv'}</span>
+                    </div>
+                    <small className="muted">
+                      Bei aktivierter Option verarbeitet der Worker ausschließlich bereits gelesene Nachrichten.
+                    </small>
+                  </label>
+                  <label>
+                    <span>Zeitraum (Tage)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={mailboxDraft.since_days}
+                      onChange={event =>
+                        setMailboxDraft(current => ({ ...current, since_days: event.target.value }))
+                      }
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                    <small className="muted">Ältere Nachrichten außerhalb des Zeitraums werden ignoriert.</small>
+                  </label>
+                  <label>
+                    <span>Passwort</span>
+                    <input
+                      type="password"
+                      value={mailboxDraft.password}
+                      onChange={event =>
+                        setMailboxDraft(current => ({ ...current, password: event.target.value }))
+                      }
+                      placeholder={mailboxHasPassword ? 'Passwort beibehalten' : 'Neues Passwort'}
+                      disabled={mailboxLoading || mailboxSaving}
+                    />
+                    <small className="muted">
+                      {mailboxHasPassword
+                        ? 'Leer lassen, um das gespeicherte Passwort weiter zu nutzen.'
+                        : 'Trage hier das Passwort für das IMAP-Konto ein.'}
+                    </small>
+                  </label>
+                  <label className="toggle-field">
+                    <span>Passwort löschen</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={mailboxDraft.clear_password}
+                        onChange={event =>
+                          setMailboxDraft(current => ({ ...current, clear_password: event.target.checked }))
+                        }
+                        disabled={mailboxLoading || mailboxSaving}
+                      />
+                      <span>{mailboxDraft.clear_password ? 'Wird entfernt' : 'Beibehalten'}</span>
+                    </div>
+                    <small className="muted">Aktiviere diese Option, um das gespeicherte Passwort zu entfernen.</small>
+                  </label>
+                </div>
+                <div className="config-actions">
+                  {mailboxTestStatus && (
+                    <div className={`status-banner ${mailboxTestStatus.kind} inline`}>
+                      {mailboxTestStatus.message}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleMailboxTest()}
+                    disabled={mailboxLoading || mailboxSaving || mailboxTesting}
+                  >
+                    {mailboxTesting ? 'Teste Verbindung…' : 'Verbindung testen'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void loadMailboxConfig()}
+                    disabled={mailboxLoading || mailboxSaving}
+                  >
+                    {mailboxLoading ? 'Lade…' : 'Neu laden'}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void handleMailboxSave()}
+                    disabled={!mailboxDirty || mailboxSaving}
+                  >
+                    {mailboxSaving ? 'Speichere…' : 'E-Mail speichern'}
+                  </button>
+                </div>
+              </section>
+              <section className="general-card">
+                <h2>CalDAV-Synchronisation</h2>
+                <p className="muted">
+                  Hinterlege Verbindungsdaten für den CalDAV-Kalender und definiere den IMAP-Tag, der nach dem Import gesetzt
+                  wird.
+                </p>
+                {calendarError && <div className="status-banner error">{calendarError}</div>}
+                <div className="config-grid">
+                  <label className="toggle-field">
+                    <span>Synchronisation aktiv</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={calendarDraft.enabled}
+                        onChange={event =>
+                          setCalendarDraft(current => ({ ...current, enabled: event.target.checked }))
+                        }
+                        disabled={calendarLoading || calendarSaving}
+                      />
+                      <span>{calendarDraft.enabled ? 'Aktiv' : 'Inaktiv'}</span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>CalDAV-URL</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.caldav_url}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, caldav_url: event.target.value }))
+                      }
+                      placeholder="https://cloud.example.org/remote.php/dav/calendars/user/termine/"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Benutzername</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.username}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, username: event.target.value }))
+                      }
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Kalendername / Pfad</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.calendar_name}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, calendar_name: event.target.value }))
+                      }
+                      placeholder="z. B. Termine"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>Standard-Zeitzone</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.timezone}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, timezone: event.target.value }))
+                      }
+                      placeholder="Europe/Berlin"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>IMAP-Tag nach Import</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.processed_tag}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, processed_tag: event.target.value }))
+                      }
+                      placeholder="Termin bearbeitet"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                  </label>
+                  <label>
+                    <span>IMAP-Ordner für Kalenderscan</span>
+                    <textarea
+                      value={calendarDraft.source_folders}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, source_folders: event.target.value }))
+                      }
+                      placeholder={'INBOX/Kalender\nINBOX/Termine'}
+                      rows={3}
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      Ein Ordner pro Zeile. Leer lassen, um die überwachten Ordner zu verwenden.
+                    </small>
+                  </label>
+                  <label>
+                    <span>Ordner für bearbeitete Termine</span>
+                    <input
+                      type="text"
+                      value={calendarDraft.processed_folder}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, processed_folder: event.target.value }))
+                      }
+                      placeholder="z. B. Archiv/Kalender"
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      Nach dem Import verschobene Terminmails landen in diesem Ordner. Leer lassen, um sie nicht zu bewegen.
+                    </small>
+                  </label>
+                  <label>
+                    <span>Passwort</span>
+                    <input
+                      type="password"
+                      value={calendarDraft.password}
+                      onChange={event =>
+                        setCalendarDraft(current => ({ ...current, password: event.target.value }))
+                      }
+                      placeholder={calendarHasPassword ? 'Passwort beibehalten' : 'Neues Passwort'}
+                      disabled={calendarLoading || calendarSaving}
+                    />
+                    <small className="muted">
+                      {calendarHasPassword
+                        ? 'Leer lassen, um das vorhandene Passwort weiter zu nutzen.'
+                        : 'Trage hier das Passwort für den CalDAV-Zugang ein.'}
+                    </small>
+                  </label>
+                  <label className="toggle-field">
+                    <span>Passwort löschen</span>
+                    <div className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={calendarDraft.clear_password}
+                        onChange={event =>
+                          setCalendarDraft(current => ({ ...current, clear_password: event.target.checked }))
+                        }
+                        disabled={calendarLoading || calendarSaving}
+                      />
+                      <span>{calendarDraft.clear_password ? 'Wird entfernt' : 'Beibehalten'}</span>
+                    </div>
+                    <small className="muted">
+                      Aktiviere diese Option, wenn du das gespeicherte Passwort zurücksetzen möchtest.
+                    </small>
+                  </label>
+                </div>
+                <div className="config-actions">
+                  {calendarTestStatus && (
+                    <div className={`status-banner ${calendarTestStatus.kind} inline`}>
+                      {calendarTestStatus.message}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleCalendarTest()}
+                    disabled={calendarLoading || calendarSaving || calendarTesting}
+                  >
+                    {calendarTesting ? 'Teste Verbindung…' : 'Verbindung testen'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void loadCalendarConfig()}
+                    disabled={calendarLoading || calendarSaving}
+                  >
+                    {calendarLoading ? 'Lade…' : 'Neu laden'}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={handleCalendarSave}
+                    disabled={!calendarDirty || calendarSaving}
+                  >
+                    {calendarSaving ? 'Speichere…' : 'Kalender speichern'}
+                  </button>
+                </div>
               </section>
             </div>
           )}

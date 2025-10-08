@@ -296,14 +296,16 @@ export default function FolderSelectionPanel({
           disabled={loading}
         />
         <div className="toolbar-buttons">
-          <button type="button" onClick={selectAll} disabled={loading || !available.length}>
-            Alle
-          </button>
-          <button type="button" onClick={selectNone} disabled={loading}>
-            Keine
-          </button>
+          <div className="toolbar-column">
+            <button type="button" onClick={selectAll} disabled={loading || !available.length}>
+              Alle
+            </button>
+            <button type="button" onClick={selectNone} disabled={loading}>
+              Keine
+            </button>
+          </div>
           {!trimmedFilter && (
-            <>
+            <div className="toolbar-column">
               <button type="button" onClick={expandAll} disabled={loading || !available.length}>
                 Alle auf
               </button>
@@ -314,7 +316,7 @@ export default function FolderSelectionPanel({
               >
                 Alle zu
               </button>
-            </>
+            </div>
           )}
         </div>
       </div>

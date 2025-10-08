@@ -64,6 +64,183 @@ export interface PendingOverview {
   limit_active?: boolean
 }
 
+export type CalendarEventStatus = 'pending' | 'imported' | 'failed'
+
+export interface CalendarEvent {
+  id: number
+  message_uid: string
+  folder: string
+  subject?: string | null
+  from_addr?: string | null
+  message_date?: string | null
+  event_uid: string
+  sequence?: number | null
+  summary?: string | null
+  organizer?: string | null
+  location?: string | null
+  starts_at?: string | null
+  ends_at?: string | null
+  local_starts_at?: string | null
+  local_ends_at?: string | null
+  all_day: boolean
+  timezone?: string | null
+  method?: string | null
+  cancellation: boolean
+  status: CalendarEventStatus
+  last_error?: string | null
+  last_import_at?: string | null
+}
+
+export interface CalendarMetrics {
+  scanned_mails: number
+  pending_events: number
+  imported_events: number
+  failed_events: number
+  total_events: number
+}
+
+export interface CalendarOverview {
+  timezone: string
+  events: CalendarEvent[]
+  metrics: CalendarMetrics
+}
+
+export interface CalendarScanSummary {
+  scanned_messages: number
+  processed_events: number
+  created: number
+  updated: number
+  errors: string[]
+}
+
+export interface CalendarAutoScanStatus {
+  active: boolean
+  folders: string[]
+  poll_interval: number | null
+  last_started_at: string | null
+  last_finished_at: string | null
+  last_error: string | null
+  last_summary: CalendarScanSummary | null
+}
+
+export interface CalendarManualScanStatus {
+  active: boolean
+  folders: string[]
+  started_at: string | null
+  finished_at: string | null
+  cancelled: boolean
+  last_error: string | null
+  last_summary: CalendarScanSummary | null
+}
+
+export interface CalendarScanStatus {
+  auto: CalendarAutoScanStatus
+  manual: CalendarManualScanStatus
+}
+
+export interface CalendarScanResponse {
+  overview: CalendarOverview
+  scan: CalendarScanSummary | null
+  cancelled: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarImportResult {
+  event: CalendarEvent
+  metrics: CalendarMetrics
+}
+
+export interface CalendarSettings {
+  enabled: boolean
+  caldav_url: string
+  username: string
+  calendar_name: string
+  timezone: string
+  processed_tag: string
+  source_folders: string[]
+  processed_folder: string
+  has_password: boolean
+}
+
+export interface CalendarSettingsUpdateRequest {
+  enabled: boolean
+  caldav_url: string
+  username: string
+  calendar_name: string
+  timezone: string
+  processed_tag: string
+  source_folders: string[]
+  processed_folder: string
+  password?: string | null
+  clear_password?: boolean
+}
+
+export interface CalendarScanStartResponse {
+  started: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarScanStopResponse {
+  stopped: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarScanCancelResponse {
+  cancelled: boolean
+  status: CalendarScanStatus
+}
+
+export interface CalendarConnectionTestRequest {
+  caldav_url?: string
+  username?: string
+  password?: string | null
+  calendar_name?: string
+  use_stored_password?: boolean
+}
+
+export interface CalendarConnectionTestResponse {
+  ok: boolean
+  message?: string | null
+}
+
+export interface MailboxSettings {
+  host: string
+  port: number
+  username: string
+  inbox: string
+  use_ssl: boolean
+  process_only_seen: boolean
+  since_days: number
+  has_password: boolean
+}
+
+export interface MailboxSettingsUpdateRequest {
+  host: string
+  port: number
+  username: string
+  inbox: string
+  use_ssl: boolean
+  process_only_seen: boolean
+  since_days: number
+  password?: string | null
+  clear_password?: boolean
+}
+
+export interface MailboxConnectionTestRequest {
+  host?: string
+  port?: number
+  username?: string
+  password?: string | null
+  inbox?: string
+  use_ssl?: boolean
+  use_stored_password?: boolean
+}
+
+export interface MailboxConnectionTestResponse {
+  ok: boolean
+  message?: string | null
+}
+
 export interface TagExample {
   message_uid: string
   subject: string
@@ -79,15 +256,23 @@ export interface TagSuggestion {
   examples: TagExample[]
 }
 
+export type OllamaModelPurpose = 'classifier' | 'embedding' | 'custom'
+
 export interface OllamaModelStatus {
   name: string
   normalized_name: string
-  purpose: 'classifier' | 'embedding'
+  purpose: OllamaModelPurpose
   available: boolean
   pulled: boolean
   digest?: string | null
   size?: number | null
   message?: string | null
+  pulling?: boolean
+  progress?: number | null
+  download_total?: number | null
+  download_completed?: number | null
+  status?: string | null
+  error?: string | null
 }
 
 export interface OllamaStatus {
@@ -96,6 +281,15 @@ export interface OllamaStatus {
   message?: string | null
   last_checked?: string | null
   models: OllamaModelStatus[]
+}
+
+export interface OllamaPullRequest {
+  model: string
+  purpose?: OllamaModelPurpose
+}
+
+export interface OllamaDeleteRequest {
+  model: string
 }
 
 export interface FolderChildConfig {
@@ -162,6 +356,7 @@ export interface KeywordFilterRuleConfig {
   tags: string[]
   match: KeywordFilterMatchConfig
   date?: KeywordFilterDateConfig | null
+  tag_future_dates?: boolean
 }
 
 export interface KeywordFilterConfig {
@@ -298,6 +493,9 @@ const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
 const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
 const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
 
+export const API_BASE_URL = BASE
+export const STREAM_WEBSOCKET_URL = STREAM_URL
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
   const label = `${method} ${path}`
@@ -316,10 +514,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const started = performance.now()
-  const response = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      ...init,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    recordDevEvent({
+      type: 'error',
+      label,
+      details: 'Netzwerkfehler',
+      payload: message,
+      durationMs: performance.now() - started,
+    })
+    throw new Error(`API-Anfrage fehlgeschlagen: ${message}`)
+  }
   if (!response.ok) {
     const text = await response.text()
     recordDevEvent({
@@ -381,6 +592,24 @@ export async function getAppConfig(): Promise<AppConfig> {
   return request<AppConfig>('/api/config')
 }
 
+export async function getOllamaStatus(): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama')
+}
+
+export async function pullOllamaModel(payload: OllamaPullRequest): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama/pull', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteOllamaModel(payload: OllamaDeleteRequest): Promise<OllamaStatus> {
+  return request<OllamaStatus>('/api/ollama/delete', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function updateAppConfig(payload: AppConfigUpdateRequest): Promise<AppConfig> {
   return request<AppConfig>('/api/config', {
     method: 'PUT',
@@ -424,6 +653,93 @@ export async function getKeywordFilters(): Promise<KeywordFilterConfig> {
 export async function updateKeywordFilters(payload: KeywordFilterConfig): Promise<KeywordFilterConfig> {
   return request<KeywordFilterConfig>('/api/filters', {
     method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getCalendarOverview(): Promise<CalendarOverview> {
+  return request<CalendarOverview>('/api/calendar/overview')
+}
+
+export async function getCalendarScanStatus(): Promise<CalendarScanStatus> {
+  return request<CalendarScanStatus>('/api/calendar/scan/status')
+}
+
+export interface CalendarScanOptions {
+  folders?: string[]
+}
+
+export async function startCalendarAutoScan(options?: CalendarScanOptions): Promise<CalendarScanStartResponse> {
+  const payload = options?.folders && options.folders.length > 0 ? { folders: options.folders } : {}
+  return request<CalendarScanStartResponse>('/api/calendar/scan/start', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function stopCalendarAutoScan(): Promise<CalendarScanStopResponse> {
+  return request<CalendarScanStopResponse>('/api/calendar/scan/stop', { method: 'POST' })
+}
+
+export async function cancelCalendarRescan(): Promise<CalendarScanCancelResponse> {
+  return request<CalendarScanCancelResponse>('/api/calendar/scan/cancel', { method: 'POST' })
+}
+
+export async function runCalendarScan(options?: CalendarScanOptions): Promise<CalendarScanResponse> {
+  const payload = options?.folders && options.folders.length > 0 ? { folders: options.folders } : {}
+  return request<CalendarScanResponse>('/api/calendar/scan', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function importCalendarEvent(payload: { event_id: number }): Promise<CalendarImportResult> {
+  return request<CalendarImportResult>('/api/calendar/import', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getCalendarSettings(): Promise<CalendarSettings> {
+  return request<CalendarSettings>('/api/calendar/config')
+}
+
+export async function updateCalendarSettings(
+  payload: CalendarSettingsUpdateRequest,
+): Promise<CalendarSettings> {
+  return request<CalendarSettings>('/api/calendar/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function testCalendarConnection(
+  payload: CalendarConnectionTestRequest,
+): Promise<CalendarConnectionTestResponse> {
+  return request<CalendarConnectionTestResponse>('/api/calendar/config/test', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getMailboxSettings(): Promise<MailboxSettings> {
+  return request<MailboxSettings>('/api/mailbox/config')
+}
+
+export async function updateMailboxSettings(
+  payload: MailboxSettingsUpdateRequest,
+): Promise<MailboxSettings> {
+  return request<MailboxSettings>('/api/mailbox/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function testMailboxConnection(
+  payload: MailboxConnectionTestRequest,
+): Promise<MailboxConnectionTestResponse> {
+  return request<MailboxConnectionTestResponse>('/api/mailbox/config/test', {
+    method: 'POST',
     body: JSON.stringify(payload),
   })
 }

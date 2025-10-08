@@ -10,8 +10,11 @@ from typing import Dict, Iterable, Iterator, List, Sequence
 
 from imapclient import IMAPClient
 
-from settings import S
-from runtime_settings import resolve_mailbox_tags
+from runtime_settings import (
+    resolve_mailbox_inbox,
+    resolve_mailbox_settings,
+    resolve_mailbox_tags,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -25,8 +28,9 @@ class MessageContent:
 
 @contextmanager
 def _connect() -> Iterator[IMAPClient]:
-    server = IMAPClient(S.IMAP_HOST, port=S.IMAP_PORT, ssl=S.IMAP_USE_SSL)
-    server.login(S.IMAP_USERNAME, S.IMAP_PASSWORD)
+    settings = resolve_mailbox_settings(include_password=True)
+    server = IMAPClient(settings.host, port=settings.port, ssl=settings.use_ssl)
+    server.login(settings.username, settings.password or "")
     try:
         yield server
     finally:
@@ -51,13 +55,15 @@ def folder_exists(name: str) -> bool:
 
 
 def _since_date() -> date:
-    days = int(getattr(S, "SINCE_DAYS", 30))
+    settings = resolve_mailbox_settings(include_password=False)
+    days = int(settings.since_days)
     return (datetime.utcnow() - timedelta(days=days)).date()
 
 
 def _search_criteria() -> list[object]:
     criteria: list[object] = ["SINCE", _since_date()]
-    if getattr(S, "PROCESS_ONLY_SEEN", True):
+    settings = resolve_mailbox_settings(include_password=False)
+    if settings.process_only_seen:
         criteria.insert(0, "SEEN")
     else:
         criteria.insert(0, "UNSEEN")
@@ -139,20 +145,22 @@ def add_message_tag(uid: str, folder: str, tag: str) -> None:
     normalized = tag.strip()
     if not normalized:
         return
+    inbox = resolve_mailbox_inbox()
     with _connect() as server:
-        server.select_folder(folder or S.IMAP_INBOX)
+        server.select_folder(folder or inbox)
         i_uid = int(uid) if not isinstance(uid, int) else uid
         try:
             server.add_flags([i_uid], [normalized])
         except Exception as exc:  # pragma: no cover - network specific behaviour
             logger.warning(
-                "Failed to add tag %s to message %s in %s: %s", normalized, uid, folder or S.IMAP_INBOX, exc
+                "Failed to add tag %s to message %s in %s: %s", normalized, uid, folder or inbox, exc
             )
 
 
 def move_message(uid: str, target_folder: str, src_folder: str | None = None) -> None:
+    inbox = resolve_mailbox_inbox()
     with _connect() as server:
-        server.select_folder(src_folder or S.IMAP_INBOX)
+        server.select_folder(src_folder or inbox)
         i_uid = int(uid) if not isinstance(uid, int) else uid
         try:
             server.move([i_uid], target_folder)

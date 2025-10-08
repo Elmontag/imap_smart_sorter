@@ -38,9 +38,16 @@ from mailbox import (
     move_message,
 )
 from models import Suggestion
+from runtime_settings import resolve_mailbox_inbox
 from ollama_service import ensure_ollama_ready
 from settings import S
-from runtime_settings import resolve_mailbox_tags, resolve_move_mode
+from runtime_settings import (
+    analysis_module_uses_filters,
+    analysis_module_uses_llm,
+    resolve_analysis_module,
+    resolve_mailbox_tags,
+    resolve_move_mode,
+)
 from keyword_filters import evaluate_filters
 from utils import extract_text, message_received_at, subject_from, thread_headers
 
@@ -112,9 +119,16 @@ async def _idle_loop(interval: float) -> None:
 async def process_loop() -> None:
     """Continuously poll the mailbox and persist new suggestions."""
 
-    await ensure_ollama_ready()
+    llm_ready_checked = False
     while True:
         try:
+            module = resolve_analysis_module()
+            if analysis_module_uses_llm(module):
+                if not llm_ready_checked:
+                    await ensure_ollama_ready()
+                    llm_ready_checked = True
+            else:
+                llm_ready_checked = False
             count = await one_shot_scan()
             if count:
                 logger.info("Processed %s new messages", count)
@@ -130,7 +144,8 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
         target_folders: Sequence[str] = [str(folder) for folder in folders if str(folder).strip()]
     else:
         configured = get_monitored_folders()
-        target_folders = configured or [S.IMAP_INBOX]
+        inbox = resolve_mailbox_inbox()
+        target_folders = configured or [inbox]
     messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
     all_folders = await asyncio.to_thread(list_folders)
     processed = 0
@@ -161,11 +176,16 @@ async def handle_message(
     text = extract_text(msg)
     received_at = message_received_at(msg)
 
-    try:
-        match = evaluate_filters(subject or "", from_addr or "", text, received_at)
-    except Exception:  # pragma: no cover - defensive logging
-        logger.exception("Keyword filter evaluation failed for message %s", uid)
-        match = None
+    module = resolve_analysis_module()
+    use_filters = analysis_module_uses_filters(module)
+    use_llm = analysis_module_uses_llm(module)
+
+    match = None
+    if use_filters:
+        try:
+            match = evaluate_filters(subject or "", from_addr or "", text, received_at)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Keyword filter evaluation failed for message %s", uid)
     if match:
         target_folder = match.rule.target_folder
         logger.info(
@@ -185,18 +205,38 @@ async def handle_message(
         processed_value = (processed_tag or "").strip()
         if processed_value:
             await asyncio.to_thread(add_message_tag, uid, target_folder, processed_value)
-        for tag in match.rule.tags:
+        extra_tags: list[str] = []
+        if match.rule.tag_future_dates and received_at:
+            base_date = received_at.date()
+            future_dates = sorted({candidate for candidate in match.content_dates if candidate > base_date})
+            extra_tags = [f"datum-{candidate.isoformat()}" for candidate in future_dates]
+        combined_tags: list[str] = []
+        seen_tags: set[str] = set()
+        for tag in [*match.rule.tags, *extra_tags]:
+            cleaned = tag.strip()
+            if not cleaned:
+                continue
+            key = cleaned.casefold()
+            if key in seen_tags:
+                continue
+            seen_tags.add(key)
+            combined_tags.append(cleaned)
+        for tag in combined_tags:
             await asyncio.to_thread(add_message_tag, uid, target_folder, tag)
         record_filter_hit(
             message_uid=uid,
             rule_name=match.rule.name,
             src_folder=src_folder,
             target_folder=target_folder,
-            applied_tags=match.rule.tags,
+            applied_tags=combined_tags,
             matched_terms=match.matched_terms,
             message_date=received_at,
         )
         return
+
+    if not use_llm:
+        return
+
     prompt = build_embedding_prompt(subject or "", from_addr or "", text)
 
     folder_profiles = list_folder_profiles()

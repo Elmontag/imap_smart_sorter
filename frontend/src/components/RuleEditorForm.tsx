@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { KeywordFilterField, KeywordFilterRuleConfig, TagSlotConfig } from '../api'
 
 export interface EditableRuleDraft extends KeywordFilterRuleConfig {
@@ -30,6 +30,9 @@ export default function RuleEditorForm({
   onChange,
   tagSlots,
 }: RuleEditorFormProps): JSX.Element {
+  const [termsInput, setTermsInput] = useState<string>(() => draft.match.terms.join('\n'))
+  const [tagsInput, setTagsInput] = useState<string>(() => draft.tags.join('\n'))
+
   const handleNameChange = (value: string) =>
     onChange(current => ({ ...current, name: value }))
 
@@ -42,14 +45,35 @@ export default function RuleEditorForm({
   const handleTargetChange = (value: string) =>
     onChange(current => ({ ...current, target_folder: value }))
 
-  const handleTermsChange = (value: string) =>
+  const handleTermsChange = (value: string) => {
+    setTermsInput(value)
     onChange(current => ({
       ...current,
       match: { ...current.match, terms: parseList(value) },
     }))
+  }
 
-  const handleTagsChange = (value: string) =>
+  const handleTagsChange = (value: string) => {
+    setTagsInput(value)
     onChange(current => ({ ...current, tags: parseList(value) }))
+  }
+
+  const handleFutureDateTaggingChange = (checked: boolean) =>
+    onChange(current => ({ ...current, tag_future_dates: checked }))
+
+  useEffect(() => {
+    const expected = draft.match.terms.join('\n')
+    if (parseList(termsInput).join('\n') !== expected) {
+      setTermsInput(expected)
+    }
+  }, [draft.match.terms, parseList, termsInput])
+
+  useEffect(() => {
+    const expected = draft.tags.join('\n')
+    if (parseList(tagsInput).join('\n') !== expected) {
+      setTagsInput(expected)
+    }
+  }, [draft.tags, parseList, tagsInput])
 
   const tagSlotGroups = useMemo<TagSlotOptionGroup[]>(() => {
     if (!tagSlots || tagSlots.length === 0) {
@@ -204,7 +228,7 @@ export default function RuleEditorForm({
         <label>
           <span>Schlüsselwörter</span>
           <textarea
-            value={draft.match.terms.join('\n')}
+            value={termsInput}
             onChange={event => handleTermsChange(event.target.value)}
             placeholder="Ein Begriff pro Zeile"
           />
@@ -295,7 +319,7 @@ export default function RuleEditorForm({
         <label>
           <span>Tags</span>
           <textarea
-            value={draft.tags.join('\n')}
+            value={tagsInput}
             onChange={event => handleTagsChange(event.target.value)}
             placeholder="Tag je Zeile, optional"
           />
@@ -333,6 +357,19 @@ export default function RuleEditorForm({
             </div>
           )}
         </label>
+        <label className="inline">
+          <input
+            type="checkbox"
+            checked={Boolean(draft.tag_future_dates)}
+            onChange={event => handleFutureDateTaggingChange(event.target.checked)}
+          />
+          Zukünftige Datumsangaben als Tag ergänzen
+        </label>
+        {draft.tag_future_dates && (
+          <p className="field-hint">
+            Erstellt Tags im Format <code>datum-YYYY-MM-TT</code> für erkannte Termine nach dem Empfangsdatum.
+          </p>
+        )}
       </div>
     </div>
   )

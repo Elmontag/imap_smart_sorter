@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { PendingOverview, StreamEvent, getPendingOverview, openStream } from '../api'
 import { recordDevEvent } from '../devtools'
 
@@ -6,57 +6,93 @@ export interface PendingOverviewState {
   data: PendingOverview | null
   loading: boolean
   error: string | null
+  refresh: () => Promise<void>
 }
 
-export function usePendingOverview(): PendingOverviewState {
+export function usePendingOverview(enabled = true): PendingOverviewState {
   const [data, setData] = useState<PendingOverview | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState<boolean>(enabled)
   const [error, setError] = useState<string | null>(null)
+  const activeRef = useRef(true)
 
   useEffect(() => {
-    let active = true
-    const loadInitial = async () => {
+    activeRef.current = true
+    return () => {
+      activeRef.current = false
+    }
+  }, [])
+
+  const loadSnapshot = useCallback(
+    async (reason: 'initial' | 'manual' = 'manual') => {
+      if (!activeRef.current) {
+        return
+      }
+      if (!enabled) {
+        setData(null)
+        setError(null)
+        setLoading(false)
+        return
+      }
+      setLoading(true)
       try {
         const snapshot = await getPendingOverview()
-        if (active) {
-          setData(snapshot)
-          setError(null)
-          recordDevEvent({ type: 'info', label: 'Pending initial', payload: snapshot })
+        if (!activeRef.current) {
+          return
         }
+        setData(snapshot)
+        setError(null)
+        recordDevEvent({
+          type: 'info',
+          label: reason === 'initial' ? 'Pending initial' : 'Pending refresh',
+          payload: snapshot,
+        })
       } catch (err) {
-        if (active) {
-          setError(err instanceof Error ? err.message : 'Überblick konnte nicht geladen werden.')
-          recordDevEvent({
-            type: 'error',
-            label: 'Pending initial fehlgeschlagen',
-            payload: err instanceof Error ? err.message : String(err),
-          })
+        if (!activeRef.current) {
+          return
         }
+        const message = err instanceof Error ? err.message : 'Überblick konnte nicht geladen werden.'
+        setError(message)
+        recordDevEvent({
+          type: 'error',
+          label: reason === 'initial' ? 'Pending initial fehlgeschlagen' : 'Pending refresh fehlgeschlagen',
+          payload: err instanceof Error ? err.message : String(err),
+        })
       } finally {
-        if (active) {
+        if (activeRef.current) {
           setLoading(false)
         }
       }
+    },
+    [enabled],
+  )
+
+  useEffect(() => {
+    if (!enabled) {
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
     }
-
-    void loadInitial()
-
+    void loadSnapshot('initial')
     let socket: WebSocket | null = null
     try {
       socket = openStream((event: StreamEvent) => {
-        if (!active) return
+        if (!activeRef.current) return
         if (event.type === 'pending_overview') {
           setData(event.payload)
           setError(null)
+          setLoading(false)
           recordDevEvent({ type: 'stream', label: 'pending_overview', payload: event.payload })
         } else if (event.type === 'pending_error') {
           setError(event.error)
+          setLoading(false)
           recordDevEvent({ type: 'error', label: 'pending_error', payload: event.error })
         }
       })
     } catch (err) {
-      if (active) {
+      if (activeRef.current) {
         setError(err instanceof Error ? err.message : 'Echtzeitverbindung konnte nicht aufgebaut werden.')
+        setLoading(false)
         recordDevEvent({
           type: 'error',
           label: 'WebSocket Aufbau fehlgeschlagen',
@@ -67,13 +103,14 @@ export function usePendingOverview(): PendingOverviewState {
 
     if (socket) {
       socket.onerror = () => {
-        if (active) {
+        if (activeRef.current) {
           setError('Live-Updates nicht verfügbar (WebSocket-Fehler).')
+          setLoading(false)
           recordDevEvent({ type: 'error', label: 'WebSocket onerror' })
         }
       }
       socket.onclose = () => {
-        if (active) {
+        if (activeRef.current) {
           setError(prev => prev ?? 'Verbindung zur Echtzeitübersicht wurde beendet.')
           recordDevEvent({ type: 'info', label: 'WebSocket onclose' })
         }
@@ -81,12 +118,15 @@ export function usePendingOverview(): PendingOverviewState {
     }
 
     return () => {
-      active = false
       if (socket) {
         socket.close()
       }
     }
-  }, [])
+  }, [enabled, loadSnapshot])
 
-  return { data, loading, error }
+  const refresh = useCallback(async () => {
+    await loadSnapshot('manual')
+  }, [loadSnapshot])
+
+  return { data, loading, error, refresh }
 }

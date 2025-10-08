@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Sequence
+
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Body, FastAPI, HTTPException, Query, WebSocket
 from fastapi import WebSocketDisconnect
@@ -48,16 +50,45 @@ from rescan_control import (
 )
 from mailbox import ensure_folder_path, folder_exists, list_folders, move_message
 from scan_control import ScanStatus, controller as scan_controller
-from models import Suggestion
+from models import CalendarEventEntry, Suggestion
 from pending import PendingMail, PendingOverview, load_pending_overview
 from tags import TagSuggestion, load_tag_suggestions
-from ollama_service import ensure_ollama_ready, get_status, status_as_dict
+from ollama_service import (
+    OllamaModelStatus,
+    OllamaStatus,
+    delete_model,
+    ensure_ollama_ready,
+    get_status,
+    start_model_pull,
+    status_as_dict,
+)
 from keyword_filters import get_filter_config as load_keyword_filter_config
 from keyword_filters import get_filter_rules, update_filter_config as store_keyword_filters
 from settings import S
+from calendar_sync import (
+    CalendarImportError,
+    CalendarScanResult,
+    import_calendar_event as perform_calendar_import,
+    load_calendar_overview,
+    validate_calendar_connection,
+)
+from calendar_settings import (
+    load_calendar_settings,
+    persist_calendar_settings,
+)
+from mail_settings import persist_mailbox_settings, verify_mailbox_connection
+from calendar_scan_control import CalendarScanStatus as CalendarAutoScanStatus, controller as calendar_scan_controller
+from calendar_rescan_control import (
+    CalendarRescanBusyError,
+    CalendarRescanCancelledError,
+    controller as calendar_rescan_controller,
+)
 from runtime_settings import (
+    analysis_module_uses_llm,
     resolve_analysis_module,
     resolve_classifier_model,
+    resolve_mailbox_inbox,
+    resolve_mailbox_settings,
     resolve_mailbox_tags,
     resolve_move_mode,
 )
@@ -119,6 +150,7 @@ class KeywordFilterRuleModel(BaseModel):
     tags: List[str] = Field(default_factory=list)
     match: KeywordFilterMatchModel = Field(default_factory=KeywordFilterMatchModel)
     date: Optional[KeywordFilterDateModel] = None
+    tag_future_dates: bool = False
 
 
 class KeywordFilterConfigResponse(BaseModel):
@@ -177,6 +209,20 @@ def _parse_datetime(value: str | None) -> Optional[datetime]:
         return None
 
 
+def _normalize_calendar_folders(folders: Sequence[str] | None) -> List[str]:
+    if not folders:
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for folder in folders:
+        value = str(folder or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
 def _keyword_config_response() -> KeywordFilterConfigResponse:
     raw = load_keyword_filter_config()
     entries = raw.get("rules", [])
@@ -210,6 +256,7 @@ def _keyword_config_response() -> KeywordFilterConfigResponse:
                 tags=_clean_terms(entry.get("tags") or []),
                 match=match_model,
                 date=date_model,
+                tag_future_dates=bool(entry.get("tag_future_dates")),
             )
             rules.append(rule)
     return KeywordFilterConfigResponse(rules=rules)
@@ -237,6 +284,7 @@ def _serialise_filter_rule(rule: KeywordFilterRuleModel) -> Dict[str, Any]:
         if rule.date.include_future:
             date_payload["include_future"] = True
         payload["date"] = date_payload
+    payload["tag_future_dates"] = bool(rule.tag_future_dates)
     return payload
 
 
@@ -376,6 +424,12 @@ class OllamaModelStatusResponse(BaseModel):
     digest: str | None = None
     size: int | None = None
     message: str | None = None
+    pulling: bool = False
+    progress: float | None = None
+    download_total: int | None = None
+    download_completed: int | None = None
+    status: str | None = None
+    error: str | None = None
 
 
 class OllamaStatusResponse(BaseModel):
@@ -384,6 +438,59 @@ class OllamaStatusResponse(BaseModel):
     message: str | None = None
     last_checked: datetime | None = None
     models: List[OllamaModelStatusResponse] = Field(default_factory=list)
+
+
+class OllamaPullRequest(BaseModel):
+    model: str = Field(..., min_length=1)
+    purpose: str | None = Field(default=None, pattern=r"^(classifier|embedding|custom)?$")
+
+
+class OllamaDeleteRequest(BaseModel):
+    model: str = Field(..., min_length=1)
+
+
+def _required_ollama_models() -> List[tuple[str, str]]:
+    mapping: List[tuple[str, str]] = []
+    classifier = (resolve_classifier_model() or "").strip()
+    if classifier:
+        mapping.append((classifier, "classifier"))
+    embed_model = str(getattr(S, "EMBED_MODEL", "") or "").strip()
+    if embed_model:
+        mapping.append((embed_model, "embedding"))
+    return mapping
+
+
+def _normalise_model_name(name: str) -> str:
+    value = name.strip()
+    if not value:
+        return value
+    if ":" not in value:
+        value = f"{value}:latest"
+    return value
+
+
+def _fallback_ollama_status(message: str, *, include_models: bool = True) -> OllamaStatus:
+    models: List[OllamaModelStatus] = []
+    if include_models:
+        models = [
+            OllamaModelStatus(
+                name=model,
+                normalized_name=_normalise_model_name(model),
+                purpose=purpose,
+                available=False,
+                message=message,
+            )
+            for model, purpose in _required_ollama_models()
+        ]
+    return OllamaStatus(host=S.OLLAMA_HOST, reachable=False, models=models, message=message)
+
+
+async def _load_ollama_status(force_refresh: bool) -> OllamaStatus:
+    try:
+        return await get_status(force_refresh=force_refresh)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Ollama-Status konnte nicht geladen werden", exc_info=True)
+        return _fallback_ollama_status(f"Ollama-Status nicht verfügbar: {exc}")
 
 
 class ConfigResponse(BaseModel):
@@ -663,6 +770,339 @@ class PendingOverviewResponse(BaseModel):
         )
 
 
+def _localize_datetime(value: datetime | None, tz: ZoneInfo) -> Optional[datetime]:
+    if value is None:
+        return None
+    dt = value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(tz)
+
+
+def _resolve_timezone(name: str) -> ZoneInfo:
+    candidate = (name or "").strip() or "Europe/Berlin"
+    try:
+        return ZoneInfo(candidate)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unbekannte Zeitzone %s – nutze UTC als Fallback", candidate)
+        return ZoneInfo("UTC")
+
+
+def _calendar_metrics_response(data: Dict[str, Any]) -> CalendarMetricsResponse:
+    return CalendarMetricsResponse(
+        scanned_mails=int(data.get("scanned_messages", 0) or 0),
+        pending_events=int(data.get("pending", 0) or 0),
+        imported_events=int(data.get("imported", 0) or 0),
+        failed_events=int(data.get("failed", 0) or 0),
+        total_events=int(data.get("total", 0) or 0),
+    )
+
+
+def _calendar_overview_payload() -> CalendarOverviewResponse:
+    settings = load_calendar_settings(include_password=False)
+    tz = _resolve_timezone(settings.timezone)
+    timezone_label = settings.timezone.strip() if settings.timezone else getattr(tz, "key", "UTC")
+    events, metrics = load_calendar_overview()
+    return CalendarOverviewResponse(
+        timezone=timezone_label,
+        events=[CalendarEventResponse.from_entry(event, tz) for event in events],
+        metrics=_calendar_metrics_response(metrics),
+    )
+
+
+def _calendar_settings_payload() -> CalendarSettingsResponse:
+    settings = load_calendar_settings(include_password=True)
+    sanitized = settings.sanitized()
+    return CalendarSettingsResponse(
+        enabled=sanitized.enabled,
+        caldav_url=sanitized.caldav_url,
+        username=sanitized.username,
+        calendar_name=sanitized.calendar_name,
+        timezone=sanitized.timezone,
+        processed_tag=sanitized.processed_tag,
+        source_folders=list(sanitized.source_folders),
+        processed_folder=sanitized.processed_folder,
+        has_password=bool(settings.password),
+    )
+
+
+def _mailbox_settings_payload() -> MailboxSettingsResponse:
+    settings = resolve_mailbox_settings(include_password=True)
+    sanitized = settings.sanitized()
+    return MailboxSettingsResponse(
+        host=sanitized.host,
+        port=sanitized.port,
+        username=sanitized.username,
+        inbox=sanitized.inbox,
+        use_ssl=sanitized.use_ssl,
+        process_only_seen=sanitized.process_only_seen,
+        since_days=sanitized.since_days,
+        has_password=bool(settings.password),
+    )
+
+
+class CalendarEventResponse(BaseModel):
+    id: int
+    message_uid: str
+    folder: Optional[str] = None
+    subject: Optional[str] = None
+    from_addr: Optional[str] = None
+    message_date: Optional[datetime] = None
+    event_uid: str
+    sequence: Optional[int] = None
+    summary: Optional[str] = None
+    organizer: Optional[str] = None
+    location: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    local_starts_at: Optional[datetime] = None
+    local_ends_at: Optional[datetime] = None
+    all_day: bool = False
+    timezone: Optional[str] = None
+    method: Optional[str] = None
+    cancellation: bool = False
+    status: Literal["pending", "imported", "failed"]
+    last_error: Optional[str] = None
+    last_import_at: Optional[datetime] = None
+
+    @classmethod
+    def from_entry(cls, entry: CalendarEventEntry, tz: ZoneInfo) -> "CalendarEventResponse":
+        status_value = entry.status if entry.status in {"pending", "imported", "failed"} else "pending"
+        return cls(
+            id=entry.id or 0,
+            message_uid=entry.message_uid,
+            folder=entry.folder or resolve_mailbox_inbox(),
+            subject=entry.subject,
+            from_addr=entry.from_addr,
+            message_date=entry.message_date,
+            event_uid=entry.event_uid,
+            sequence=entry.sequence,
+            summary=entry.summary,
+            organizer=entry.organizer,
+            location=entry.location,
+            starts_at=entry.starts_at,
+            ends_at=entry.ends_at,
+            local_starts_at=_localize_datetime(entry.starts_at, tz) if entry.starts_at else None,
+            local_ends_at=_localize_datetime(entry.ends_at, tz) if entry.ends_at else None,
+            all_day=bool(entry.all_day),
+            timezone=entry.timezone,
+            method=entry.method,
+            cancellation=bool(entry.cancellation),
+            status=status_value,
+            last_error=entry.last_error,
+            last_import_at=entry.last_import_at,
+        )
+
+
+class CalendarMetricsResponse(BaseModel):
+    scanned_mails: int
+    pending_events: int
+    imported_events: int
+    failed_events: int
+    total_events: int
+
+
+class CalendarOverviewResponse(BaseModel):
+    timezone: str
+    events: List[CalendarEventResponse]
+    metrics: CalendarMetricsResponse
+
+
+class CalendarScanSummaryResponse(BaseModel):
+    scanned_messages: int
+    processed_events: int
+    created: int
+    updated: int
+    errors: List[str]
+
+    @classmethod
+    def from_result(cls, result: CalendarScanResult | None) -> "CalendarScanSummaryResponse | None":
+        if result is None:
+            return None
+        return cls(
+            scanned_messages=result.scanned_messages,
+            processed_events=result.processed_events,
+            created=result.created,
+            updated=result.updated,
+            errors=list(result.errors),
+        )
+
+
+class CalendarAutoScanStatusResponse(BaseModel):
+    active: bool
+    folders: List[str]
+    poll_interval: Optional[float] = None
+    last_started_at: Optional[datetime] = None
+    last_finished_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    last_summary: Optional[CalendarScanSummaryResponse] = None
+
+    @classmethod
+    def from_status(cls, status: CalendarAutoScanStatus) -> "CalendarAutoScanStatusResponse":
+        summary = CalendarScanSummaryResponse.from_result(status.last_summary)
+        return cls(
+            active=bool(status.active),
+            folders=list(status.folders),
+            poll_interval=status.poll_interval,
+            last_started_at=status.last_started_at,
+            last_finished_at=status.last_finished_at,
+            last_error=status.last_error,
+            last_summary=summary,
+        )
+
+
+class CalendarManualScanStatusResponse(BaseModel):
+    active: bool
+    folders: List[str]
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    cancelled: bool = False
+    last_error: Optional[str] = None
+    last_summary: Optional[CalendarScanSummaryResponse] = None
+
+    @classmethod
+    def from_status(cls, status: object) -> "CalendarManualScanStatusResponse":
+        folders = list(getattr(status, "folders", []))
+        summary = CalendarScanSummaryResponse.from_result(getattr(status, "last_summary", None))
+        return cls(
+            active=bool(getattr(status, "active", False)),
+            folders=folders,
+            started_at=getattr(status, "started_at", None),
+            finished_at=getattr(status, "finished_at", None),
+            cancelled=bool(getattr(status, "cancelled", False)),
+            last_error=getattr(status, "last_error", None),
+            last_summary=summary,
+        )
+
+
+class CalendarScanStatusResponse(BaseModel):
+    auto: CalendarAutoScanStatusResponse
+    manual: CalendarManualScanStatusResponse
+
+    @classmethod
+    def from_sources(
+        cls, auto_status: CalendarAutoScanStatus, manual_status: object
+    ) -> "CalendarScanStatusResponse":
+        return cls(
+            auto=CalendarAutoScanStatusResponse.from_status(auto_status),
+            manual=CalendarManualScanStatusResponse.from_status(manual_status),
+        )
+
+
+class CalendarScanStartRequest(BaseModel):
+    folders: Optional[List[str]] = None
+
+
+class CalendarScanRequest(CalendarScanStartRequest):
+    pass
+
+
+class CalendarScanStartResponse(BaseModel):
+    started: bool
+    status: CalendarScanStatusResponse
+
+
+class CalendarScanStopResponse(BaseModel):
+    stopped: bool
+    status: CalendarScanStatusResponse
+
+
+class CalendarScanCancelResponse(BaseModel):
+    cancelled: bool
+    status: CalendarScanStatusResponse
+
+
+class CalendarScanResponse(BaseModel):
+    overview: CalendarOverviewResponse
+    scan: Optional[CalendarScanSummaryResponse] = None
+    cancelled: bool = False
+    status: CalendarScanStatusResponse
+
+
+class CalendarImportRequest(BaseModel):
+    event_id: int = Field(..., gt=0)
+
+
+class CalendarImportResponse(BaseModel):
+    event: CalendarEventResponse
+    metrics: CalendarMetricsResponse
+
+
+class MailboxSettingsResponse(BaseModel):
+    host: str
+    port: int
+    username: str
+    inbox: str
+    use_ssl: bool
+    process_only_seen: bool
+    since_days: int
+    has_password: bool
+
+
+class MailboxSettingsUpdate(BaseModel):
+    host: str
+    port: int
+    username: str
+    inbox: str
+    use_ssl: bool
+    process_only_seen: bool
+    since_days: int
+    password: Optional[str] = None
+    clear_password: bool = False
+
+
+class MailboxConnectionTestRequest(BaseModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    inbox: Optional[str] = None
+    use_ssl: Optional[bool] = None
+    use_stored_password: bool = False
+
+
+class MailboxConnectionTestResponse(BaseModel):
+    ok: bool
+    message: Optional[str] = None
+
+
+class CalendarSettingsResponse(BaseModel):
+    enabled: bool
+    caldav_url: str
+    username: str
+    calendar_name: str
+    timezone: str
+    processed_tag: str
+    source_folders: List[str]
+    processed_folder: str
+    has_password: bool
+
+
+class CalendarSettingsUpdate(BaseModel):
+    enabled: bool
+    caldav_url: str = ""
+    username: str = ""
+    calendar_name: str = ""
+    timezone: str = "Europe/Berlin"
+    processed_tag: str = "Termin bearbeitet"
+    source_folders: List[str] = Field(default_factory=list)
+    processed_folder: str = ""
+    password: Optional[str] = None
+    clear_password: bool = False
+
+
+class CalendarConnectionTestRequest(BaseModel):
+    caldav_url: str = ""
+    username: str = ""
+    password: Optional[str] = None
+    calendar_name: str = ""
+    use_stored_password: bool = False
+
+
+class CalendarConnectionTestResponse(BaseModel):
+    ok: bool
+    message: Optional[str] = None
+
 app = FastAPI(title="IMAP Smart Sorter")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
@@ -674,7 +1114,11 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def _startup() -> None:
     init_db()
-    await ensure_ollama_ready()
+    if analysis_module_uses_llm():
+        try:
+            await ensure_ollama_ready()
+        except Exception as exc:  # pragma: no cover - defensive startup guard
+            logger.warning("Initialer Ollama-Check fehlgeschlagen: %s", exc, exc_info=True)
 
 
 @app.get("/healthz")
@@ -705,8 +1149,9 @@ def api_set_mode(payload: ModeUpdate) -> ModeResponse:
 def api_folders() -> FolderSelectionResponse:
     available = list_folders()
     selected = get_monitored_folders()
-    if not selected and S.IMAP_INBOX in available:
-        selected = [S.IMAP_INBOX]
+    inbox = resolve_mailbox_inbox()
+    if not selected and inbox in available:
+        selected = [inbox]
     return FolderSelectionResponse(available=available, selected=selected)
 
 
@@ -736,7 +1181,11 @@ async def api_create_folder(payload: FolderCreateRequest) -> FolderCreateRespons
 
 
 async def _config_response() -> ConfigResponse:
-    status = await get_status(force_refresh=False)
+    module_value = resolve_analysis_module()
+    if analysis_module_uses_llm(module_value):
+        status = await _load_ollama_status(force_refresh=False)
+    else:
+        status = _fallback_ollama_status("LLM deaktiviert (Statisches Modul)", include_models=False)
     catalog = _catalog_response()
     protected_tag, processed_tag, ai_tag_prefix = resolve_mailbox_tags()
     context_tags = [
@@ -747,7 +1196,7 @@ async def _config_response() -> ConfigResponse:
         dev_mode=bool(S.DEV_MODE),
         pending_list_limit=max(int(getattr(S, "PENDING_LIST_LIMIT", 0)), 0),
         mode=_resolve_mode(),
-        analysis_module=AnalysisModule(resolve_analysis_module()),
+        analysis_module=AnalysisModule(module_value),
         classifier_model=resolve_classifier_model(),
         protected_tag=protected_tag,
         processed_tag=processed_tag,
@@ -908,7 +1357,42 @@ def api_suggestions(include: str = Query("open", pattern=r"^(open|all)$")) -> Su
 
 @app.get("/api/ollama", response_model=OllamaStatusResponse)
 async def api_ollama_status() -> OllamaStatusResponse:
-    status = await get_status(force_refresh=True)
+    module_value = resolve_analysis_module()
+    if analysis_module_uses_llm(module_value):
+        status = await _load_ollama_status(force_refresh=True)
+    else:
+        status = _fallback_ollama_status("LLM deaktiviert (Statisches Modul)", include_models=False)
+    return OllamaStatusResponse.model_validate(status_as_dict(status))
+
+
+@app.post("/api/ollama/pull", response_model=OllamaStatusResponse)
+async def api_ollama_pull(payload: OllamaPullRequest) -> OllamaStatusResponse:
+    model = payload.model.strip()
+    if not model:
+        raise HTTPException(400, "model must not be empty")
+    purpose = (payload.purpose or "custom").strip() or "custom"
+    try:
+        await start_model_pull(model, purpose)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Start des Ollama-Pulls fehlgeschlagen", exc_info=True)
+        status = _fallback_ollama_status(f"Modell-Download konnte nicht gestartet werden: {exc}")
+        return OllamaStatusResponse.model_validate(status_as_dict(status))
+    status = await _load_ollama_status(force_refresh=True)
+    return OllamaStatusResponse.model_validate(status_as_dict(status))
+
+
+@app.post("/api/ollama/delete", response_model=OllamaStatusResponse)
+async def api_ollama_delete(payload: OllamaDeleteRequest) -> OllamaStatusResponse:
+    model = (payload.model or "").strip()
+    if not model:
+        raise HTTPException(400, "model must not be empty")
+    try:
+        await delete_model(model)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Löschen des Ollama-Modells fehlgeschlagen", exc_info=True)
+        status = _fallback_ollama_status(f"Modell konnte nicht gelöscht werden: {exc}")
+        return OllamaStatusResponse.model_validate(status_as_dict(status))
+    status = await _load_ollama_status(force_refresh=True)
     return OllamaStatusResponse.model_validate(status_as_dict(status))
 
 
@@ -926,6 +1410,248 @@ async def api_pending() -> PendingOverviewResponse:
 def api_tags() -> List[TagSuggestionResponse]:
     suggestions = load_tag_suggestions()
     return [TagSuggestionResponse.from_domain(item) for item in suggestions]
+
+
+@app.get("/api/calendar/overview", response_model=CalendarOverviewResponse)
+def api_calendar_overview() -> CalendarOverviewResponse:
+    return _calendar_overview_payload()
+
+
+@app.get("/api/calendar/scan/status", response_model=CalendarScanStatusResponse)
+async def api_calendar_scan_status() -> CalendarScanStatusResponse:
+    return CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+
+
+@app.post("/api/calendar/scan/start", response_model=CalendarScanStartResponse)
+async def api_calendar_scan_start(payload: CalendarScanStartRequest | None = Body(default=None)) -> CalendarScanStartResponse:
+    folders = _normalize_calendar_folders(payload.folders if payload else None)
+    started = await calendar_scan_controller.start(folders)
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    return CalendarScanStartResponse(started=started, status=status)
+
+
+@app.post("/api/calendar/scan/stop", response_model=CalendarScanStopResponse)
+async def api_calendar_scan_stop() -> CalendarScanStopResponse:
+    stopped = await calendar_scan_controller.stop()
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    return CalendarScanStopResponse(stopped=stopped, status=status)
+
+
+@app.post("/api/calendar/scan/cancel", response_model=CalendarScanCancelResponse)
+async def api_calendar_scan_cancel() -> CalendarScanCancelResponse:
+    cancelled = await calendar_rescan_controller.stop()
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    return CalendarScanCancelResponse(cancelled=cancelled, status=status)
+
+
+@app.post("/api/calendar/scan", response_model=CalendarScanResponse)
+async def api_calendar_scan(payload: CalendarScanRequest | None = Body(default=None)) -> CalendarScanResponse:
+    folders = _normalize_calendar_folders(payload.folders if payload else None)
+    try:
+        result = await calendar_rescan_controller.run(folders)
+        cancelled = False
+    except CalendarRescanBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except CalendarRescanCancelledError:
+        result = None
+        cancelled = True
+    overview = _calendar_overview_payload()
+    status = CalendarScanStatusResponse.from_sources(
+        calendar_scan_controller.status,
+        calendar_rescan_controller.status,
+    )
+    summary = CalendarScanSummaryResponse.from_result(result)
+    return CalendarScanResponse(overview=overview, scan=summary, cancelled=cancelled, status=status)
+
+
+@app.post("/api/calendar/import", response_model=CalendarImportResponse)
+async def api_calendar_import(payload: CalendarImportRequest) -> CalendarImportResponse:
+    try:
+        updated = await perform_calendar_import(payload.event_id)
+    except CalendarImportError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("Kalenderimport fehlgeschlagen", exc_info=True)
+        raise HTTPException(500, "Kalenderimport fehlgeschlagen") from exc
+    if not isinstance(updated, CalendarEventEntry):
+        raise HTTPException(500, "Kalendereintrag konnte nicht geladen werden")
+    settings = load_calendar_settings(include_password=False)
+    tz = _resolve_timezone(settings.timezone)
+    _, metrics_raw = load_calendar_overview()
+    metrics = _calendar_metrics_response(metrics_raw)
+    return CalendarImportResponse(
+        event=CalendarEventResponse.from_entry(updated, tz),
+        metrics=metrics,
+    )
+
+
+@app.get("/api/mailbox/config", response_model=MailboxSettingsResponse)
+def api_mailbox_config() -> MailboxSettingsResponse:
+    return _mailbox_settings_payload()
+
+
+@app.put("/api/mailbox/config", response_model=MailboxSettingsResponse)
+def api_update_mailbox_config(payload: MailboxSettingsUpdate) -> MailboxSettingsResponse:
+    if payload.clear_password and payload.password:
+        raise HTTPException(400, "Passwort kann nicht gleichzeitig gesetzt und gelöscht werden.")
+    password_value = payload.password
+    clear_password = payload.clear_password
+    if password_value is not None and not password_value.strip():
+        password_value = None
+        clear_password = True
+    try:
+        updated = persist_mailbox_settings(
+            host=(payload.host or "").strip(),
+            port=payload.port,
+            username=(payload.username or "").strip(),
+            inbox=(payload.inbox or "").strip(),
+            use_ssl=payload.use_ssl,
+            process_only_seen=payload.process_only_seen,
+            since_days=payload.since_days,
+            password=password_value,
+            clear_password=clear_password,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    sanitized = updated.sanitized()
+    return MailboxSettingsResponse(
+        host=sanitized.host,
+        port=sanitized.port,
+        username=sanitized.username,
+        inbox=sanitized.inbox,
+        use_ssl=sanitized.use_ssl,
+        process_only_seen=sanitized.process_only_seen,
+        since_days=sanitized.since_days,
+        has_password=bool(updated.password),
+    )
+
+
+@app.post("/api/mailbox/config/test", response_model=MailboxConnectionTestResponse)
+async def api_mailbox_config_test(payload: MailboxConnectionTestRequest) -> MailboxConnectionTestResponse:
+    current = resolve_mailbox_settings(include_password=True)
+    host = (payload.host or current.host).strip()
+    username = (payload.username or current.username).strip()
+    inbox = (payload.inbox or current.inbox).strip() or "INBOX"
+    use_ssl = payload.use_ssl if payload.use_ssl is not None else current.use_ssl
+    port = payload.port if payload.port is not None else current.port
+    if payload.password is not None:
+        if not payload.password:
+            raise HTTPException(400, "Passwort darf nicht leer sein.")
+        password_value = payload.password
+    elif payload.use_stored_password:
+        if not current.password:
+            raise HTTPException(400, "Kein gespeichertes Passwort verfügbar.")
+        password_value = current.password
+    else:
+        if current.password:
+            password_value = current.password
+        else:
+            raise HTTPException(400, "Bitte gib ein Passwort an oder speichere eines in den Einstellungen.")
+    try:
+        await asyncio.to_thread(
+            verify_mailbox_connection,
+            host=host,
+            port=port,
+            username=username,
+            password=password_value,
+            inbox=inbox,
+            use_ssl=use_ssl,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - network guard
+        logger.exception("Mailbox-Verbindungstest fehlgeschlagen", exc_info=True)
+        raise HTTPException(500, "Verbindungstest fehlgeschlagen") from exc
+    return MailboxConnectionTestResponse(ok=True, message="Verbindung erfolgreich getestet.")
+
+
+@app.get("/api/calendar/config", response_model=CalendarSettingsResponse)
+def api_calendar_config() -> CalendarSettingsResponse:
+    return _calendar_settings_payload()
+
+
+@app.put("/api/calendar/config", response_model=CalendarSettingsResponse)
+def api_update_calendar_config(payload: CalendarSettingsUpdate) -> CalendarSettingsResponse:
+    if payload.clear_password and payload.password:
+        raise HTTPException(400, "Passwort kann nicht gleichzeitig gesetzt und gelöscht werden.")
+    timezone_value = (payload.timezone or "").strip()
+    if not timezone_value:
+        raise HTTPException(400, "Zeitzone darf nicht leer sein.")
+    try:
+        ZoneInfo(timezone_value)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(400, f"Unbekannte Zeitzone: {timezone_value}") from exc
+    password_value = payload.password
+    clear_password = payload.clear_password
+    if password_value is not None:
+        if password_value.strip():
+            password_value = password_value
+        else:
+            password_value = None
+            clear_password = True
+    updated = persist_calendar_settings(
+        enabled=payload.enabled,
+        caldav_url=(payload.caldav_url or "").strip(),
+        username=(payload.username or "").strip(),
+        calendar_name=(payload.calendar_name or "").strip(),
+        timezone=timezone_value,
+        processed_tag=(payload.processed_tag or "").strip(),
+        source_folders=_normalize_calendar_folders(payload.source_folders),
+        processed_folder=(payload.processed_folder or "").strip(),
+        password=password_value,
+        clear_password=clear_password,
+    )
+    sanitized = updated.sanitized()
+    return CalendarSettingsResponse(
+        enabled=sanitized.enabled,
+        caldav_url=sanitized.caldav_url,
+        username=sanitized.username,
+        calendar_name=sanitized.calendar_name,
+        timezone=sanitized.timezone,
+        processed_tag=sanitized.processed_tag,
+        source_folders=list(sanitized.source_folders),
+        processed_folder=sanitized.processed_folder,
+        has_password=bool(updated.password),
+    )
+
+
+@app.post("/api/calendar/config/test", response_model=CalendarConnectionTestResponse)
+async def api_calendar_config_test(payload: CalendarConnectionTestRequest) -> CalendarConnectionTestResponse:
+    current = load_calendar_settings(include_password=True)
+    caldav_url = (payload.caldav_url or current.caldav_url).strip()
+    username = (payload.username or current.username).strip()
+    calendar_name = (payload.calendar_name or current.calendar_name).strip()
+    if payload.password is not None:
+        password_value = payload.password or None
+    elif payload.use_stored_password:
+        password_value = current.password
+    else:
+        password_value = None
+    try:
+        await validate_calendar_connection(
+            caldav_url=caldav_url,
+            username=username,
+            password=password_value,
+            calendar_name=calendar_name,
+        )
+    except CalendarImportError as exc:
+        return CalendarConnectionTestResponse(ok=False, message=str(exc))
+    except Exception as exc:  # pragma: no cover - network guard
+        logger.exception("Kalender-Verbindungstest fehlgeschlagen", exc_info=True)
+        raise HTTPException(500, "Verbindungstest fehlgeschlagen") from exc
+    return CalendarConnectionTestResponse(ok=True, message="Verbindung erfolgreich getestet.")
 
 
 def _ensure_suggestion(uid: str) -> Suggestion:

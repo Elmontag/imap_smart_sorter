@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink } from 'react-router-dom'
 import {
   AnalysisModule,
+  OllamaModelStatus,
   Suggestion,
   ScanStatus,
   getFolders,
@@ -16,10 +16,12 @@ import PendingOverviewPanel from '../components/PendingOverviewPanel'
 import FolderSelectionPanel from '../components/FolderSelectionPanel'
 import DevtoolsPanel from '../components/DevtoolsPanel'
 import AutomationSummaryCard from '../components/AutomationSummaryCard'
+import CalendarDashboard from '../components/CalendarDashboard'
 import { useSuggestions } from '../store/useSuggestions'
 import { usePendingOverview } from '../store/usePendingOverview'
 import { useAppConfig } from '../store/useAppConfig'
 import { useFilterActivity } from '../store/useFilterActivity'
+import { useOllamaStatus } from '../store/useOllamaStatus'
 
 type StatusKind = 'info' | 'success' | 'error'
 
@@ -27,6 +29,8 @@ interface StatusMessage {
   kind: StatusKind
   message: string
 }
+
+type DashboardView = 'mail' | 'calendar'
 
 const toMessage = (err: unknown) => (err instanceof Error ? err.message : String(err ?? 'Unbekannter Fehler'))
 
@@ -47,38 +51,107 @@ const moduleLabels: Record<AnalysisModule, string> = {
   LLM_PURE: 'LLM Pure',
 }
 
+const normalizeFolders = (folders: string[]): string[] =>
+  Array.from(new Set(folders.map(folder => folder.trim()).filter(folder => folder.length > 0)))
+
+const formatBytes = (value?: number | null) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let remaining = value
+  let unitIndex = 0
+  while (remaining >= 1024 && unitIndex < units.length - 1) {
+    remaining /= 1024
+    unitIndex += 1
+  }
+  return `${remaining.toFixed(remaining >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+const modelLabel = (model: OllamaModelStatus) => {
+  if (model.purpose === 'classifier') {
+    return 'Klassifikator'
+  }
+  if (model.purpose === 'embedding') {
+    return 'Embeddings'
+  }
+  return 'Modell'
+}
+
+const modelProgressLabel = (model: OllamaModelStatus) => {
+  const percent = typeof model.progress === 'number' ? Math.round(model.progress * 100) : null
+  const completed = formatBytes(model.download_completed)
+  const total = formatBytes(model.download_total)
+  if (percent === null && !completed) {
+    return model.status ?? 'lädt…'
+  }
+  const parts: string[] = []
+  if (percent !== null) {
+    parts.push(`${percent}%`)
+  }
+  if (completed && total) {
+    parts.push(`${completed} / ${total}`)
+  }
+  if (parts.length === 0 && completed) {
+    parts.push(completed)
+  }
+  return parts.join(' · ')
+}
+
 export default function DashboardPage(): JSX.Element {
   const [suggestionScope, setSuggestionScope] = useState<'open' | 'all'>('open')
-  const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(suggestionScope)
-  const { data: pendingOverview, loading: pendingLoading, error: pendingError } = usePendingOverview()
   const { data: appConfig, error: configError } = useAppConfig()
+  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'STATIC'
+  const configLoaded = Boolean(appConfig)
+  const showAutomationCard = configLoaded ? analysisModule !== 'LLM_PURE' : false
+  const showLlMSuggestions = configLoaded ? analysisModule !== 'STATIC' : false
+  const showPendingPanel = showLlMSuggestions
+  const showOllamaCard = showLlMSuggestions
+  const { data: suggestions, stats: suggestionStats, loading, error, refresh } = useSuggestions(
+    suggestionScope,
+    showLlMSuggestions,
+  )
+  const {
+    data: pendingOverview,
+    loading: pendingLoading,
+    error: pendingError,
+    refresh: refreshPendingOverview,
+  } = usePendingOverview(showPendingPanel)
   const {
     data: filterActivity,
     loading: filterActivityLoading,
     error: filterActivityError,
     refresh: refreshFilterActivity,
-  } = useFilterActivity()
+  } = useFilterActivity(showAutomationCard)
+  const {
+    status: ollamaStatus,
+    loading: ollamaLoading,
+    error: ollamaError,
+    refresh: refreshOllama,
+  } = useOllamaStatus(showOllamaCard)
   const [availableFolders, setAvailableFolders] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
   const [folderDraft, setFolderDraft] = useState<string[]>([])
   const [foldersLoading, setFoldersLoading] = useState(true)
   const [savingFolders, setSavingFolders] = useState(false)
   const [status, setStatus] = useState<StatusMessage | null>(null)
+  const [dashboardView, setDashboardView] = useState<DashboardView>('mail')
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
   const [scanBusy, setScanBusy] = useState(false)
   const [rescanBusy, setRescanBusy] = useState(false)
   const lastFinishedRef = useRef<string | null>(null)
   const manualFinishedRef = useRef<string | null>(null)
-  const analysisModule: AnalysisModule = appConfig?.analysis_module ?? 'HYBRID'
+  const scanStateRef = useRef({ auto: false, manual: false })
   const moduleLabel = moduleLabels[analysisModule]
 
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true)
     try {
       const result = await getFolders()
+      const normalizedSelected = normalizeFolders(result.selected)
       setAvailableFolders([...result.available])
-      setSelectedFolders([...result.selected])
-      setFolderDraft([...result.selected])
+      setSelectedFolders([...normalizedSelected])
+      setFolderDraft([...normalizedSelected])
     } catch (err) {
       setStatus({ kind: 'error', message: `Ordnerliste konnte nicht geladen werden: ${toMessage(err)}` })
     } finally {
@@ -137,11 +210,23 @@ export default function DashboardPage(): JSX.Element {
     }
   }, [scanStatus?.rescan_active, rescanBusy])
 
+  useEffect(() => {
+    const autoActive = Boolean(scanStatus?.active)
+    const manualActive = Boolean(scanStatus?.rescan_active || rescanBusy)
+    const previous = scanStateRef.current
+
+    if ((autoActive && !previous.auto) || (manualActive && !previous.manual)) {
+      void refreshPendingOverview().catch(() => undefined)
+    }
+
+    scanStateRef.current = { auto: autoActive, manual: manualActive }
+  }, [scanStatus?.active, scanStatus?.rescan_active, rescanBusy, refreshPendingOverview])
+
   const handleStartScan = async () => {
     setScanBusy(true)
     try {
-      const folders = selectedFolders.length ? selectedFolders : undefined
-      const response = await startScan(folders)
+      const normalizedSelection = normalizeFolders(selectedFolders)
+      const response = await startScan(normalizedSelection.length ? normalizedSelection : undefined)
       setScanStatus(response.status)
       setStatus({
         kind: response.started ? 'success' : 'info',
@@ -152,6 +237,7 @@ export default function DashboardPage(): JSX.Element {
       setStatus({ kind: 'error', message: `Analyse konnte nicht gestartet werden: ${toMessage(err)}` })
     } finally {
       setScanBusy(false)
+      void refreshPendingOverview().catch(() => undefined)
     }
   }
 
@@ -179,14 +265,15 @@ export default function DashboardPage(): JSX.Element {
     } finally {
       setRescanBusy(false)
       setScanBusy(false)
+      void refreshPendingOverview().catch(() => undefined)
     }
   }
 
   const handleRescan = useCallback(async () => {
     setRescanBusy(true)
     try {
-      const folders = selectedFolders.length ? selectedFolders : undefined
-      const response = await rescan(folders)
+      const normalizedSelection = normalizeFolders(selectedFolders)
+      const response = await rescan(normalizedSelection.length ? normalizedSelection : undefined)
       if (!response.ok && response.cancelled) {
         setStatus({ kind: 'info', message: 'Einmalanalyse abgebrochen.' })
       } else if (!response.ok) {
@@ -204,25 +291,29 @@ export default function DashboardPage(): JSX.Element {
     } finally {
       setRescanBusy(false)
       await loadScanStatus()
+      void refreshPendingOverview().catch(() => undefined)
     }
-  }, [loadScanStatus, refresh, selectedFolders])
+  }, [loadScanStatus, refresh, refreshPendingOverview, selectedFolders])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
   const handleFolderSave = useCallback(async () => {
     setSavingFolders(true)
     try {
-      const response = await updateFolderSelection(folderDraft)
+      const normalizedDraft = normalizeFolders(folderDraft)
+      const response = await updateFolderSelection(normalizedDraft)
+      const normalizedSelected = normalizeFolders(response.selected)
       setAvailableFolders([...response.available])
-      setSelectedFolders([...response.selected])
-      setFolderDraft([...response.selected])
+      setSelectedFolders([...normalizedSelected])
+      setFolderDraft([...normalizedSelected])
       setStatus({ kind: 'success', message: 'Ordnerauswahl gespeichert.' })
+      void refreshPendingOverview().catch(() => undefined)
     } catch (err) {
       setStatus({ kind: 'error', message: `Ordnerauswahl konnte nicht gespeichert werden: ${toMessage(err)}` })
     } finally {
       setSavingFolders(false)
     }
-  }, [folderDraft])
+  }, [folderDraft, refreshPendingOverview])
 
   const handleFolderCreated = useCallback(
     async (folder: string) => {
@@ -252,24 +343,6 @@ export default function DashboardPage(): JSX.Element {
   const handleSuggestionUpdate = useCallback(async () => {
     await refresh()
   }, [refresh])
-
-  const ollamaInfo = useMemo(() => {
-    const status = appConfig?.ollama
-    if (!status) {
-      return null
-    }
-    const classifier = status.models.find(model => model.purpose === 'classifier')
-    const embedding = status.models.find(model => model.purpose === 'embedding')
-    const classifierLabel = classifier ? `${classifier.name}${classifier.available ? '' : ' (fehlt)'}` : '–'
-    const embeddingLabel = embedding ? `${embedding.name}${embedding.available ? '' : ' (fehlt)'}` : '–'
-    return {
-      reachable: status.reachable,
-      host: status.host,
-      message: status.message ?? undefined,
-      classifier: classifierLabel,
-      embedding: embeddingLabel,
-    }
-  }, [appConfig])
 
   const scanSummary = useMemo(() => {
     const autoActive = Boolean(scanStatus?.active)
@@ -403,16 +476,8 @@ export default function DashboardPage(): JSX.Element {
             {appConfig?.mode && <span className="mode-badge subtle">Modus: {appConfig.mode}</span>}
           </div>
         </div>
-        <nav className="primary-nav">
-          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Dashboard
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-            Einstellungen
-          </NavLink>
-        </nav>
-        <div className="analysis-top">
-          <div className="analysis-canvas">
+        <div className="analysis-bar">
+          <div className="analysis-bar-main">
             <div className="analysis-status">
               <span className={`status-indicator ${scanSummary.statusVariant}`} aria-hidden="true" />
               <div className="analysis-status-text">
@@ -420,7 +485,7 @@ export default function DashboardPage(): JSX.Element {
                 <strong>{scanSummary.statusLabel}</strong>
               </div>
             </div>
-            <dl className="analysis-meta">
+            <dl className="analysis-bar-meta">
               <div>
                 <dt>Ordner</dt>
                 <dd>{scanSummary.folderLabel}</dd>
@@ -442,9 +507,11 @@ export default function DashboardPage(): JSX.Element {
                 <dd>{scanSummary.resultLabel ?? '–'}</dd>
               </div>
             </dl>
-            {analysisFootEntries.length > 0 && <div className="analysis-foot">{analysisFootEntries}</div>}
+            {analysisFootEntries.length > 0 && (
+              <div className="analysis-bar-foot">{analysisFootEntries}</div>
+            )}
           </div>
-          <div className="analysis-actions">
+          <div className="analysis-bar-actions">
             <button
               type="button"
               className="ghost"
@@ -472,119 +539,193 @@ export default function DashboardPage(): JSX.Element {
           </div>
         </div>
       </header>
+      {dashboardView === 'mail' ? (
+        <>
+          {status && (
+            <div className={`status-banner ${status.kind}`} role="status">
+              <span>{status.message}</span>
+              <button className="link" type="button" onClick={dismissStatus}>
+                Schließen
+              </button>
+            </div>
+          )}
 
-      {status && (
-        <div className={`status-banner ${status.kind}`} role="status">
-          <span>{status.message}</span>
-          <button className="link" type="button" onClick={dismissStatus}>
-            Schließen
-          </button>
-        </div>
+          {configError && <div className="status-banner error">{configError}</div>}
+          {error && <div className="status-banner error">{error}</div>}
+          {configLoaded && analysisModule === 'STATIC' && (
+            <div className="status-banner info" role="status">
+              <span>
+                Modul „Statisch“ aktiv: Es werden ausschließlich Keyword-Regeln ausgeführt, KI-Vorschläge und Pending-Listen
+                bleiben deaktiviert.
+              </span>
+            </div>
+          )}
+          {showOllamaCard && ollamaError && (
+            <div className="status-banner error">Ollama-Status konnte nicht geladen werden: {ollamaError}</div>
+          )}
+
+          <div className="app-layout">
+            <aside className="app-sidebar">
+              <FolderSelectionPanel
+                available={availableFolders}
+                draft={folderDraft}
+                onDraftChange={setFolderDraft}
+                onSave={handleFolderSave}
+                onReload={loadFolders}
+                loading={foldersLoading}
+                saving={savingFolders}
+              />
+              {showOllamaCard && (
+                <div className={`ollama-status-card ${ollamaStatus?.reachable ? 'ok' : 'error'}`}>
+                  <div className="ollama-status-header">
+                    <span className="label">Ollama</span>
+                    <span className={`indicator ${ollamaStatus?.reachable ? 'online' : 'offline'}`}>
+                      {ollamaStatus?.reachable ? 'verbunden' : 'nicht verbunden'}
+                    </span>
+                  </div>
+                  <div className="ollama-status-body">
+                    {ollamaLoading && <div className="placeholder">Lade Status…</div>}
+                    {!ollamaLoading && ollamaStatus && (
+                      <>
+                        <div className="host">{ollamaStatus.host}</div>
+                        <div className="models">
+                          {ollamaStatus.models.length === 0 && <span>Keine Modelle bekannt.</span>}
+                          {ollamaStatus.models.map(model => {
+                            const progressValue = Math.max(0, Math.min(100, Math.round((model.progress ?? 0) * 100)))
+                            return (
+                              <div key={model.normalized_name} className="ollama-model">
+                                <div className="ollama-model-header">
+                                  <span className="model-name">
+                                    {modelLabel(model)}: {model.name}
+                                  </span>
+                                  <span className={`model-state ${model.available ? 'available' : 'missing'}`}>
+                                    {model.available ? 'bereit' : model.pulling ? 'lädt…' : 'fehlt'}
+                                  </span>
+                                </div>
+                                {model.pulling && (
+                                  <div
+                                    className="ollama-progress-bar"
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={progressValue}
+                                  >
+                                    <div className="ollama-progress-indicator" style={{ width: `${progressValue}%` }} />
+                                  </div>
+                                )}
+                                <div className="ollama-model-meta">
+                                  {model.pulling && <span>{modelProgressLabel(model)}</span>}
+                                  {!model.pulling && model.message && <span>{model.message}</span>}
+                                  {model.error && <span className="error">{model.error}</span>}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {ollamaStatus.message && <div className="ollama-note">{ollamaStatus.message}</div>}
+                      </>
+                    )}
+                    {!ollamaLoading && !ollamaStatus && (
+                      <div className="placeholder">Keine Ollama-Informationen verfügbar.</div>
+                    )}
+                  </div>
+                  <div className="ollama-status-actions">
+                    <button type="button" className="link" onClick={() => refreshOllama()} disabled={ollamaLoading}>
+                      Status aktualisieren
+                    </button>
+                  </div>
+                </div>
+              )}
+            </aside>
+            <main className="app-main">
+              {showAutomationCard && (
+                <AutomationSummaryCard
+                  activity={filterActivity}
+                  loading={filterActivityLoading}
+                  error={filterActivityError}
+                  onReload={refreshFilterActivity}
+                />
+              )}
+
+              {showPendingPanel && (
+                <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
+              )}
+
+              {showLlMSuggestions ? (
+                <section className="suggestions">
+                  <div className="suggestions-header">
+                    <h2>{headline}</h2>
+                    <div className="suggestions-actions">
+                      <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
+                        Aktualisieren
+                      </button>
+                      <button type="button" className="ghost" onClick={toggleSuggestionScope} disabled={loading}>
+                        {suggestionScope === 'open'
+                          ? 'Alle analysierten Mails bearbeiten'
+                          : 'Nur offene Vorschläge anzeigen'}
+                      </button>
+                    </div>
+                  </div>
+                  {suggestionStats && (
+                    <div className="suggestions-metrics">
+                      <div className="suggestion-metric open">
+                        <span className="label">Zu bearbeiten</span>
+                        <strong>{suggestionStats.openCount}</strong>
+                        <span className="muted">offene Nachrichten</span>
+                      </div>
+                      <div className="suggestion-metric processed">
+                        <span className="label">Bereits bearbeitet</span>
+                        <strong>{suggestionStats.decidedCount}</strong>
+                        <span className="muted">von {suggestionStats.totalCount} analysierten Mails</span>
+                      </div>
+                      <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
+                        <span className="label">Fehler</span>
+                        <strong>{suggestionStats.errorCount}</strong>
+                        <span className="muted">Mails mit Fehlern</span>
+                      </div>
+                    </div>
+                  )}
+                  {loading && <div className="placeholder">Bitte warten…</div>}
+                  {!loading && !suggestions.length && (
+                    <div className="placeholder">
+                      {suggestionScope === 'open'
+                        ? 'Super! Alles abgearbeitet.'
+                        : 'Es liegen noch keine analysierten Vorschläge vor.'}
+                    </div>
+                  )}
+                  {!loading && suggestions.length > 0 && (
+                    <ul className="suggestion-list">
+                      {suggestions.map((item: Suggestion) => (
+                        <SuggestionCard
+                          key={item.message_uid}
+                          suggestion={item}
+                          onActionComplete={handleSuggestionUpdate}
+                          tagSlots={appConfig?.tag_slots}
+                          availableFolders={availableFolders}
+                          onFolderCreated={handleFolderCreated}
+                          analysisModule={analysisModule}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              ) : (
+                <section className="suggestions">
+                  <div className="suggestions-header">
+                    <h2>Keine KI-Vorschläge im Statischen Modul</h2>
+                  </div>
+                  <div className="placeholder">
+                    Im Modul „Statisch“ werden neue Nachrichten ausschließlich über Keyword-Regeln verarbeitet. Für manuelle
+                    Entscheidungen gibt es daher keine Vorschlagsliste.
+                  </div>
+                </section>
+              )}
+            </main>
+          </div>
+        </>
+      ) : (
+        <CalendarDashboard />
       )}
-
-      {configError && <div className="status-banner error">{configError}</div>}
-      {error && <div className="status-banner error">{error}</div>}
-
-      <div className="app-layout">
-        <aside className="app-sidebar">
-          <FolderSelectionPanel
-            available={availableFolders}
-            draft={folderDraft}
-            onDraftChange={setFolderDraft}
-            onSave={handleFolderSave}
-            onReload={loadFolders}
-            loading={foldersLoading}
-            saving={savingFolders}
-          />
-          {ollamaInfo && (
-            <div className={`ollama-status-card ${ollamaInfo.reachable ? 'ok' : 'error'}`} title={ollamaInfo.message}>
-              <div className="ollama-status-header">
-                <span className="label">Ollama</span>
-                <span className={`indicator ${ollamaInfo.reachable ? 'online' : 'offline'}`}>
-                  {ollamaInfo.reachable ? 'verbunden' : 'offline'}
-                </span>
-              </div>
-              <div className="ollama-status-body">
-                <div className="host">{ollamaInfo.host}</div>
-                <div className="models">
-                  <span>Klassifikator: {ollamaInfo.classifier}</span>
-                  <span>Embeddings: {ollamaInfo.embedding}</span>
-                </div>
-              </div>
-            </div>
-          )}
-        </aside>
-        <main className="app-main">
-          {analysisModule !== 'LLM_PURE' && (
-            <AutomationSummaryCard
-              activity={filterActivity}
-              loading={filterActivityLoading}
-              error={filterActivityError}
-              onReload={refreshFilterActivity}
-            />
-          )}
-
-          <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
-
-          <section className="suggestions">
-            <div className="suggestions-header">
-              <h2>{headline}</h2>
-              <div className="suggestions-actions">
-                <button className="link" type="button" onClick={() => refresh()} disabled={loading}>
-                  Aktualisieren
-                </button>
-                <button type="button" className="ghost" onClick={toggleSuggestionScope} disabled={loading}>
-                  {suggestionScope === 'open'
-                    ? 'Alle analysierten Mails bearbeiten'
-                    : 'Nur offene Vorschläge anzeigen'}
-                </button>
-              </div>
-            </div>
-            {suggestionStats && (
-              <div className="suggestions-metrics">
-                <div className="suggestion-metric open">
-                  <span className="label">Zu bearbeiten</span>
-                  <strong>{suggestionStats.openCount}</strong>
-                  <span className="muted">offene Vorschläge</span>
-                </div>
-                <div className="suggestion-metric processed">
-                  <span className="label">Bereits bearbeitet</span>
-                  <strong>{suggestionStats.decidedCount}</strong>
-                  <span className="muted">von {suggestionStats.totalCount}</span>
-                </div>
-                <div className={`suggestion-metric error ${suggestionStats.errorCount === 0 ? 'empty' : ''}`}>
-                  <span className="label">Fehler</span>
-                  <strong>{suggestionStats.errorCount}</strong>
-                  <span className="muted">benötigen Prüfung</span>
-                </div>
-              </div>
-            )}
-            {loading && <div className="placeholder">Bitte warten…</div>}
-            {!loading && !suggestions.length && (
-              <div className="placeholder">
-                {suggestionScope === 'open'
-                  ? 'Super! Alles abgearbeitet.'
-                  : 'Es liegen noch keine analysierten Vorschläge vor.'}
-              </div>
-            )}
-            {!loading && suggestions.length > 0 && (
-              <ul className="suggestion-list">
-                {suggestions.map((item: Suggestion) => (
-                  <SuggestionCard
-                    key={item.message_uid}
-                    suggestion={item}
-                    onActionComplete={handleSuggestionUpdate}
-                    tagSlots={appConfig?.tag_slots}
-                    availableFolders={availableFolders}
-                    onFolderCreated={handleFolderCreated}
-                    analysisModule={analysisModule}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
-        </main>
-      </div>
 
       <DevtoolsPanel />
     </div>
