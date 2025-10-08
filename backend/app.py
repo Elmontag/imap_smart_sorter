@@ -1180,10 +1180,10 @@ async def api_create_folder(payload: FolderCreateRequest) -> FolderCreateRespons
     return FolderCreateResponse(created=created, existed=False)
 
 
-async def _config_response() -> ConfigResponse:
+async def _config_response(*, force_refresh: bool = False) -> ConfigResponse:
     module_value = resolve_analysis_module()
     if analysis_module_uses_llm(module_value):
-        status = await _load_ollama_status(force_refresh=False)
+        status = await _load_ollama_status(force_refresh=force_refresh)
     else:
         status = _fallback_ollama_status("LLM deaktiviert (Statisches Modul)", include_models=False)
     catalog = _catalog_response()
@@ -1216,6 +1216,8 @@ async def api_config() -> ConfigResponse:
 @app.put("/api/config", response_model=ConfigResponse)
 async def api_update_config(payload: ConfigUpdateRequest) -> ConfigResponse:
     updates = payload.model_dump(exclude_unset=True)
+    refresh_ollama = False
+    analysis_module_changed = False
     if "mode" in updates:
         if payload.mode is None:
             raise HTTPException(400, "mode must not be null")
@@ -1224,18 +1226,34 @@ async def api_update_config(payload: ConfigUpdateRequest) -> ConfigResponse:
         if payload.analysis_module is None:
             raise HTTPException(400, "analysis_module must not be null")
         set_analysis_module(payload.analysis_module.value)
+        analysis_module_changed = True
     if "classifier_model" in updates:
         model = (payload.classifier_model or "").strip()
         if not model:
             raise HTTPException(400, "classifier_model must not be empty")
         set_classifier_model(model)
+        refresh_ollama = True
     if {"protected_tag", "processed_tag", "ai_tag_prefix"} & updates.keys():
         set_mailbox_tags(
             updates.get("protected_tag"),
             updates.get("processed_tag"),
             updates.get("ai_tag_prefix"),
         )
-    return await _config_response()
+    module_value = resolve_analysis_module()
+    if analysis_module_changed or refresh_ollama:
+        uses_llm = analysis_module_uses_llm(module_value)
+        if uses_llm:
+            try:
+                await ensure_ollama_ready()
+            except Exception as exc:  # pragma: no cover - defensive refresh guard
+                logger.warning(
+                    "Ollama-Status konnte nach Konfigurationsänderung nicht aktualisiert werden: %s",
+                    exc,
+                )
+            refresh_ollama = True
+        else:
+            refresh_ollama = False
+    return await _config_response(force_refresh=refresh_ollama)
 
 
 @app.get("/api/catalog", response_model=CatalogResponse)
