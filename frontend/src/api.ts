@@ -497,57 +497,106 @@ const trimTrailingSlash = (value: string): string => {
   return value.replace(/\/$/, '')
 }
 
-const hasConfiguredBase = rawEnvBase.length > 0
-const normalizedBase = hasConfiguredBase ? trimTrailingSlash(rawEnvBase) : ''
+const ensureLeadingSlash = (value: string): string => {
+  if (!value) {
+    return ''
+  }
+  return value.startsWith('/') ? value : `/${value}`
+}
+
+const splitPath = (value: string): { pathname: string; search: string } => {
+  if (!value) {
+    return { pathname: '/', search: '' }
+  }
+  const [pathPart] = value.split(/[?#]/, 1)
+  const index = value.indexOf('?')
+  const hashIndex = value.indexOf('#')
+  let suffix = ''
+  if (index >= 0) {
+    suffix += value.slice(index)
+  } else if (hashIndex >= 0) {
+    suffix += value.slice(hashIndex)
+  }
+  const pathname = pathPart ? ensureLeadingSlash(pathPart.replace(/\/+$/, '')) || '/' : '/'
+  return { pathname, search: suffix }
+}
+
+const joinBasePath = (basePath: string, targetPath: string): string => {
+  const base = trimTrailingSlash(ensureLeadingSlash(basePath))
+  const { pathname, search } = splitPath(targetPath)
+  const normalisedTarget = pathname === '' ? '/' : pathname
+  if (!base || base === '/') {
+    return `${normalisedTarget}${search}`
+  }
+  if (normalisedTarget === base || normalisedTarget.startsWith(`${base}/`)) {
+    return `${normalisedTarget}${search}`
+  }
+  return `${base}${normalisedTarget}${search}`
+}
+
 const fallbackOrigin =
   typeof window !== 'undefined' && typeof window.location?.origin === 'string'
     ? window.location.origin
     : 'http://localhost:8000'
 
-const httpBase = hasConfiguredBase ? normalizedBase || '/' : 'http://localhost:8000'
-const httpBaseNormalized = trimTrailingSlash(httpBase)
-const httpBaseIsAbsolute = /^https?:\/\//i.test(httpBaseNormalized)
+const baseIsAbsolute = /^https?:\/\//i.test(rawEnvBase)
 
-const resolveRequestUrl = (path: string): string => {
-  if (httpBaseIsAbsolute) {
-    const url = new URL(path, `${httpBaseNormalized}/`)
-    return url.toString()
-  }
-  const prefix = httpBaseNormalized === '/' ? '' : httpBaseNormalized
-  return `${prefix}${path}`
-}
+let originBase: string | null = null
+let pathBase = ''
 
-const wsBaseUrl = (() => {
-  if (httpBaseIsAbsolute) {
+if (rawEnvBase) {
+  if (baseIsAbsolute) {
     try {
-      return new URL(httpBaseNormalized)
+      const parsed = new URL(rawEnvBase)
+      originBase = `${parsed.protocol}//${parsed.host}`
+      pathBase = trimTrailingSlash(ensureLeadingSlash(parsed.pathname))
+      if (pathBase === '/') {
+        pathBase = ''
+      }
     } catch (error) {
-      return new URL('http://localhost:8000')
+      originBase = null
+      pathBase = ''
+    }
+  } else {
+    originBase = null
+    pathBase = trimTrailingSlash(ensureLeadingSlash(rawEnvBase))
+    if (pathBase === '/') {
+      pathBase = ''
     }
   }
-  try {
-    const relativeBase = normalizedBase && normalizedBase !== '/' ? normalizedBase : '/'
-    return new URL(relativeBase, fallbackOrigin)
-  } catch (error) {
-    return new URL(fallbackOrigin)
+}
+
+const resolveRequestUrl = (path: string): string => {
+  if (/^https?:\/\//i.test(path)) {
+    return path
   }
-})()
+  const combinedPath = joinBasePath(pathBase, path || '/')
+  if (originBase) {
+    return new URL(combinedPath, originBase).toString()
+  }
+  return combinedPath
+}
 
-const wsProtocol = wsBaseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-const wsPathBase = trimTrailingSlash(wsBaseUrl.pathname)
-const streamUrl = new URL(wsBaseUrl.toString())
-streamUrl.protocol = wsProtocol
-streamUrl.pathname = `${wsPathBase || ''}/ws/stream`.replace(/\/\+/g, '/')
-streamUrl.search = ''
-streamUrl.hash = ''
-const STREAM_URL = streamUrl.toString().replace(/\/$/, '')
+const resolveStreamUrl = (): string => {
+  const wsOriginCandidate = originBase ?? fallbackOrigin
+  let wsOrigin: URL
+  try {
+    wsOrigin = new URL(wsOriginCandidate)
+  } catch (error) {
+    wsOrigin = new URL('http://localhost:8000')
+  }
+  wsOrigin.protocol = wsOrigin.protocol === 'https:' ? 'wss:' : 'ws:'
+  const combinedPath = joinBasePath(pathBase, '/ws/stream')
+  const url = new URL(combinedPath, wsOrigin)
+  url.search = ''
+  url.hash = ''
+  return url.toString().replace(/\/$/, '')
+}
 
-export const API_BASE_URL = httpBaseIsAbsolute
-  ? httpBaseNormalized
-  : httpBaseNormalized === ''
-    ? '/'
-    : httpBaseNormalized
-export const STREAM_WEBSOCKET_URL = STREAM_URL
+export const API_BASE_URL = originBase
+  ? `${originBase}${pathBase || ''}`
+  : pathBase || '/'
+export const STREAM_WEBSOCKET_URL = resolveStreamUrl()
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
