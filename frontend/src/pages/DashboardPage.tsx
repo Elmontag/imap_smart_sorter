@@ -222,6 +222,22 @@ export default function DashboardPage(): JSX.Element {
     scanStateRef.current = { auto: autoActive, manual: manualActive }
   }, [scanStatus?.active, scanStatus?.rescan_active, rescanBusy, refreshPendingOverview])
 
+  const refreshIndicators = useCallback(async () => {
+    const tasks: Promise<unknown>[] = []
+    if (showLlMSuggestions) {
+      tasks.push(refresh())
+    }
+    if (showPendingPanel) {
+      tasks.push(refreshPendingOverview())
+    }
+    if (showAutomationCard) {
+      tasks.push(refreshFilterActivity())
+    }
+    if (tasks.length > 0) {
+      await Promise.allSettled(tasks)
+    }
+  }, [refresh, refreshFilterActivity, refreshPendingOverview, showAutomationCard, showLlMSuggestions, showPendingPanel])
+
   const handleStartScan = async () => {
     setScanBusy(true)
     try {
