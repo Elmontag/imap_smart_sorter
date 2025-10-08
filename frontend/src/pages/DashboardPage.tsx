@@ -367,6 +367,11 @@ export default function DashboardPage(): JSX.Element {
     await refresh()
   }, [refresh])
 
+  const hasSuggestions = suggestions.length > 0
+  const showSuggestionLoadingPlaceholder = loading && !hasSuggestions && !suggestionStats
+  const showSuggestionEmptyState = !loading && !hasSuggestions
+  const isRefreshingSuggestions = loading && hasSuggestions
+
   const refreshIndicators = useCallback(async () => {
     const tasks: Promise<unknown>[] = []
     if (showLlMSuggestions) {
@@ -751,28 +756,35 @@ export default function DashboardPage(): JSX.Element {
                       </div>
                     </div>
                   )}
-                  {loading && <div className="placeholder">Bitte warten…</div>}
-                  {!loading && !suggestions.length && (
+                  {showSuggestionLoadingPlaceholder && (
+                    <div className="placeholder">Bitte warten…</div>
+                  )}
+                  {showSuggestionEmptyState && (
                     <div className="placeholder">
                       {suggestionScope === 'open'
                         ? 'Super! Alles abgearbeitet.'
                         : 'Es liegen noch keine analysierten Vorschläge vor.'}
                     </div>
                   )}
-                  {!loading && suggestions.length > 0 && (
-                    <ul className="suggestion-list">
-                      {suggestions.map((item: Suggestion) => (
-                        <SuggestionCard
-                          key={item.message_uid}
-                          suggestion={item}
-                          onActionComplete={handleSuggestionUpdate}
-                          tagSlots={appConfig?.tag_slots}
-                          availableFolders={availableFolders}
-                          onFolderCreated={handleFolderCreated}
-                          analysisModule={analysisModule}
-                        />
-                      ))}
-                    </ul>
+                  {hasSuggestions && (
+                    <>
+                      {isRefreshingSuggestions && (
+                        <div className="refresh-indicator">Aktualisiere…</div>
+                      )}
+                      <ul className="suggestion-list">
+                        {suggestions.map((item: Suggestion) => (
+                          <SuggestionCard
+                            key={item.message_uid}
+                            suggestion={item}
+                            onActionComplete={handleSuggestionUpdate}
+                            tagSlots={appConfig?.tag_slots}
+                            availableFolders={availableFolders}
+                            onFolderCreated={handleFolderCreated}
+                            analysisModule={analysisModule}
+                          />
+                        ))}
+                      </ul>
+                    </>
                   )}
                 </section>
               ) : (

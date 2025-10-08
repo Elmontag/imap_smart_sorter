@@ -1092,6 +1092,11 @@ button.link {
   gap: 16px;
 }
 
+.pending-refresh-indicator {
+  align-self: flex-end;
+  margin-bottom: 4px;
+}
+
 .pending-limit-info {
   font-size: 13px;
   color: #4b5563;
@@ -1284,6 +1289,38 @@ button.link {
   gap: 12px;
   flex-wrap: wrap;
   margin-top: 12px;
+}
+
+.refresh-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #2563eb;
+  font-weight: 500;
+  margin: 6px 0;
+}
+
+.refresh-indicator::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.75;
+  animation: refresh-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes refresh-pulse {
+  from {
+    transform: scale(0.8);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .suggestion-metric {

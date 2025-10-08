@@ -14,6 +14,7 @@ export function usePendingOverview(enabled = true): PendingOverviewState {
   const [loading, setLoading] = useState<boolean>(enabled)
   const [error, setError] = useState<string | null>(null)
   const activeRef = useRef(true)
+  const snapshotSignatureRef = useRef<string>('')
 
   useEffect(() => {
     activeRef.current = true
@@ -31,6 +32,7 @@ export function usePendingOverview(enabled = true): PendingOverviewState {
         setData(null)
         setError(null)
         setLoading(false)
+        snapshotSignatureRef.current = ''
         return
       }
       setLoading(true)
@@ -39,7 +41,14 @@ export function usePendingOverview(enabled = true): PendingOverviewState {
         if (!activeRef.current) {
           return
         }
-        setData(snapshot)
+        const nextSignature = JSON.stringify(snapshot)
+        setData(prev => {
+          if (snapshotSignatureRef.current === nextSignature && prev !== null) {
+            return prev
+          }
+          snapshotSignatureRef.current = nextSignature
+          return snapshot
+        })
         setError(null)
         recordDevEvent({
           type: 'info',
@@ -79,7 +88,14 @@ export function usePendingOverview(enabled = true): PendingOverviewState {
       socket = openStream((event: StreamEvent) => {
         if (!activeRef.current) return
         if (event.type === 'pending_overview') {
-          setData(event.payload)
+          const payloadSignature = JSON.stringify(event.payload)
+          setData(prev => {
+            if (snapshotSignatureRef.current === payloadSignature && prev !== null) {
+              return prev
+            }
+            snapshotSignatureRef.current = payloadSignature
+            return event.payload
+          })
           setError(null)
           setLoading(false)
           recordDevEvent({ type: 'stream', label: 'pending_overview', payload: event.payload })
