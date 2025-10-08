@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
+from urllib.parse import quote
 
 from settings import S
 from runtime_settings import resolve_classifier_model
@@ -163,6 +164,16 @@ def _normalise_model_name(name: str) -> str:
     return candidate
 
 
+def _model_aliases(name: str) -> List[str]:
+    """Return alias names for compatibility with older Ollama endpoints."""
+
+    aliases = [name]
+    base = name.split(":", 1)[0].strip()
+    if base and base != name:
+        aliases.append(base)
+    return aliases
+
+
 def _match_model_entry(
     candidates: Iterable[str],
     entries: Iterable[Dict[str, Any]],
@@ -277,6 +288,20 @@ async def _fetch_tags(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
     return []
 
 
+def _extract_pull_error(response: httpx.Response, normalized: str) -> str:
+    payload = _coerce_json_dict(response)
+    if payload:
+        message = payload.get("error") or payload.get("message") or payload.get("status")
+        if message:
+            return str(message)
+    text = response.text.strip()
+    if response.status_code == 404:
+        return f"Modell '{normalized}' wurde nicht gefunden"
+    if text:
+        return text
+    return f"HTTP {response.status_code}"
+
+
 async def _pull_model(
     client: httpx.AsyncClient,
     model: str,
@@ -301,35 +326,63 @@ async def _pull_model(
         tracked.status = "initialisiert"
         tracked.finished_at = None
 
-    try:
-        async with client.stream(
-            "POST",
-            f"{S.OLLAMA_HOST}/api/pull",
-            json={"model": normalized},
-            timeout=httpx.Timeout(300.0, connect=30.0),
-        ) as response:
-            response.raise_for_status()
-            async for chunk in response.aiter_lines():
-                if not chunk:
-                    continue
+    async def _attempt_pull(payload: Dict[str, str]) -> Tuple[bool, str | None, bool]:
+        try:
+            async with client.stream(
+                "POST",
+                f"{S.OLLAMA_HOST}/api/pull",
+                json=payload,
+                timeout=httpx.Timeout(300.0, connect=30.0),
+            ) as response:
                 try:
-                    payload = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-                _apply_payload(tracked, payload)
-                if payload.get("status") == "success":
-                    tracked.mark_complete()
-                    return True, None
-                if payload.get("error"):
-                    message = str(payload["error"])
-                    tracked.mark_error(message)
-                    return False, message
-    except httpx.HTTPError as exc:
-        message = str(exc)
-        tracked.mark_error(message)
-        return False, message
-    tracked.mark_error("Unbekanntes Ergebnis beim Laden des Modells")
-    return False, "Unbekanntes Ergebnis beim Laden des Modells"
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    message = _extract_pull_error(exc.response, normalized)
+                    if exc.response.status_code in {400, 404, 405}:
+                        return False, message, True
+                    return False, message, False
+                async for chunk in response.aiter_lines():
+                    if not chunk:
+                        continue
+                    try:
+                        payload_chunk = json.loads(chunk)
+                    except json.JSONDecodeError:
+                        continue
+                    _apply_payload(tracked, payload_chunk)
+                    if payload_chunk.get("status") == "success":
+                        tracked.mark_complete()
+                        return True, None, False
+                    if payload_chunk.get("error"):
+                        message = str(payload_chunk["error"])
+                        tracked.mark_error(message)
+                        return False, message, False
+        except httpx.HTTPError as exc:
+            message = str(exc)
+            return False, message, False
+        return False, "Unbekanntes Ergebnis beim Laden des Modells", False
+
+    attempted_messages: List[str] = []
+    aliases = _model_aliases(normalized)
+    payloads: List[Dict[str, str]] = []
+    for alias in aliases:
+        payloads.append({"model": alias, "name": alias})
+    for alias in aliases:
+        payloads.append({"model": alias})
+        payloads.append({"name": alias})
+
+    for payload in payloads:
+        success, message, retry = await _attempt_pull(payload)
+        if success:
+            return True, None
+        if message:
+            attempted_messages.append(message)
+        if not retry:
+            tracked.mark_error(message or "Unbekannter Fehler beim Modell-Download")
+            return False, message
+
+    message = attempted_messages[-1] if attempted_messages else "Modell-Download fehlgeschlagen"
+    tracked.mark_error(message)
+    return False, message
 
 
 def _summarise(statuses: List[OllamaModelStatus]) -> str | None:
@@ -524,25 +577,89 @@ async def refresh_status(pull_missing: bool = False) -> OllamaStatus:
         return status
 
 
+def _coerce_json_dict(response: httpx.Response) -> Dict[str, Any] | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _extract_delete_error(response: httpx.Response, normalized: str) -> str:
+    payload = _coerce_json_dict(response)
+    if payload:
+        message = payload.get("error") or payload.get("message") or payload.get("status")
+        if message:
+            return str(message)
+    text = response.text.strip()
+    if response.status_code == 404:
+        return f"Modell '{normalized}' wurde nicht gefunden"
+    if text:
+        return text
+    return f"HTTP {response.status_code}"
+
+
+async def _delete_model_legacy(client: httpx.AsyncClient, normalized: str) -> Dict[str, Any] | None:
+    delete_url = f"{S.OLLAMA_HOST}/api/delete"
+    aliases = _model_aliases(normalized)
+    attempts: List[tuple[str, Dict[str, Any]]] = []
+    for alias in aliases:
+        attempts.extend(
+            [
+                ("DELETE", {"params": {"model": alias}}),
+                ("DELETE", {"params": {"name": alias}}),
+                ("DELETE", {"json": {"model": alias}}),
+                ("DELETE", {"json": {"name": alias}}),
+                ("POST", {"json": {"model": alias, "name": alias}}),
+                ("POST", {"json": {"model": alias}}),
+                ("POST", {"json": {"name": alias}}),
+                ("POST", {"data": {"model": alias}}),
+                ("POST", {"data": {"name": alias}}),
+            ]
+        )
+
+    last_message = None
+    for method, kwargs in attempts:
+        response = await client.request(method, delete_url, **kwargs)
+        if response.status_code == 405:
+            last_message = _extract_delete_error(response, normalized)
+            continue
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            message = _extract_delete_error(response, normalized)
+            if response.status_code in {400, 404}:
+                last_message = message
+                continue
+            raise RuntimeError(message) from exc
+        return _coerce_json_dict(response)
+
+    message = last_message or f"Modell '{normalized}' konnte nicht gelöscht werden"
+    raise RuntimeError(message)
+
+
 async def delete_model(model: str) -> None:
     """Delete the given model from the Ollama host and clear cached metadata."""
 
     normalized = _normalise_model_name(model)
     timeout = httpx.Timeout(60.0, connect=15.0)
+    encoded = quote(normalized, safe="")
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{S.OLLAMA_HOST}/api/delete",
-            json={"name": normalized},
-        )
-        response.raise_for_status()
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = None
-    if isinstance(payload, dict):
-        if payload.get("deleted") is False:
-            message = str(payload.get("error") or payload)
-            raise RuntimeError(message)
+        response = await client.delete(f"{S.OLLAMA_HOST}/api/tags/{encoded}")
+        if response.status_code == 405:
+            payload = await _delete_model_legacy(client, normalized)
+        else:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                message = _extract_delete_error(response, normalized)
+                raise RuntimeError(message) from exc
+            payload = _coerce_json_dict(response)
+    if isinstance(payload, dict) and payload.get("deleted") is False:
+        message = str(payload.get("error") or payload)
+        raise RuntimeError(message)
     async with _MODEL_INFO_LOCK:
         _MODEL_INFO_CACHE.pop(normalized, None)
     await _discard_progress(normalized)

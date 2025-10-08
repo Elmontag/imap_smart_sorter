@@ -39,7 +39,7 @@ from mailbox import (
 )
 from models import Suggestion
 from runtime_settings import resolve_mailbox_inbox
-from ollama_service import ensure_ollama_ready
+from ollama_service import OllamaModelStatus, OllamaStatus, ensure_ollama_ready
 from settings import S
 from runtime_settings import (
     analysis_module_uses_filters,
@@ -116,19 +116,36 @@ async def _idle_loop(interval: float) -> None:
         await asyncio.sleep(delay)
 
 
+def _ollama_requirements_met(status: OllamaStatus) -> bool:
+    """Return True when the Ollama host and required models are ready."""
+
+    if not status.reachable:
+        return False
+
+    required: list[OllamaModelStatus] = [
+        model
+        for model in status.models
+        if model.purpose in {"classifier", "embedding"}
+    ]
+    if not required:
+        return status.reachable
+
+    return all(model.available for model in required)
+
+
 async def process_loop() -> None:
     """Continuously poll the mailbox and persist new suggestions."""
 
-    llm_ready_checked = False
+    llm_ready = False
     while True:
         try:
             module = resolve_analysis_module()
             if analysis_module_uses_llm(module):
-                if not llm_ready_checked:
-                    await ensure_ollama_ready()
-                    llm_ready_checked = True
+                if not llm_ready:
+                    status = await ensure_ollama_ready()
+                    llm_ready = _ollama_requirements_met(status)
             else:
-                llm_ready_checked = False
+                llm_ready = False
             count = await one_shot_scan()
             if count:
                 logger.info("Processed %s new messages", count)
