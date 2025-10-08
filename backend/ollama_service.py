@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
+from urllib.parse import quote
 
 from settings import S
 from runtime_settings import resolve_classifier_model
@@ -549,10 +550,12 @@ def _extract_delete_error(response: httpx.Response, normalized: str) -> str:
 
 
 async def _delete_model_legacy(client: httpx.AsyncClient, normalized: str) -> Dict[str, Any] | None:
-    response = await client.post(
-        f"{S.OLLAMA_HOST}/api/delete",
-        json={"name": normalized},
-    )
+    delete_url = f"{S.OLLAMA_HOST}/api/delete"
+    response = await client.delete(delete_url, json={"model": normalized})
+    if response.status_code == 405:
+        response = await client.post(delete_url, json={"model": normalized})
+        if response.status_code == 405:
+            response = await client.post(delete_url, json={"name": normalized})
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -566,8 +569,9 @@ async def delete_model(model: str) -> None:
 
     normalized = _normalise_model_name(model)
     timeout = httpx.Timeout(60.0, connect=15.0)
+    encoded = quote(normalized, safe="")
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.delete(f"{S.OLLAMA_HOST}/api/tags/{normalized}")
+        response = await client.delete(f"{S.OLLAMA_HOST}/api/tags/{encoded}")
         if response.status_code == 405:
             payload = await _delete_model_legacy(client, normalized)
         else:
