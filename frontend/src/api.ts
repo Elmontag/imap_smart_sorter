@@ -488,7 +488,9 @@ export type StreamEvent =
   | { type: 'pending_overview'; payload: PendingOverview }
   | { type: 'pending_error'; error: string }
 
-const rawEnvBase = ((import.meta.env.VITE_API_BASE as string | undefined) ?? '').trim()
+const explicitEnvBase = ((import.meta.env.VITE_API_BASE as string | undefined) ?? '').trim()
+const rawEnvBase =
+  explicitEnvBase || (import.meta.env.DEV ? 'http://localhost:8000' : '')
 
 const trimTrailingSlash = (value: string): string => {
   if (!value || value === '/') {
@@ -564,10 +566,11 @@ const joinBasePath = (basePath: string, targetPath: string): string => {
   return `${combinedPath}${search}`
 }
 
-const fallbackOrigin =
+const runtimeOrigin =
   typeof window !== 'undefined' && typeof window.location?.origin === 'string'
     ? window.location.origin
-    : 'http://localhost:8000'
+    : null
+const fallbackOrigin = runtimeOrigin ?? 'http://localhost:8000'
 
 const baseIsAbsolute = /^https?:\/\//i.test(rawEnvBase)
 

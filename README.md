@@ -41,7 +41,7 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 
 > **GUI-Overrides:** Mehrere Defaults lassen sich im Frontend überschreiben und werden danach in der Datenbank gespeichert. Dazu zählen `MOVE_MODE` (Tab „Betrieb“), die Modellwahl (`CLASSIFIER_MODEL` im Tab „KI & Tags“), Mailbox-Tags (`IMAP_PROTECTED_TAG`, `IMAP_PROCESSED_TAG`, `IMAP_AI_TAG_PREFIX`), das Analyse-Modul (`ANALYSIS_MODULE`) sowie das Intervall der Daueranalyse (`POLL_INTERVAL_SECONDS`). Die `.env`-Werte dienen als Startzustand und greifen erneut, wenn gespeicherte Einstellungen zurückgesetzt werden.
 
-> **Frontend-Variablen:** Für Vite kann in `frontend/.env.local` u. a. `VITE_API_BASE` (Backend-URL) und `VITE_DEV_MODE` (Devtools-Overlay) gesetzt werden. Diese Werte beeinflussen ausschließlich das Frontend und sind nicht Teil der `.env` im Projektstamm.
+> **Frontend-Variablen:** Für Vite kann in `frontend/.env.local` u. a. `VITE_API_BASE` (Backend-URL) und `VITE_DEV_MODE` (Devtools-Overlay) gesetzt werden. Ohne Vorgabe nutzt die Entwicklungsumgebung automatisch `http://localhost:8000`, während gebaute Bundles die aktuelle Herkunft verwenden. Diese Werte beeinflussen ausschließlich das Frontend und sind nicht Teil der `.env` im Projektstamm.
 
 ### Hinweise zur IMAP-Suche
 
