@@ -33,6 +33,7 @@ from database import (
     list_suggestions,
     mark_failed,
     mark_moved,
+    mark_processed,
     record_decision,
     record_dry_run,
     set_analysis_module,
@@ -40,6 +41,7 @@ from database import (
     set_mailbox_tags,
     set_mode,
     set_monitored_folders,
+    set_poll_interval_seconds,
     suggestion_status_counts,
     update_proposal,
 )
@@ -93,6 +95,7 @@ from runtime_settings import (
     resolve_mailbox_settings,
     resolve_mailbox_tags,
     resolve_move_mode,
+    resolve_poll_interval_seconds,
 )
 from tagging_service import apply_suggestion_tags
 
@@ -502,6 +505,7 @@ class ConfigResponse(BaseModel):
     mode: MoveMode
     analysis_module: AnalysisModule
     classifier_model: str
+    poll_interval_seconds: int
     protected_tag: str | None = None
     processed_tag: str | None = None
     ai_tag_prefix: str | None = None
@@ -515,6 +519,7 @@ class ConfigUpdateRequest(BaseModel):
     mode: Optional[MoveMode] = None
     analysis_module: Optional[AnalysisModule] = None
     classifier_model: Optional[str] = Field(default=None, min_length=1)
+    poll_interval_seconds: Optional[int] = Field(default=None, ge=5)
     protected_tag: Optional[str] = None
     processed_tag: Optional[str] = None
     ai_tag_prefix: Optional[str] = None
@@ -1201,6 +1206,7 @@ async def _config_response(*, force_refresh: bool = False) -> ConfigResponse:
         mode=_resolve_mode(),
         analysis_module=AnalysisModule(module_value),
         classifier_model=resolve_classifier_model(),
+        poll_interval_seconds=int(resolve_poll_interval_seconds()),
         protected_tag=protected_tag,
         processed_tag=processed_tag,
         ai_tag_prefix=ai_tag_prefix,
@@ -1236,6 +1242,16 @@ async def api_update_config(payload: ConfigUpdateRequest) -> ConfigResponse:
             raise HTTPException(400, "classifier_model must not be empty")
         set_classifier_model(model)
         refresh_ollama = True
+    if "poll_interval_seconds" in updates:
+        value = payload.poll_interval_seconds
+        if value is None:
+            set_poll_interval_seconds(None)
+        else:
+            seconds = int(value)
+            if seconds < 5:
+                raise HTTPException(400, "poll_interval_seconds must be at least 5 Sekunden")
+            set_poll_interval_seconds(seconds)
+        scan_controller.status.poll_interval = resolve_poll_interval_seconds()
     if {"protected_tag", "processed_tag", "ai_tag_prefix"} & updates.keys():
         set_mailbox_tags(
             updates.get("protected_tag"),
@@ -1716,6 +1732,8 @@ def _perform_move(uid: str, target: str, src_folder: str | None) -> None:
         mark_failed(uid, str(exc))
         raise HTTPException(500, f"move failed: {exc}") from exc
     mark_moved(uid)
+    origin = (src_folder or "").strip() or resolve_mailbox_inbox()
+    mark_processed(origin, uid)
 
 
 @app.post("/api/move")

@@ -6,7 +6,7 @@ import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, Iterator, List, Sequence
+from typing import Collection, Dict, Iterable, Iterator, List, Mapping, Sequence
 
 from imapclient import IMAPClient
 
@@ -75,13 +75,14 @@ def search_recent(server: IMAPClient, folder: str) -> list[int]:
     return server.search(_search_criteria())
 
 
-def fetch_messages(server: IMAPClient, uids, batch_size: int = 100):
+def fetch_messages(server: IMAPClient, uids, attributes: Sequence[bytes], batch_size: int = 100):
     if not uids:
         return {}
     out = {}
-    for i in range(0, len(uids), batch_size):
-        chunk = uids[i : i + batch_size]
-        data = server.fetch(chunk, [b"RFC822", b"FLAGS"])
+    uid_list = list(uids)
+    for i in range(0, len(uid_list), batch_size):
+        chunk = uid_list[i : i + batch_size]
+        data = server.fetch(chunk, list(attributes))
         out.update(data)
     return out
 
@@ -100,7 +101,12 @@ def _normalize_flags(raw_flags: Iterable[object]) -> List[str]:
     return normalized
 
 
-def fetch_recent_messages(folders: Iterable[str]) -> Dict[str, Dict[int, MessageContent]]:
+def fetch_recent_messages(
+    folders: Iterable[str],
+    *,
+    processed_lookup: Mapping[str, Collection[str]] | None = None,
+    skip_known_uids: Collection[str] | None = None,
+) -> Dict[str, Dict[int, MessageContent]]:
     """Return the RFC822 payload for recently seen messages in the given folders."""
 
     folders = list(folders)
@@ -111,29 +117,68 @@ def fetch_recent_messages(folders: Iterable[str]) -> Dict[str, Dict[int, Message
     protected_tag, processed_tag, _ = resolve_mailbox_tags()
     protected_tag = (protected_tag or "").strip()
     processed_tag = (processed_tag or "").strip()
+    processed_lookup = processed_lookup or {}
+    skip_known: set[str] = {str(uid) for uid in (skip_known_uids or []) if str(uid).strip()}
     try:
         with _connect() as server:
             for folder in folders:
                 try:
                     uids = search_recent(server, folder)
-                    data = fetch_messages(server, uids)
                 except Exception as exc:  # pragma: no cover - defensive network handling
                     logger.warning("Failed to fetch messages for %s: %s", folder, exc)
                     continue
+                if not uids:
+                    payloads[folder] = {}
+                    continue
+                processed_for_folder = {
+                    str(uid)
+                    for uid in processed_lookup.get(folder, set())
+                    if str(uid).strip()
+                }
+                try:
+                    flag_data = fetch_messages(server, uids, [b"FLAGS"])
+                except Exception as exc:  # pragma: no cover - defensive network handling
+                    logger.warning("Failed to fetch flags for %s: %s", folder, exc)
+                    payloads[folder] = {}
+                    continue
+
+                eligible_flags: Dict[int, Sequence[str]] = {}
+                for uid, msg in flag_data.items():
+                    if not msg:
+                        continue
+                    raw_flags = msg.get(b"FLAGS", []) or []
+                    normalized_flags = tuple(_normalize_flags(raw_flags))
+                    if protected_tag and protected_tag in normalized_flags:
+                        continue
+                    if processed_tag and processed_tag in normalized_flags:
+                        continue
+                    uid_str = str(uid)
+                    if processed_for_folder and uid_str in processed_for_folder:
+                        continue
+                    if skip_known and uid_str in skip_known:
+                        continue
+                    eligible_flags[int(uid)] = normalized_flags
+
+                if not eligible_flags:
+                    payloads[folder] = {}
+                    continue
+
+                try:
+                    body_data = fetch_messages(server, eligible_flags.keys(), [b"RFC822"])
+                except Exception as exc:  # pragma: no cover - defensive network handling
+                    logger.warning("Failed to fetch message bodies for %s: %s", folder, exc)
+                    payloads[folder] = {}
+                    continue
+
                 filtered: Dict[int, MessageContent] = {}
-                for uid, msg in data.items():
+                for uid, msg in body_data.items():
                     if not msg:
                         continue
                     raw_body = msg.get(b"RFC822", b"")
                     if not raw_body:
                         continue
-                    raw_flags = msg.get(b"FLAGS", []) or []
-                    normalized_flags = _normalize_flags(raw_flags)
-                    if protected_tag and protected_tag in normalized_flags:
-                        continue
-                    if processed_tag and processed_tag in normalized_flags:
-                        continue
-                    filtered[uid] = MessageContent(body=raw_body, flags=tuple(normalized_flags))
+                    flags = eligible_flags.get(int(uid), ())
+                    filtered[int(uid)] = MessageContent(body=raw_body, flags=tuple(flags))
                 payloads[folder] = filtered
     except Exception as exc:  # pragma: no cover - defensive network handling
         logger.error("Failed to open IMAP connection: %s", exc)

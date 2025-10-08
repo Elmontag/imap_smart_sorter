@@ -7,6 +7,7 @@ from typing import List, Optional, Sequence
 from database import get_monitored_folders
 from imap_worker import one_shot_scan
 from settings import S
+from runtime_settings import resolve_poll_interval_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class ScanStatus:
 
     active: bool = False
     folders: List[str] = field(default_factory=list)
-    poll_interval: float = float(getattr(S, "POLL_INTERVAL_SECONDS", 60))
+    poll_interval: float = field(default_factory=resolve_poll_interval_seconds)
     last_started_at: Optional[datetime] = None
     last_finished_at: Optional[datetime] = None
     last_error: Optional[str] = None
@@ -46,8 +47,8 @@ class ScanController:
             self._status.folders = list(normalized)
             self._status.last_error = None
             self._status.last_result_count = None
-            interval = float(getattr(S, "POLL_INTERVAL_SECONDS", 60))
-            self._status.poll_interval = interval if interval > 0 else 60.0
+            interval = resolve_poll_interval_seconds()
+            self._status.poll_interval = interval
 
             self._task = asyncio.create_task(self._run(normalized if normalized else None))
             return True
@@ -69,9 +70,10 @@ class ScanController:
         return True
 
     async def _run(self, folders: Optional[Sequence[str]]) -> None:
-        interval = self._status.poll_interval or 60.0
         try:
             while True:
+                interval = resolve_poll_interval_seconds()
+                self._status.poll_interval = interval
                 current_targets = self._resolve_targets(folders)
                 self._status.folders = current_targets
                 self._status.last_started_at = datetime.utcnow()
