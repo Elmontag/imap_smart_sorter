@@ -222,7 +222,7 @@ export default function DashboardPage(): JSX.Element {
     scanStateRef.current = { auto: autoActive, manual: manualActive }
   }, [scanStatus?.active, scanStatus?.rescan_active, rescanBusy, refreshPendingOverview])
 
-  const refreshIndicators = useCallback(async () => {
+  const refreshDashboardIndicators = useCallback(async () => {
     const tasks: Promise<unknown>[] = []
     if (showLlMSuggestions) {
       tasks.push(refresh())
@@ -236,7 +236,14 @@ export default function DashboardPage(): JSX.Element {
     if (tasks.length > 0) {
       await Promise.allSettled(tasks)
     }
-  }, [refresh, refreshFilterActivity, refreshPendingOverview, showAutomationCard, showLlMSuggestions, showPendingPanel])
+  }, [
+    refresh,
+    refreshFilterActivity,
+    refreshPendingOverview,
+    showAutomationCard,
+    showLlMSuggestions,
+    showPendingPanel,
+  ])
 
   const handleStartScan = async () => {
     setScanBusy(true)
@@ -253,7 +260,7 @@ export default function DashboardPage(): JSX.Element {
       setStatus({ kind: 'error', message: `Analyse konnte nicht gestartet werden: ${toMessage(err)}` })
     } finally {
       setScanBusy(false)
-      await refreshIndicators()
+      await refreshDashboardIndicators()
     }
   }
 
@@ -281,7 +288,7 @@ export default function DashboardPage(): JSX.Element {
     } finally {
       setRescanBusy(false)
       setScanBusy(false)
-      await refreshIndicators()
+      await refreshDashboardIndicators()
     }
   }
 
@@ -307,9 +314,9 @@ export default function DashboardPage(): JSX.Element {
     } finally {
       setRescanBusy(false)
       await loadScanStatus()
-      await refreshIndicators()
+      await refreshDashboardIndicators()
     }
-  }, [loadScanStatus, refresh, refreshIndicators, selectedFolders])
+  }, [loadScanStatus, refresh, refreshDashboardIndicators, selectedFolders])
 
   const dismissStatus = useCallback(() => setStatus(null), [])
 
@@ -323,13 +330,13 @@ export default function DashboardPage(): JSX.Element {
       setSelectedFolders([...normalizedSelected])
       setFolderDraft([...normalizedSelected])
       setStatus({ kind: 'success', message: 'Ordnerauswahl gespeichert.' })
-      await refreshIndicators()
+      await refreshDashboardIndicators()
     } catch (err) {
       setStatus({ kind: 'error', message: `Ordnerauswahl konnte nicht gespeichert werden: ${toMessage(err)}` })
     } finally {
       setSavingFolders(false)
     }
-  }, [folderDraft, refreshIndicators])
+  }, [folderDraft, refreshDashboardIndicators])
 
   const handleFolderCreated = useCallback(
     async (folder: string) => {
@@ -505,16 +512,16 @@ export default function DashboardPage(): JSX.Element {
     if (!showAutomationCard && !showPendingPanel && !showLlMSuggestions) {
       return
     }
-    void refreshIndicators()
+    void refreshDashboardIndicators()
     const interval = window.setInterval(() => {
-      void refreshIndicators()
+      void refreshDashboardIndicators()
     }, 5000)
     return () => {
       window.clearInterval(interval)
     }
   }, [
     dashboardView,
-    refreshIndicators,
+    refreshDashboardIndicators,
     scanSummary.autoActive,
     scanSummary.manualActive,
     showAutomationCard,
