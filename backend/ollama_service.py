@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
+from urllib.parse import quote
 
 from settings import S
 from runtime_settings import resolve_classifier_model
@@ -524,25 +525,65 @@ async def refresh_status(pull_missing: bool = False) -> OllamaStatus:
         return status
 
 
+def _coerce_json_dict(response: httpx.Response) -> Dict[str, Any] | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _extract_delete_error(response: httpx.Response, normalized: str) -> str:
+    payload = _coerce_json_dict(response)
+    if payload:
+        message = payload.get("error") or payload.get("message") or payload.get("status")
+        if message:
+            return str(message)
+    text = response.text.strip()
+    if response.status_code == 404:
+        return f"Modell '{normalized}' wurde nicht gefunden"
+    if text:
+        return text
+    return f"HTTP {response.status_code}"
+
+
+async def _delete_model_legacy(client: httpx.AsyncClient, normalized: str) -> Dict[str, Any] | None:
+    delete_url = f"{S.OLLAMA_HOST}/api/delete"
+    response = await client.delete(delete_url, json={"model": normalized})
+    if response.status_code == 405:
+        response = await client.post(delete_url, json={"model": normalized})
+        if response.status_code == 405:
+            response = await client.post(delete_url, json={"name": normalized})
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        message = _extract_delete_error(response, normalized)
+        raise RuntimeError(message) from exc
+    return _coerce_json_dict(response)
+
+
 async def delete_model(model: str) -> None:
     """Delete the given model from the Ollama host and clear cached metadata."""
 
     normalized = _normalise_model_name(model)
     timeout = httpx.Timeout(60.0, connect=15.0)
+    encoded = quote(normalized, safe="")
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{S.OLLAMA_HOST}/api/delete",
-            json={"name": normalized},
-        )
-        response.raise_for_status()
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = None
-    if isinstance(payload, dict):
-        if payload.get("deleted") is False:
-            message = str(payload.get("error") or payload)
-            raise RuntimeError(message)
+        response = await client.delete(f"{S.OLLAMA_HOST}/api/tags/{encoded}")
+        if response.status_code == 405:
+            payload = await _delete_model_legacy(client, normalized)
+        else:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                message = _extract_delete_error(response, normalized)
+                raise RuntimeError(message) from exc
+            payload = _coerce_json_dict(response)
+    if isinstance(payload, dict) and payload.get("deleted") is False:
+        message = str(payload.get("error") or payload)
+        raise RuntimeError(message)
     async with _MODEL_INFO_LOCK:
         _MODEL_INFO_CACHE.pop(normalized, None)
     await _discard_progress(normalized)
