@@ -396,6 +396,7 @@ export interface AppConfig {
   mode: MoveMode
   analysis_module: AnalysisModule
   classifier_model: string
+  poll_interval_seconds: number
   protected_tag: string | null
   processed_tag: string | null
   ai_tag_prefix: string | null
@@ -409,6 +410,7 @@ export interface AppConfigUpdateRequest {
   mode?: MoveMode
   analysis_module?: AnalysisModule
   classifier_model?: string
+  poll_interval_seconds?: number | null
   protected_tag?: string | null
   processed_tag?: string | null
   ai_tag_prefix?: string | null

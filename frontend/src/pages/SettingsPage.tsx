@@ -130,6 +130,7 @@ interface ConfigDraft {
   protectedTag: string
   processedTag: string
   aiTagPrefix: string
+  pollIntervalSeconds: string
 }
 
 interface MailboxDraft {
@@ -322,6 +323,7 @@ export default function SettingsPage(): JSX.Element {
     protectedTag: '',
     processedTag: '',
     aiTagPrefix: '',
+    pollIntervalSeconds: '30',
   })
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
@@ -538,6 +540,7 @@ export default function SettingsPage(): JSX.Element {
       protectedTag: appConfig.protected_tag ?? '',
       processedTag: appConfig.processed_tag ?? '',
       aiTagPrefix: appConfig.ai_tag_prefix ?? '',
+      pollIntervalSeconds: String(appConfig.poll_interval_seconds ?? ''),
     })
   }, [appConfig])
 
@@ -607,13 +610,15 @@ export default function SettingsPage(): JSX.Element {
     if (!appConfig) {
       return false
     }
+    const draftInterval = Number.parseInt(configDraft.pollIntervalSeconds.trim(), 10)
     return (
       configDraft.mode !== appConfig.mode ||
       configDraft.analysisModule !== appConfig.analysis_module ||
       configDraft.classifierModel.trim() !== (appConfig.classifier_model ?? '').trim() ||
       configDraft.protectedTag.trim() !== (appConfig.protected_tag ?? '').trim() ||
       configDraft.processedTag.trim() !== (appConfig.processed_tag ?? '').trim() ||
-      configDraft.aiTagPrefix.trim() !== (appConfig.ai_tag_prefix ?? '').trim()
+      configDraft.aiTagPrefix.trim() !== (appConfig.ai_tag_prefix ?? '').trim() ||
+      Number.isNaN(draftInterval) || draftInterval !== appConfig.poll_interval_seconds
     )
   }, [appConfig, configDraft])
 
@@ -929,12 +934,18 @@ export default function SettingsPage(): JSX.Element {
       setStatus({ kind: 'error', message: 'Das Sprachmodell darf nicht leer sein.' })
       return
     }
+    const intervalValue = Number.parseInt(configDraft.pollIntervalSeconds.trim(), 10)
+    if (Number.isNaN(intervalValue) || intervalValue < 5) {
+      setStatus({ kind: 'error', message: 'Das Intervall muss mindestens 5 Sekunden betragen.' })
+      return
+    }
     setConfigSaving(true)
     try {
       const response = await updateAppConfig({
         mode: configDraft.mode,
         analysis_module: configDraft.analysisModule,
         classifier_model: configDraft.classifierModel.trim(),
+        poll_interval_seconds: intervalValue,
         protected_tag: configDraft.protectedTag.trim() || null,
         processed_tag: configDraft.processedTag.trim() || null,
         ai_tag_prefix: configDraft.aiTagPrefix.trim() || null,
@@ -946,6 +957,7 @@ export default function SettingsPage(): JSX.Element {
         protectedTag: response.protected_tag ?? '',
         processedTag: response.processed_tag ?? '',
         aiTagPrefix: response.ai_tag_prefix ?? '',
+        pollIntervalSeconds: String(response.poll_interval_seconds ?? intervalValue),
       })
       setStatus({ kind: 'success', message: 'Konfiguration gespeichert.' })
       setConfigError(null)
@@ -2165,6 +2177,20 @@ export default function SettingsPage(): JSX.Element {
                       placeholder="z. B. SmartSorter"
                       disabled={configSaving}
                     />
+                  </label>
+                  <label>
+                    <span>Daueranalyse-Intervall (Sekunden)</span>
+                    <input
+                      type="number"
+                      min={5}
+                      step={1}
+                      value={configDraft.pollIntervalSeconds}
+                      onChange={event => handleConfigChange('pollIntervalSeconds', event.target.value)}
+                      disabled={configSaving}
+                    />
+                    <small className="muted">
+                      Bestimmt, wie oft das Postfach im Dauerlauf abgefragt wird (mindestens alle 5 Sekunden).
+                    </small>
                   </label>
                 </div>
                 {appConfig && (

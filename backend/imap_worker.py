@@ -18,17 +18,18 @@ from classifier import (
 )
 from database import (
     get_monitored_folders,
-    is_processed,
+    known_suggestion_uids,
     list_folder_profiles,
     mark_failed,
     mark_moved,
     mark_processed,
+    processed_uids_by_folder,
     record_decision,
     record_filter_hit,
     save_suggestion,
 )
 from feedback import update_profiles_on_accept
-from mailbox import ensure_folder_path, fetch_recent_messages, list_folders, move_message
+from mailbox import add_message_tag, ensure_folder_path, fetch_recent_messages, list_folders, move_message
 from models import Suggestion
 from runtime_settings import resolve_mailbox_inbox, resolve_mailbox_tags
 from ollama_service import OllamaModelStatus, OllamaStatus, ensure_ollama_ready
@@ -38,6 +39,7 @@ from runtime_settings import (
     analysis_module_uses_llm,
     resolve_analysis_module,
     resolve_move_mode,
+    resolve_poll_interval_seconds,
 )
 from keyword_filters import evaluate_filters
 from utils import extract_text, message_received_at, subject_from, thread_headers
@@ -96,7 +98,7 @@ async def process_loop() -> None:
                 logger.info("Processed %s new messages", count)
         except Exception:  # pragma: no cover - defensive background handling
             logger.exception("Unexpected error while scanning mailbox")
-        await asyncio.sleep(S.POLL_INTERVAL_SECONDS)
+        await asyncio.sleep(resolve_poll_interval_seconds())
 
 
 async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
@@ -108,19 +110,32 @@ async def one_shot_scan(folders: Sequence[str] | None = None) -> int:
         configured = get_monitored_folders()
         inbox = resolve_mailbox_inbox()
         target_folders = configured or [inbox]
-    messages = await asyncio.to_thread(fetch_recent_messages, target_folders)
+    processed_map = processed_uids_by_folder(target_folders)
+    known_suggestions = known_suggestion_uids()
+    messages = await asyncio.to_thread(
+        fetch_recent_messages,
+        target_folders,
+        processed_lookup=processed_map,
+        skip_known_uids=known_suggestions,
+    )
     all_folders = await asyncio.to_thread(list_folders)
     processed = 0
     for folder, payloads in messages.items():
+        processed_for_folder = processed_map.setdefault(folder, set())
         for uid, meta in payloads.items():
             uid_str = str(uid)
             raw_bytes = meta.body if hasattr(meta, "body") else meta
-            if not raw_bytes or is_processed(folder, uid_str):
+            if not raw_bytes:
+                continue
+            if uid_str in known_suggestions:
+                continue
+            if processed_for_folder and uid_str in processed_for_folder:
                 continue
             try:
                 await handle_message(uid_str, raw_bytes, folder, all_folders)
                 mark_processed(folder, uid_str)
                 processed += 1
+                processed_for_folder.add(uid_str)
             except Exception:  # pragma: no cover - defensive background handling
                 logger.exception("Failed to process message %s in %s", uid, folder)
     return processed

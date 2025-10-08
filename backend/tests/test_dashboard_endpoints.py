@@ -81,3 +81,32 @@ def test_pending_endpoint_uses_overview(monkeypatch, backend_env):
     assert data["list_limit"] == 25
     assert data["pending"][0]["message_uid"] == "m1"
     assert data["pending"][1]["folder"] == "INBOX/Team"
+
+
+@pytest.mark.usefixtures("backend_env")
+def test_poll_interval_can_be_updated(backend_env):
+    app_module = backend_env["app_module"]
+    runtime_settings = backend_env["runtime_settings"]
+
+    with TestClient(app_module.app) as client:
+        response = client.put("/api/config", json={"poll_interval_seconds": 45})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["poll_interval_seconds"] == 45
+
+        status_response = client.get("/api/scan/status")
+        assert status_response.status_code == 200
+        status = status_response.json()
+        assert status["poll_interval"] == pytest.approx(45.0)
+
+    assert runtime_settings.resolve_poll_interval_seconds() == pytest.approx(45.0)
+
+
+@pytest.mark.usefixtures("backend_env")
+def test_poll_interval_rejects_small_values(backend_env):
+    app_module = backend_env["app_module"]
+
+    with TestClient(app_module.app) as client:
+        response = client.put("/api/config", json={"poll_interval_seconds": 3})
+
+    assert response.status_code == 422

@@ -188,6 +188,15 @@ def _set_config_value(key: str, value: str) -> None:
         ses.commit()
 
 
+def _delete_config_value(key: str) -> None:
+    with get_session() as ses:
+        entry = ses.exec(select(AppConfig).where(AppConfig.key == key)).first()
+        if not entry:
+            return
+        ses.delete(entry)
+        ses.commit()
+
+
 def _get_config_value(key: str) -> Optional[str]:
     with get_session() as ses:
         entry = ses.exec(select(AppConfig).where(AppConfig.key == key)).first()
@@ -418,6 +427,27 @@ def get_monitored_folders() -> List[str]:
     except json.JSONDecodeError:
         return []
     return [str(folder) for folder in data if isinstance(folder, str) and folder.strip()]
+
+
+def set_poll_interval_seconds(value: int | None) -> None:
+    if value is None:
+        _delete_config_value("POLL_INTERVAL_SECONDS")
+        return
+    seconds = max(int(value), 1)
+    _set_config_value("POLL_INTERVAL_SECONDS", str(seconds))
+
+
+def get_poll_interval_override() -> Optional[int]:
+    raw = _get_config_value("POLL_INTERVAL_SECONDS")
+    if not raw:
+        return None
+    try:
+        value = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
 
 
 def update_proposal(uid: str, proposal: Dict[str, Any] | None) -> Optional[Suggestion]:
