@@ -114,7 +114,9 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   Optionskatalog; das LLM muss eine Option auswählen und den Score ≥ `MIN_MATCH_SCORE` halten, andernfalls bleibt der Slot
   leer. Kontext-Tags wie `datum-YYYY-MM-TT` oder `reiseort-ORT` werden nur bei eindeutiger Zuordnung ergänzt.
 - Tagging und Ordnerentscheidungen bleiben getrennt: Tags landen als `IMAP_AI_TAG_PREFIX/slot-option`-Kombination
-  am jeweiligen IMAP-Objekt, während Ordner-Vorschläge weiter bestätigt oder abgelehnt werden können.
+  am jeweiligen IMAP-Objekt, während Ordner-Vorschläge weiter bestätigt oder abgelehnt werden können. Im
+  Confirm-Modus setzt das Backend diese Tags – inklusive `IMAP_PROCESSED_TAG` – erst nach der Freigabe im Dashboard;
+  der Auto-Modus versieht Nachrichten weiterhin unmittelbar mit allen Markierungen.
 
 ### Konfigurierbare Hierarchie & Tag-Slots
 
@@ -134,7 +136,8 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 ### Schutz- und Monitoring-Einstellungen
 
 - `IMAP_PROTECTED_TAG` kennzeichnet Nachrichten, die vom Worker übersprungen werden sollen (z. B. manuell markierte Threads).
-- `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans.
+- `IMAP_PROCESSED_TAG` wird nach erfolgreicher Verarbeitung automatisch gesetzt und verhindert erneute Scans. Im Confirm-Modus
+  geschieht das erst mit der manuellen Bestätigung, damit unbearbeitete Vorschläge im Posteingang unverändert bleiben.
 - Der Tab „Betrieb“ in den Einstellungen bündelt Analyse-Modul, Verarbeitungsmodus und IMAP-Tags; das Dashboard zeigt den gewählten Modus weiterhin an. Die Auswahl des Sprachmodells erfolgt im Tab „KI & Tags“.
 - Die Module steuern, welche Informationen sichtbar sind:
 - **Statisch** setzt ausschließlich auf Keyword-Regeln. KI-Kontexte (Scores, Tag-Vorschläge, Kategorien), Pending-Listen und Vorschlagskarten werden im Dashboard ausgeblendet – ideal, wenn kein LLM verfügbar ist. Der Worker ruft in diesem Modus keine Ollama-Endpunkte auf.
@@ -209,7 +212,7 @@ Die Keyword-Analyse entscheidet zunächst, ob eine Nachricht anhand definierter 
 
 - **Mailbox**: `backend/mailbox.py` kapselt IMAP-Verbindungen, liefert aktuelle Nachrichten und führt Move-Operationen aus (Fallback Copy+Delete).
 - **Worker**: `backend/imap_worker.py` ruft `fetch_recent_messages`, erstellt pro Mail ein `Suggestion`-Objekt und aktualisiert Profile bei automatischen Moves.
-- **Classifier**: `backend/classifier.py` erzeugt Embeddings via Ollama und berechnet Kosinusähnlichkeiten zu bekannten Ordner-Profilen.
+- **Classifier**: `backend/classifier.py` erzeugt Embeddings via Ollama und berechnet Kosinusähnlichkeiten zu bekannten Ordner-Profilen. Der Client cached den zuletzt erfolgreichen Aufruf und probiert automatisch verschiedene Payload-Varianten über `/api/embeddings`, `/v1/embeddings` und `/api/embed`. Bei Modell-Fehlern wird zusätzlich ein Status-Refresh mit automatischem Pull der benötigten Modelle ausgelöst.
 - **Persistenz**: `backend/database.py` verwaltet SQLModel-Sessions, Vorschlagsstatus und Konfigurationswerte wie den aktuellen Move-Modus.
 - **Frontend**: `frontend/src` nutzt TypeScript und bündelt sämtliche Styles in `styles.css`. Komponenten verwenden die API-Wrapper aus `frontend/src/api.ts`.
 
