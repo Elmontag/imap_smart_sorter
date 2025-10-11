@@ -709,6 +709,10 @@ export default function DashboardPage(): JSX.Element {
               )}
             </aside>
             <main className="app-main">
+              {showPendingPanel && (
+                <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
+              )}
+
               {showAutomationCard && (
                 <AutomationSummaryCard
                   activity={filterActivity}
@@ -716,10 +720,6 @@ export default function DashboardPage(): JSX.Element {
                   error={filterActivityError}
                   onReload={refreshFilterActivity}
                 />
-              )}
-
-              {showPendingPanel && (
-                <PendingOverviewPanel overview={pendingOverview} loading={pendingLoading} error={pendingError} />
               )}
 
               {showLlMSuggestions ? (

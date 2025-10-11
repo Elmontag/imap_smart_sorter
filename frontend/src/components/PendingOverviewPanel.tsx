@@ -59,7 +59,7 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
     <section className="pending-overview">
       <div className="pending-header">
         <div>
-          <h2>Unbearbeite Mails</h2>
+          <h2>Ausstehende Mails</h2>
           <p className="pending-subline">Übersicht über alle noch nicht verarbeiteten Nachrichten.</p>
         </div>
         <div className="pending-metrics">
@@ -82,21 +82,29 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
 
       {showEmptyState && (
         <>
-          {isRefreshing && <div className="pending-refresh-indicator refresh-indicator">Aktualisiere…</div>}
+          {isRefreshing && (
+            <div className="pending-refresh-indicator refresh-indicator" role="status" aria-live="polite">
+              Aktualisiere…
+            </div>
+          )}
           <div className="pending-placeholder">
             {limitDisabled
               ? 'Detailansicht deaktiviert (PENDING_LIST_LIMIT=0). Zähler bleiben aktiv.'
-              : 'Keine unbearbeiteten Nachrichten gefunden.'}
+              : 'Keine ausstehenden Nachrichten gefunden.'}
           </div>
         </>
       )}
 
       {showNoDetails && (
         <>
-          {isRefreshing && <div className="pending-refresh-indicator refresh-indicator">Aktualisiere…</div>}
+          {isRefreshing && (
+            <div className="pending-refresh-indicator refresh-indicator" role="status" aria-live="polite">
+              Aktualisiere…
+            </div>
+          )}
           <div className="pending-placeholder">
             {limitDisabled
-              ? 'Die Liste der unbearbeiteten Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
+              ? 'Die Liste der ausstehenden Nachrichten ist deaktiviert. Prüfe die Zähler, um den Umfang einzuschätzen.'
               : 'Keine Details verfügbar.'}
           </div>
         </>
@@ -104,32 +112,38 @@ export default function PendingOverviewPanel({ overview, loading, error }: Pendi
 
       {showTable && (
         <div className="pending-table-wrapper">
-          {isRefreshing && <div className="pending-refresh-indicator refresh-indicator">Aktualisiere…</div>}
           {truncated && (
             <div className="pending-limit-info">
               Anzeige begrenzt auf {displayedCount} von {pendingCount} Einträgen.
             </div>
           )}
-          <table className="pending-table">
-            <thead>
-              <tr>
-                <th>Betreff</th>
-                <th>Ordner</th>
-                <th>Absender</th>
-                <th>Datum</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pageItems.map(item => (
-                <tr key={`${item.folder}-${item.message_uid}`}>
-                  <td data-label="Betreff">{formatSubject(item.subject)}</td>
-                  <td data-label="Ordner">{item.folder}</td>
-                  <td data-label="Absender">{formatSender(item.from_addr)}</td>
-                  <td data-label="Datum">{item.date ?? '–'}</td>
+          <div className="pending-table-container">
+            {isRefreshing && (
+              <div className="pending-refresh-indicator refresh-indicator" role="status" aria-live="polite">
+                Aktualisiere…
+              </div>
+            )}
+            <table className="pending-table">
+              <thead>
+                <tr>
+                  <th>Betreff</th>
+                  <th>Ordner</th>
+                  <th>Absender</th>
+                  <th>Datum</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {pageItems.map(item => (
+                  <tr key={`${item.folder}-${item.message_uid}`}>
+                    <td data-label="Betreff">{formatSubject(item.subject)}</td>
+                    <td data-label="Ordner">{item.folder}</td>
+                    <td data-label="Absender">{formatSender(item.from_addr)}</td>
+                    <td data-label="Datum">{item.date ?? '–'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {limitedEntries.length > itemsPerPage && (
             <div className="pending-pagination" role="navigation" aria-label="Pending Navigation">
               <button type="button" onClick={() => setPage(page - 1)} disabled={page <= 1}>

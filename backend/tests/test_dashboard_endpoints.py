@@ -43,7 +43,7 @@ def test_pending_endpoint_uses_overview(monkeypatch, backend_env):
     app_module = backend_env["app_module"]
     pending_module = importlib.import_module("backend.pending")
 
-    async def _fake_load_pending(_folders):
+    async def _fake_load_pending(_folders, *, force_refresh=False):
         return pending_module.PendingOverview(
             total_messages=3,
             processed_count=1,

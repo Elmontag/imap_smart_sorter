@@ -106,6 +106,8 @@ def fetch_recent_messages(
     *,
     processed_lookup: Mapping[str, Collection[str]] | None = None,
     skip_known_uids: Mapping[str | None, Collection[str]] | None = None,
+    uid_limit: int | None = None,
+    content_attribute: bytes = b"RFC822",
 ) -> Dict[str, Dict[int, MessageContent]]:
     """Return the RFC822 payload for recently seen messages in the given folders."""
 
@@ -133,6 +135,8 @@ def fetch_recent_messages(
                 except Exception as exc:  # pragma: no cover - defensive network handling
                     logger.warning("Failed to fetch messages for %s: %s", folder, exc)
                     continue
+                if uid_limit and uid_limit > 0 and len(uids) > uid_limit:
+                    uids = uids[-uid_limit:]
                 if not uids:
                     payloads[folder] = {}
                     continue
@@ -182,7 +186,7 @@ def fetch_recent_messages(
                     continue
 
                 try:
-                    body_data = fetch_messages(server, eligible_flags.keys(), [b"RFC822"])
+                    body_data = fetch_messages(server, eligible_flags.keys(), [content_attribute])
                 except Exception as exc:  # pragma: no cover - defensive network handling
                     logger.warning("Failed to fetch message bodies for %s: %s", folder, exc)
                     payloads[folder] = {}
@@ -192,9 +196,14 @@ def fetch_recent_messages(
                 for uid, msg in body_data.items():
                     if not msg:
                         continue
-                    raw_body = msg.get(b"RFC822", b"")
+                    raw_body = msg.get(content_attribute)
+                    if raw_body is None and isinstance(content_attribute, bytes):
+                        alt_key = content_attribute.decode("ascii", errors="ignore")
+                        raw_body = msg.get(alt_key)
                     if not raw_body:
                         continue
+                    if isinstance(raw_body, str):
+                        raw_body = raw_body.encode("utf-8", errors="ignore")
                     flags = eligible_flags.get(int(uid), ())
                     filtered[int(uid)] = MessageContent(body=raw_body, flags=tuple(flags))
                 payloads[folder] = filtered

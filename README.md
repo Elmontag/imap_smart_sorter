@@ -34,14 +34,14 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
 | IMAP-Anbindung | `IMAP_HOST`, `IMAP_PORT`, `IMAP_USERNAME`, `IMAP_PASSWORD`, `IMAP_USE_SSL`, `IMAP_INBOX`, `PROCESS_ONLY_SEEN`, `SINCE_DAYS` | Steuert Server-Zugriff, Zielordner sowie die Suchlogik (nur gelesene oder alle Mails, Zeitraum). |
 | Worker-Laufzeit | `IMAP_WORKER_AUTOSTART`, `POLL_INTERVAL_SECONDS`, `IDLE_FALLBACK`, `INIT_RUN` | Aktiviert den automatischen Start, definiert den Scanzyklus und setzt optional die Datenbank zurück. |
 | LLM/Ollama | `OLLAMA_HOST`, `CLASSIFIER_*`, `EMBED_MODEL`, `EMBED_PROMPT_HINT`, `EMBED_PROMPT_MAX_CHARS` | Legt Host, Modellwahl und Sampling-Parameter fest. Der Worker prüft beim Start, ob die Modelle verfügbar sind. |
-| Routing & Vorschläge | `MOVE_MODE`, `AUTO_THRESHOLD`, `MAX_SUGGESTIONS`, `MIN_NEW_FOLDER_SCORE`, `MIN_MATCH_SCORE`, `PENDING_LIST_LIMIT` | Default-Einstellungen für Vorschlagsgrenzen, Auto-Moves und Listenbegrenzungen. |
+| Routing & Vorschläge | `MOVE_MODE`, `AUTO_THRESHOLD`, `MAX_SUGGESTIONS`, `MIN_NEW_FOLDER_SCORE`, `MIN_MATCH_SCORE`, `PENDING_LIST_LIMIT`, `PENDING_FETCH_LIMIT`, `PENDING_CACHE_SECONDS` | Default-Einstellungen für Vorschlagsgrenzen, Auto-Moves sowie Umfang und Cache-Verhalten der Pending-Übersicht. |
 | Tags | `IMAP_PROTECTED_TAG`, `IMAP_PROCESSED_TAG`, `IMAP_AI_TAG_PREFIX` | Kennzeichnet geschützte Nachrichten, markiert verarbeitete Mails und definiert das Präfix für KI-Tags. |
 | Kalender-Sync | `CALENDAR_SYNC_ENABLED`, `CALDAV_URL`, `CALDAV_USERNAME`, `CALDAV_PASSWORD`, `CALDAV_CALENDAR`, `CALENDAR_DEFAULT_TIMEZONE`, `CALENDAR_PROCESSED_TAG`, `CALENDAR_SOURCE_FOLDERS`, `CALENDAR_PROCESSED_FOLDER`, `CALENDAR_POLL_INTERVAL_SECONDS` | Aktiviert die CalDAV-Integration, steuert Zielkalender, Standard-Zeitzone, Scan-Quellordner, optionalen Zielordner für bearbeitete Einladungen sowie den IMAP-Tag und das Intervall des Dauerlaufs. |
 | System | `DATABASE_URL`, `LOG_LEVEL`, `DEV_MODE`, `ANALYSIS_MODULE` | Pfad zur Datenbank, Logging-Level sowie Standard für Entwicklungs- bzw. Analyse-Modus. |
 
 > **GUI-Overrides:** Mehrere Defaults lassen sich im Frontend überschreiben und werden danach in der Datenbank gespeichert. Dazu zählen `MOVE_MODE` (Tab „Betrieb“), die Modellwahl (`CLASSIFIER_MODEL` im Tab „KI & Tags“), Mailbox-Tags (`IMAP_PROTECTED_TAG`, `IMAP_PROCESSED_TAG`, `IMAP_AI_TAG_PREFIX`), das Analyse-Modul (`ANALYSIS_MODULE`) sowie das Intervall der Daueranalyse (`POLL_INTERVAL_SECONDS`). Die `.env`-Werte dienen als Startzustand und greifen erneut, wenn gespeicherte Einstellungen zurückgesetzt werden.
 
-> **Frontend-Variablen:** Für Vite kann in `frontend/.env.local` u. a. `VITE_API_BASE` (Backend-URL) und `VITE_DEV_MODE` (Devtools-Overlay) gesetzt werden. Diese Werte beeinflussen ausschließlich das Frontend und sind nicht Teil der `.env` im Projektstamm.
+> **Frontend-Variablen:** Für Vite kann in `frontend/.env.local` u. a. `VITE_API_BASE` (Backend-URL) und `VITE_DEV_MODE` (Devtools-Overlay) gesetzt werden. Ohne Vorgabe nutzt die Entwicklungsumgebung automatisch `http://localhost:8000`, während gebaute Bundles die aktuelle Herkunft verwenden. Diese Werte beeinflussen ausschließlich das Frontend und sind nicht Teil der `.env` im Projektstamm.
 
 ### Hinweise zur IMAP-Suche
 
@@ -146,6 +146,8 @@ Die FastAPI-Anwendung lädt Konfigurationen aus `.env` über [`backend/settings.
   - **LLM Pure** ignoriert die Regeln und verarbeitet jede Mail per LLM. Die Regel-Übersicht im Dashboard blendet sich dabei automatisch aus.
 - `INIT_RUN` setzt beim nächsten Start die Datenbank zurück (Tabellen werden geleert, SQLite-Dateien neu angelegt).
 - `PENDING_LIST_LIMIT` bestimmt die maximale Anzahl angezeigter Einträge im Pending-Dashboard (0 deaktiviert die Begrenzung).
+- `PENDING_FETCH_LIMIT` begrenzt pro Ordner, wie viele Nachrichten für die Pending-Übersicht vom IMAP-Server geladen werden (0 hebt das Limit auf). Dadurch bleiben auch Postfächer mit sehr vielen ungelesenen Mails performant bedienbar.
+- `PENDING_CACHE_SECONDS` legt fest, wie lange die Pending-Übersicht gecacht wird, bevor erneut beim IMAP-Server angefragt wird. Manuelle Aktualisierungen umgehen den Cache automatisch.
 - `DEV_MODE` aktiviert zusätzliche Debug-Ausgaben im Backend sowie das Dev-Panel im Frontend.
   Der Modus schaltet außerdem die Developer-Console unter `#/dev` frei: Dort findest du alle laufzeitrelevanten Parameter
   (Move-Modus, Analyse-Modul, IMAP-Tags, Pending-Limit, Katalog-Zuschnitt), den aktuellen Ollama-Status inklusive Modellauflistung

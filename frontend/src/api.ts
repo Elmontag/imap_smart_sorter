@@ -488,15 +488,136 @@ export type StreamEvent =
   | { type: 'pending_overview'; payload: PendingOverview }
   | { type: 'pending_error'; error: string }
 
-const envBase = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8000'
-const BASE = envBase.replace(/\/$/, '')
-const baseUrl = new URL(BASE)
-const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-const normalizedPath = baseUrl.pathname.replace(/\/$/, '')
-const STREAM_URL = `${wsProtocol}//${baseUrl.host}${normalizedPath}/ws/stream`
+const explicitEnvBase = ((import.meta.env.VITE_API_BASE as string | undefined) ?? '').trim()
 
-export const API_BASE_URL = BASE
-export const STREAM_WEBSOCKET_URL = STREAM_URL
+const runtimeOrigin =
+  typeof window !== 'undefined' && typeof window.location?.origin === 'string'
+    ? window.location.origin
+    : ''
+const devDefaultOrigin = import.meta.env.DEV ? 'http://localhost:8000' : ''
+const fallbackOrigin = runtimeOrigin || devDefaultOrigin || 'http://localhost:8000'
+
+const normalizeBasePath = (value: string): string => {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === '/') {
+    return ''
+  }
+  return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`
+}
+
+const normalizeTargetPath = (value: string): string => {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return '/'
+  }
+  const cleaned = trimmed.replace(/\/+$/, '')
+  if (!cleaned) {
+    return '/'
+  }
+  return cleaned.startsWith('/') ? cleaned : `/${cleaned}`
+}
+
+const splitTargetPath = (value: string): { pathname: string; suffix: string } => {
+  const raw = value.trim()
+  if (!raw) {
+    return { pathname: '/', suffix: '' }
+  }
+  const queryIndex = raw.indexOf('?')
+  const hashIndex = raw.indexOf('#')
+  let cutIndex = raw.length
+  if (queryIndex >= 0 && hashIndex >= 0) {
+    cutIndex = Math.min(queryIndex, hashIndex)
+  } else if (queryIndex >= 0) {
+    cutIndex = queryIndex
+  } else if (hashIndex >= 0) {
+    cutIndex = hashIndex
+  }
+  const pathname = raw.slice(0, cutIndex) || '/'
+  const suffix = raw.slice(cutIndex)
+  return { pathname, suffix }
+}
+
+const joinBaseWithTarget = (basePath: string, targetPath: string): string => {
+  const base = normalizeBasePath(basePath)
+  const target = normalizeTargetPath(targetPath)
+  if (!base) {
+    return target
+  }
+  if (target === '/') {
+    return base || '/'
+  }
+  if (target === base || target.startsWith(`${base}/`)) {
+    return target
+  }
+  return `${base}${target}`
+}
+
+let originBase = ''
+let pathBase = ''
+
+if (explicitEnvBase) {
+  if (/^https?:\/\//i.test(explicitEnvBase)) {
+    try {
+      const parsed = new URL(explicitEnvBase)
+      originBase = `${parsed.protocol}//${parsed.host}`
+      pathBase = parsed.pathname
+    } catch (error) {
+      originBase = fallbackOrigin
+      pathBase = explicitEnvBase
+    }
+  } else {
+    originBase = runtimeOrigin
+    pathBase = explicitEnvBase
+  }
+} else {
+  originBase = devDefaultOrigin || runtimeOrigin
+  pathBase = ''
+}
+
+if (!originBase) {
+  originBase = fallbackOrigin
+}
+
+pathBase = normalizeBasePath(pathBase)
+
+const buildAbsoluteUrl = (origin: string, pathname: string, suffix = ''): string => {
+  const url = new URL(origin || fallbackOrigin)
+  url.pathname = pathname
+  url.search = ''
+  url.hash = ''
+  const base = url.toString().replace(/\/$/, '')
+  return `${base}${suffix}`
+}
+
+const resolveRequestUrl = (path: string): string => {
+  if (/^https?:\/\//i.test(path)) {
+    return path
+  }
+  const { pathname, suffix } = splitTargetPath(path || '/')
+  const combinedPath = joinBaseWithTarget(pathBase, pathname)
+  if (originBase) {
+    return buildAbsoluteUrl(originBase, combinedPath, suffix)
+  }
+  return `${combinedPath}${suffix}`
+}
+
+const resolveStreamUrl = (): string => {
+  let wsOrigin: URL
+  try {
+    wsOrigin = new URL(originBase || fallbackOrigin)
+  } catch (error) {
+    wsOrigin = new URL('http://localhost:8000')
+  }
+  wsOrigin.protocol = wsOrigin.protocol === 'https:' ? 'wss:' : 'ws:'
+  const streamPath = joinBaseWithTarget(pathBase, '/ws/stream')
+  wsOrigin.pathname = streamPath
+  wsOrigin.search = ''
+  wsOrigin.hash = ''
+  return wsOrigin.toString().replace(/\/$/, '')
+}
+
+export const API_BASE_URL = originBase ? `${originBase}${pathBase || ''}` : pathBase || '/'
+export const STREAM_WEBSOCKET_URL = resolveStreamUrl()
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
@@ -518,7 +639,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const started = performance.now()
   let response: Response
   try {
-    response = await fetch(`${BASE}${path}`, {
+    response = await fetch(resolveRequestUrl(path), {
       headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
       ...init,
     })
@@ -545,23 +666,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(text || `${response.status} ${response.statusText}`)
   }
   const clone = response.clone()
-  const data = (await response.json()) as T
+  let data: T
   try {
-    const payload = await clone.json()
+    data = (await response.json()) as T
+  } catch (error) {
+    let payload = '[unlesbare Antwort]'
+    try {
+      payload = await clone.text()
+    } catch (readError) {
+      payload = readError instanceof Error ? readError.message : String(readError)
+    }
     recordDevEvent({
-      type: 'response',
+      type: 'error',
       label,
+      details: 'Antwort kein JSON',
       payload,
       durationMs: performance.now() - started,
     })
-  } catch (error) {
-    recordDevEvent({
-      type: 'response',
-      label,
-      payload: '[non-json response]',
-      durationMs: performance.now() - started,
-    })
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    throw new Error(payload || `Antwort konnte nicht gelesen werden (${errorMessage})`)
   }
+
+  recordDevEvent({
+    type: 'response',
+    label,
+    payload: data,
+    durationMs: performance.now() - started,
+  })
+
   return data
 }
 
@@ -582,8 +714,9 @@ export async function getSuggestions(scope: SuggestionScope = 'open'): Promise<S
   return request<SuggestionsResponse>(`/api/suggestions${query}`)
 }
 
-export async function getPendingOverview(): Promise<PendingOverview> {
-  return request<PendingOverview>('/api/pending')
+export async function getPendingOverview(forceRefresh = false): Promise<PendingOverview> {
+  const query = forceRefresh ? '?force=1' : ''
+  return request<PendingOverview>(`/api/pending${query}`)
 }
 
 export async function getTagSuggestions(): Promise<TagSuggestion[]> {
@@ -808,8 +941,9 @@ export async function stopScan(): Promise<ScanStopResponse> {
 }
 
 export function openStream(onEvent: (event: StreamEvent) => void): WebSocket {
-  const socket = new WebSocket(STREAM_URL)
-  recordDevEvent({ type: 'info', label: 'WebSocket verbinden', details: STREAM_URL })
+  const streamUrl = STREAM_WEBSOCKET_URL
+  const socket = new WebSocket(streamUrl)
+  recordDevEvent({ type: 'info', label: 'WebSocket verbinden', details: streamUrl })
   socket.onmessage = rawEvent => {
     try {
       const parsed = JSON.parse(rawEvent.data) as StreamEvent
